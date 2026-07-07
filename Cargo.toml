@@ -1,0 +1,49 @@
+[package]
+name = "shiguredo_container"
+version = "2026.0.0"
+edition = "2024"
+rust-version = "1.88.0"
+description = "Runtime-agnostic container library for Rust on macOS and Linux"
+repository = "https://github.com/shiguredo/container-rs"
+license = "Apache-2.0"
+include = ["/LICENSE", "/README.md", "/build.rs", "/src/**"]
+
+[package.metadata.docs.rs]
+# メイン対象である macOS の API をドキュメントに含めるため、既定ターゲットを macOS にする。
+# docs.rs のビルドホストは Linux のため、build.rs は DOCS_RS 環境変数を見て
+# C コンパイル (macOS SDK が必要) をスキップする。
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+all-features = true
+
+[workspace]
+members = ["pbt"]
+
+[dependencies]
+# Basic 認証ヘッダ用の base64 エンコード (http_wait_plain)
+base64ct = { version = "1.8", features = ["alloc"], optional = true }
+# XPC bridge で確保したネイティブメモリを解放するため
+libc = "0.2"
+# JSON 処理
+nojson = "0.3"
+# HTTP/1.1 クライアント。Linux: Docker Engine API、macOS: http_wait_plain で使用
+shiguredo_http11 = "2026.6"
+# 非同期ランタイム
+tokio = {
+  version = "1.53",
+  features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "time"]
+}
+# ログ出力
+tracing = "0.1"
+
+[build-dependencies]
+# xpc_bridge.c をコンパイルするため
+cc = "1.2"
+
+[features]
+# 同期 API (Container / SyncRunner など) を有効化する
+blocking = []
+# WaitFor::http (HttpWaitStrategy) を有効化する。plain HTTP のみ (TLS 非対応)
+http_wait_plain = ["dep:base64ct"]
+# テストプロセスのクラッシュ (SIGKILL 含む) 時に孤立コンテナを掃除する (macOS のみ)
+watchdog = []
