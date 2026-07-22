@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-22
-- Completed:
+- Completed: 2026-07-22
 - Model: Cursor Grok 4.5
 - Branch: feature/update-clarify-awaitable-cleanup-contract
 - Polished: 2026-07-22
@@ -87,8 +87,14 @@
 
 ## 解決方法
 
-1. `README.md` と `skills/shiguredo-container/SKILL.md` の掃除契約節を、設計方針 3 どおりに書き換え（既存一文の分割・置換を含む）
-2. `docs/TESTCONTAINERS.md` 約 214 行の Drop 備考を実装に合わせて書き換える
-3. `async_container.rs` の `rm` / `Drop`（cfg 両方）と `sync_container.rs` の `rm` / `Drop` に rustdoc を足す（ロジック変更なし。Runtime 外 Drop は「試行終了／成功非保証」と書く）
-4. `tests/container_linux.rs`: lifecycle（推奨）または専用テストで明示 `rm` 直後の 1 ショット不在検証にする。Drop テストと `wait_until_absent` ヘルパのコメントを契約どおりに直す。Runtime 外 Drop も 1 ショットに揃える
-5. （任意）macOS にも明示 `rm` 直後の 1 ショット検証を足す
+1. `README.md` と `skills/shiguredo-container/SKILL.md` の「コンテナの掃除契約」節を、設計方針 3 どおりに書き換えた。既存の「専用スレッド」一文を分割し、Runtime 内 Drop（`Handle::try_current()` が `Ok`、削除完了非保証、`drop` 直後の終了で中断され得る）、Runtime 外 Drop（呼び出しスレッドで削除試行が終わるまで待つが成功非保証、失敗は `tracing::error` のみ）、明示 `rm()`（完了保証と成否 `Result`、`keep` でも削除する）、`keep` ゲート非対称、の 4 点を明記した。
+2. `docs/TESTCONTAINERS.md` L214 の Drop 備考を実装どおりに書き換えた。Runtime 内は専用 std スレッドで `remove_blocking` を非 join で実行、Runtime 外は呼び出しスレッドで同期 `remove_blocking`、常に `force=true`、404 冪等、Keep ゲートは Drop のみ、明示 `rm` は Keep でも削除する、まで揃えた。
+3. `src/core/containers/async_container.rs` の `rm()`（macOS / Linux 両 `#[cfg]`）と `impl Drop`、`src/core/containers/sync_container.rs` の `rm()` と `impl Drop` に、完了保証・`keep` ゲート非対称・失敗観測手段（`tracing::error`）・Err 経路の扱いを含む rustdoc を追加した。Runtime 外 Drop は「試行終了／成功非保証」と明記。削除ロジック自体は変更していない（`std::thread::spawn` + `remove_blocking`・非 join、および Runtime 外の同期実行はそのまま）。
+4. `tests/container_linux.rs`:
+   - `alpine_lifecycle_start_exec_stop_rm` の明示 `rm().await` 直後を `assert_absent_once`（1 ショット `docker inspect`）に切り替え、ポーリングを外した
+   - `alpine_drop_outside_runtime_does_not_panic` は `wait_until_absent_blocking`（ポーリング）を廃止し、`assert_absent_once_blocking`（1 ショット `docker inspect`）に置き換え。macOS 側 `xpc_alpine_drop_outside_runtime_does_not_panic` と同型
+   - `alpine_drop_inside_runtime_removes_container` は `wait_until_absent`（ポーリング）を維持し、rustdoc に「完了非保証のため最終確認にポーリングを使う」旨を明記
+   - `wait_until_absent` ヘルパのコメントを、実装どおり（`std::thread::spawn` + `remove_blocking`・非 join）に修正
+5. macOS 側の明示 `rm` 直後の 1 ショット検証（設計方針 5 の任意項目）は追加していない。既存の `xpc_alpine_drop_outside_runtime_does_not_panic` に 1 ショット `container ls -a` 判定があるため、契約検証は実質的にカバーされている。
+
+`CHANGES.md` は変更していない。公開 API シグネチャ・削除ロジックは不変で、契約文書・rustdoc・テストの調整に留まるため、changelog 規約の非対象。

@@ -21,28 +21,47 @@ async fn start_alpine() -> shiguredo_container::ContainerAsync<GenericImage> {
         .expect("alpine コンテナの起動に失敗した")
 }
 
-/// `docker inspect` が非 0 になるまで待つ (コンテナ不在)。同期版。
-fn wait_until_absent_blocking(id: &str) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let status = std::process::Command::new("docker")
-            .args(["inspect", id])
+/// `docker inspect` を 1 回実行してコンテナ不在を assert する。
+///
+/// Runtime 外 Drop や明示 `rm` の後で使う。両者とも呼び出し復帰時点で削除試行 (または
+/// 削除処理) が終わっているため、ポーリング無しの 1 ショット判定で足りる。
+fn assert_absent_once_blocking(id: &str) {
+    let status = std::process::Command::new("docker")
+        .args(["inspect", id])
+        .status()
+        .expect("docker inspect の実行に失敗した");
+    assert!(
+        !status.success(),
+        "削除試行完了直後は 1 ショット inspect で不在であること: {id}"
+    );
+}
+
+/// `docker inspect` を 1 回実行してコンテナ不在を assert する (async 版)。
+///
+/// 明示 `rm().await` 直後に使う。`rm().await` は削除完了まで戻らないため、
+/// ポーリング無しの 1 ショット判定で足りる。
+async fn assert_absent_once(id: &str) {
+    let id_owned = id.to_string();
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("docker")
+            .args(["inspect", &id_owned])
             .status()
-            .expect("docker inspect の実行に失敗した");
-        if !status.success() {
-            return;
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!("コンテナが削除されるまで待機したが残っている: {id}");
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
+            .expect("docker inspect の実行に失敗した")
+    })
+    .await
+    .expect("docker inspect の spawn_blocking に失敗した");
+    assert!(
+        !status.success(),
+        "rm 完了直後は 1 ショット inspect で不在であること: {id}"
+    );
 }
 
 /// `docker inspect` が非 0 になるまで待つ (コンテナ不在)。
 ///
-/// ランタイム内 Drop の `spawn(remove)` を進めるため、`thread::sleep` ではなく
-/// `tokio::time::sleep` で待つ (current_thread ランタイムのスタベーションを防ぐ)。
+/// Runtime 内 Drop は削除を専用 std スレッドで `remove_blocking` として実行し join
+/// しないため、`drop` からの復帰時点で削除完了は保証されない。完了非保証のため、
+/// 最終確認にはポーリングを使う。current_thread ランタイムのスタベーションを避ける
+/// ため `thread::sleep` ではなく `tokio::time::sleep` で待つ。
 async fn wait_until_absent(id: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -107,7 +126,8 @@ async fn alpine_lifecycle_start_exec_stop_rm() {
         .expect("既停止への stop_with_timeout が冪等に成功すること");
 
     container.rm().await.expect("rm に失敗した");
-    wait_until_absent(&id).await;
+    // 明示 rm() は削除完了まで戻るため、直後の inspect は 1 ショットで不在になる。
+    assert_absent_once(&id).await;
 }
 
 /// stop → start 再起動で再び running になること。
@@ -138,7 +158,11 @@ async fn alpine_stop_then_start_is_running() {
     container.rm().await.expect("rm に失敗した");
 }
 
-/// ランタイム内 Drop でコンテナが削除されること。
+/// Runtime 内 Drop でコンテナが削除されること。
+///
+/// Runtime 内 Drop は削除を専用 std スレッドに丸投げして join しないため、
+/// `drop` 復帰時点の削除完了は保証されない (契約どおり)。
+/// 最終確認にはポーリング (`wait_until_absent`) を使う。
 #[tokio::test]
 async fn alpine_drop_inside_runtime_removes_container() {
     let container = start_alpine().await;
@@ -147,7 +171,11 @@ async fn alpine_drop_inside_runtime_removes_container() {
     wait_until_absent(&id).await;
 }
 
-/// ランタイム外 Drop でパニックせずコンテナが削除されること。
+/// Runtime 外 Drop でパニックせずコンテナが削除されること。
+///
+/// Runtime 外 Drop は呼び出しスレッドで `remove_blocking` を同期実行するため、
+/// `drop` 復帰時点で削除試行が終わっている。1 ショット inspect で不在を確認する
+/// (macOS 側の `xpc_alpine_drop_outside_runtime_does_not_panic` と同型)。
 #[test]
 fn alpine_drop_outside_runtime_does_not_panic() {
     let rt = tokio::runtime::Runtime::new().expect("ランタイムの作成に失敗した");
@@ -158,7 +186,7 @@ fn alpine_drop_outside_runtime_does_not_panic() {
     });
     drop(rt);
     drop(container);
-    wait_until_absent_blocking(&id);
+    assert_absent_once_blocking(&id);
 }
 
 /// 外部で削除したあと、公開 API が ContainerNotFound を返すこと。
