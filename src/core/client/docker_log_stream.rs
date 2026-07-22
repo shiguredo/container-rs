@@ -1263,8 +1263,10 @@ mod tests {
     fn shared_buffer_reader_behind_head_is_skipped() {
         // 先頭 drop 済み領域を読もうとしたリーダーはスキップされ、フラグが立つこと。
         let mut buffer = SharedLogBuffer::new(4);
-        // 上限 4 に 6 バイト投入 → 先頭 2 バイト (ab) が drop され head = 2 になる。
-        buffer.append(b"abcdef");
+        // 累積で上限超過させ head を進める (1 回の巨大投入は末尾保持で head が進まないため)。
+        buffer.append(b"abcd");
+        // 合計 6 バイト > 上限 4 → 先頭 2 バイト (ab) が drop され head = 2 になる。
+        buffer.append(b"ef");
         let mut out = [0u8; 8];
         let (n, next, skipped) = buffer.read_at(0, &mut out);
         assert!(skipped, "先頭 drop 済みならスキップフラグが立つこと");
