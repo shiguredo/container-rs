@@ -2,7 +2,7 @@
 
 - Priority: High
 - Created: 2026-07-22
-- Completed:
+- Completed: 2026-07-22
 - Model: Grok 4.5
 - Branch: feature/fix-linux-exposed-port-publish
 - Polished: 2026-07-22
@@ -53,17 +53,8 @@ macOS では既に修正済み。他の Linux 未対応項目と違い `linux_un
 
 ## 解決方法
 
-1. `src/runners/async_runner.rs` の `build_container_config` で、現行の `ports: req.ports().cloned().unwrap_or_default()` を次の組み立て結果に置き換える（`PortMapping::new` は同一クレートの `pub(crate)`）:
-
-```rust
-let mut ports = req.ports().cloned().unwrap_or_default();
-for &exposed in req.expose_ports() {
-    if ports.iter().any(|p| p.container_port() == exposed) {
-        continue;
-    }
-    ports.push(PortMapping::new(0, exposed));
-}
-// ContainerConfig { ports, ... }
-```
-
-2. 上記以外の本番コードは変更しない（`docker_client` は `config.ports` を読む既存経路のまま。`HostPort` `"0"` も既存）
+1. `src/runners/async_runner.rs` の `build_container_config` で、`req.ports()` をベースに `req.expose_ports()` のうち未登場の `ContainerPort` を `PortMapping::new(0, exposed)` で追加した
+2. `docker_client` / macOS / 公開 API シグネチャは変更していない（既存の `config.ports` → `PortBindings` 経路を利用）
+3. `#[cfg(all(test, target_os = "linux"))] mod linux_tests` を新設し、expose のみ / mapped 優先 / mapped(0) 優先 / 異 proto / 空 / 二重 expose を検証した
+4. `tests/container_linux.rs` に `alpine_exposed_port_auto_mapping` を追加した（`skip_if_ci` なし）
+5. `docs/TESTCONTAINERS.md` の expose / `with_exposed_port` 備考を実態に合わせ、`CHANGES.md` に `[FIX]` を追記した
