@@ -187,6 +187,14 @@ impl<I: Image> Container<I> {
     /// リーダーは独立した読み取り位置を持ち、常にログ先頭から読む。
     /// `follow = true` のときは末尾到達後も追記をポーリングする。呼び出しスレッドをブロックするため、
     /// tokio ランタイムワーカー上や LogConsumer コールバックからは呼ばないこと。
+    ///
+    /// # Linux
+    ///
+    /// `follow = true` は demux 開始時点以降のログを共有バッファから `park_timeout(50ms)` の
+    /// 周期起床で読む。8 MiB 上限で先頭が drop された場合は取りこぼした旨を `warn` ログに
+    /// 出力し、読み進みは継続する。再 start (`refresh_log_streams`) で demux 開始時点が更新
+    /// されると、以前に取得した古いリーダーは新バッファに接続されない。`follow = false` は
+    /// 呼び出しごとに新規 HTTP セッションを張って現時点までの全ログを取得する。
     pub fn stdout(&self, follow: bool) -> Box<dyn std::io::BufRead + Send> {
         self.inner().stdout_sync(follow)
     }
@@ -199,6 +207,13 @@ impl<I: Image> Container<I> {
     ///
     /// 注意: macOS の stderr は Apple container の bootlog であり、
     /// アプリケーションの stderr は stdout 側のログに混流する。
+    ///
+    /// # Linux
+    ///
+    /// Docker Engine API は STREAM_TYPE で stdout / stderr を分離するため、`follow = true`
+    /// では本当に stderr のみのログを読む。8 MiB 上限で先頭が drop された場合は取りこぼした
+    /// 旨を `warn` ログに出力し、読み進みは継続する。`follow = false` は呼び出しごとに新規
+    /// HTTP セッションを張って現時点までの全ログを取得する。
     pub fn stderr(&self, follow: bool) -> Box<dyn std::io::BufRead + Send> {
         self.inner().stderr_sync(follow)
     }

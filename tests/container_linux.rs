@@ -4,13 +4,17 @@
 
 #![cfg(target_os = "linux")]
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use shiguredo_container::core::CmdWaitFor;
 use shiguredo_container::core::error::ClientError;
 use shiguredo_container::core::image::ExecCommand;
-use shiguredo_container::{AsyncRunner, Error, GenericImage, ImageExt};
+use shiguredo_container::core::logs::{LogFrame, consumer::LogConsumer};
+use shiguredo_container::{AsyncRunner, Error, GenericImage, ImageExt, WaitFor};
 
 /// 常駐 alpine を起動する。
 async fn start_alpine() -> shiguredo_container::ContainerAsync<GenericImage> {
@@ -283,25 +287,6 @@ async fn unsupported_image_ext_fails_fast_on_start() {
     );
 }
 
-/// Linux で Log 待機は start 時に明示エラーになること。
-#[tokio::test]
-async fn log_wait_fails_fast_on_start() {
-    use shiguredo_container::WaitFor;
-
-    // with_wait_for は GenericImage のメソッドなので、ImageExt (with_cmd) より先に呼ぶ。
-    let err = GenericImage::new("alpine", "latest")
-        .with_wait_for(WaitFor::message_on_stdout("ready"))
-        .with_cmd(["true"])
-        .start()
-        .await
-        .expect_err("Log 待機は Linux で未対応であること");
-    assert!(
-        err.to_string()
-            .contains("log wait is not supported on Linux"),
-        "明示メッセージであること: {err}"
-    );
-}
-
 /// `with_exposed_port` だけでホストポートが割当されること。
 ///
 /// create 時は host_port 0 を Docker に渡し、起動後に非 0 の割当結果を回収する。
@@ -325,4 +310,360 @@ async fn alpine_exposed_port_auto_mapping() {
 
     container.stop_with_timeout(Some(0)).await.ok();
     container.rm().await.ok();
+}
+
+/// `haystack` に `needle` が部分一致で含まれるか。空の `needle` は常に true。
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// 受信フレームを記録する `LogConsumer` 実装 (テスト用観測)。
+///
+/// 本番と同じ `LogConsumer` トレイトを実装し、実 Docker Engine 越しに動作する。
+/// `DockerClient` や `AsyncRunner` を差し替えないため、モック / スタブではない。
+#[derive(Clone, Default)]
+struct RecordingConsumer {
+    frames: Arc<Mutex<Vec<LogFrame>>>,
+}
+
+impl RecordingConsumer {
+    fn frames(&self) -> Vec<LogFrame> {
+        self.frames
+            .lock()
+            .expect("フレーム記録用 Mutex は poison しないこと")
+            .clone()
+    }
+}
+
+impl LogConsumer for RecordingConsumer {
+    fn accept<'a>(&'a self, record: &'a LogFrame) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            self.frames
+                .lock()
+                .expect("フレーム記録用 Mutex は poison しないこと")
+                .push(record.clone());
+        })
+    }
+}
+
+/// `WaitFor::message_on_stdout` が Linux で成立すること。
+#[tokio::test]
+async fn log_wait_message_on_stdout_succeeds() {
+    let container = GenericImage::new("alpine", "latest")
+        .with_wait_for(WaitFor::message_on_stdout("READY_OUT"))
+        .with_cmd(["sh", "-c", "echo READY_OUT; tail -f /dev/null"])
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect("stdout ログ待機付き alpine の起動に失敗した");
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// `WaitFor::message_on_stderr` が Linux で成立すること。
+///
+/// Docker Engine API は STREAM_TYPE で stderr を分離するため、本当に stderr のみに反応する。
+#[tokio::test]
+async fn log_wait_message_on_stderr_succeeds() {
+    let container = GenericImage::new("alpine", "latest")
+        .with_wait_for(WaitFor::message_on_stderr("READY_ERR"))
+        .with_cmd(["sh", "-c", "echo READY_ERR >&2; tail -f /dev/null"])
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect("stderr ログ待機付き alpine の起動に失敗した");
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// `WaitFor::message_on_either_std` が Linux で成立すること。
+#[tokio::test]
+async fn log_wait_message_on_either_std_succeeds() {
+    let container = GenericImage::new("alpine", "latest")
+        .with_wait_for(WaitFor::message_on_either_std("READY_EITHER"))
+        .with_cmd(["sh", "-c", "echo READY_EITHER >&2; tail -f /dev/null"])
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect("either ログ待機付き alpine の起動に失敗した");
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// `stdout_to_vec` / `stderr_to_vec` が multiplex demux で stdout / stderr を分離すること。
+#[tokio::test]
+async fn stdout_to_vec_separates_stdout_stderr() {
+    // stderr のマーカーを待機する (stdout の後に出力されるため、両方 flushed 済み)。
+    let container = GenericImage::new("alpine", "latest")
+        .with_wait_for(WaitFor::message_on_stderr("SEP_ERR"))
+        .with_cmd([
+            "sh",
+            "-c",
+            "echo SEP_OUT; echo SEP_ERR >&2; tail -f /dev/null",
+        ])
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect("起動に失敗した");
+
+    let stdout = container
+        .stdout_to_vec()
+        .await
+        .expect("stdout_to_vec に失敗した");
+    let stderr = container
+        .stderr_to_vec()
+        .await
+        .expect("stderr_to_vec に失敗した");
+
+    assert!(
+        contains(&stdout, b"SEP_OUT"),
+        "stdout に SEP_OUT を含むこと: {stdout:?}"
+    );
+    assert!(
+        !contains(&stdout, b"SEP_ERR"),
+        "stdout に SEP_ERR を含まないこと (demux 分離): {stdout:?}"
+    );
+    assert!(
+        contains(&stderr, b"SEP_ERR"),
+        "stderr に SEP_ERR を含むこと: {stderr:?}"
+    );
+    assert!(
+        !contains(&stderr, b"SEP_OUT"),
+        "stderr に SEP_OUT を含まないこと (demux 分離): {stderr:?}"
+    );
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// `stdout(true)` の follow リーダーがログを読むこと。
+#[tokio::test]
+async fn stdout_follow_stream_reads_marker() {
+    use tokio::io::AsyncReadExt;
+
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["sh", "-c", "echo FOLLOW_MARKER; tail -f /dev/null"])
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect("起動に失敗した");
+
+    let mut reader = container.stdout(true);
+    let mut buf = [0u8; 4096];
+    let mut acc = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !contains(&acc, b"FOLLOW_MARKER") {
+        let n = tokio::time::timeout(Duration::from_secs(5), reader.read(&mut buf))
+            .await
+            .expect("follow 読み取りがタイムアウトした")
+            .expect("follow 読み取りに失敗した");
+        if n == 0 {
+            break;
+        }
+        acc.extend_from_slice(&buf[..n]);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "FOLLOW_MARKER が現れない: {acc:?}"
+        );
+    }
+    assert!(
+        contains(&acc, b"FOLLOW_MARKER"),
+        "follow リーダーが FOLLOW_MARKER を読むこと: {acc:?}"
+    );
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// `with_log_consumer` が stdout / stderr フレームを行単位で受信すること。
+#[tokio::test]
+async fn log_consumer_receives_stdout_and_stderr_frames() {
+    let consumer = RecordingConsumer::default();
+    let recorded = consumer.clone();
+    let container = GenericImage::new("alpine", "latest")
+        .with_wait_for(WaitFor::message_on_stderr("CONS_ERR"))
+        .with_cmd([
+            "sh",
+            "-c",
+            "echo CONS_OUT; echo CONS_ERR >&2; tail -f /dev/null",
+        ])
+        .with_log_consumer(consumer)
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect("起動に失敗した");
+
+    // consumer 配信は非同期なので、両フレームが届くまでポーリングする。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let frames = recorded.frames();
+        let has_out = frames
+            .iter()
+            .any(|f| matches!(f, LogFrame::StdOut(b) if contains(b, b"CONS_OUT")));
+        let has_err = frames
+            .iter()
+            .any(|f| matches!(f, LogFrame::StdErr(b) if contains(b, b"CONS_ERR")));
+        if has_out && has_err {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "CONS_OUT / CONS_ERR フレームが届かない: {frames:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// メッセージが出ないままコンテナが終了すると、Log 待機が EOF (EndOfStream) で失敗すること。
+///
+/// Linux は `logs_terminated` (demux 終端) 経路で EOF を判定する。
+#[tokio::test]
+async fn log_wait_end_of_stream_when_message_never_appears() {
+    let err = GenericImage::new("alpine", "latest")
+        .with_wait_for(WaitFor::message_on_stdout("NEVER_APPEARS"))
+        .with_cmd(["sh", "-c", "echo something; exit 0"])
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect_err("メッセージが出ずコンテナが終了するため失敗すること");
+    assert!(
+        err.to_string().contains("end of stream"),
+        "EndOfStream エラーであること: {err}"
+    );
+}
+
+/// stdout から `RESTART_MARKER-` 行の最後 (最新) を抽出する。
+fn last_restart_marker(stdout: &[u8]) -> Option<Vec<u8>> {
+    let mut found = None;
+    for line in stdout.split(|&b| b == b'\n') {
+        if line.starts_with(b"RESTART_MARKER-") {
+            found = Some(line.to_vec());
+        }
+    }
+    found
+}
+
+/// 再 start (stop → start) 後にログストリームが再武装され、新実行のログが読めること。
+///
+/// Docker Engine の `POST /containers/{id}/start` は create 時の cmd を再実行する。
+/// タイムスタンプ入り marker を使い、初回 start の marker A と再起動後の marker B が
+/// 異なることを通じて、新規リーダーが新バッファに接続されることを検証する。
+#[tokio::test]
+async fn restart_rearms_log_stream() {
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd([
+            "sh",
+            "-c",
+            "echo RESTART_MARKER-$(date +%s%N); tail -f /dev/null",
+        ])
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect("起動に失敗した");
+
+    // 初回実行の marker A を取得する。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let marker_a = loop {
+        let stdout = container
+            .stdout_to_vec()
+            .await
+            .expect("stdout_to_vec に失敗した");
+        if let Some(marker) = last_restart_marker(&stdout) {
+            break marker;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "初回実行の marker が読めない: {stdout:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+
+    container
+        .stop_with_timeout(Some(0))
+        .await
+        .expect("stop に失敗した");
+    container.start().await.expect("再起動に失敗した");
+
+    // 再起動後は cmd が再実行され、marker A とは異なる marker B が新規リーダーで読めること。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let stdout = container
+            .stdout_to_vec()
+            .await
+            .expect("stdout_to_vec に失敗した");
+        if let Some(marker_b) = last_restart_marker(&stdout)
+            && marker_b != marker_a
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "再起動後に異なる marker が読めない: {stdout:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// stop 後に新規 follow リーダーを開くと EOF に達すること (demux 終了の間接観測)。
+///
+/// demux / consumer タスクの完了フラグは `pub(crate)` で統合テストからは読めないため、
+/// 新規リーダーがハングせず EOF (`read_to_end` 完了) になることで終了を観測する。
+#[tokio::test]
+async fn stop_terminates_log_stream_for_new_reader() {
+    use tokio::io::AsyncReadExt;
+
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["sh", "-c", "echo BEFORE_STOP; tail -f /dev/null"])
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect("起動に失敗した");
+
+    container
+        .stop_with_timeout(Some(0))
+        .await
+        .expect("stop に失敗した");
+
+    // stop 後の新規 follow リーダーはハングせず EOF に達すること。
+    let mut reader = container.stdout(true);
+    let mut all = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), reader.read_to_end(&mut all))
+        .await
+        .expect("stop 後の新規リーダーが EOF に達しない (タイムアウト)")
+        .expect("読み取りに失敗した");
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// 同期 API (`blocking` feature) の `stdout_to_vec` / `stderr_to_vec` が Linux で動作すること。
+#[cfg(feature = "blocking")]
+#[test]
+fn sync_stdout_to_vec_returns_logs() {
+    use shiguredo_container::SyncRunner;
+
+    // AsyncRunner::start と同名のため、UFCS で SyncRunner::start を明示する。
+    let request = GenericImage::new("alpine", "latest")
+        .with_wait_for(WaitFor::message_on_stderr("SYNC_ERR"))
+        .with_cmd([
+            "sh",
+            "-c",
+            "echo SYNC_OUT; echo SYNC_ERR >&2; tail -f /dev/null",
+        ])
+        .with_startup_timeout(Duration::from_secs(15));
+    let container = SyncRunner::start(request).expect("同期起動に失敗した");
+
+    let stdout = container.stdout_to_vec().expect("stdout_to_vec に失敗した");
+    let stderr = container.stderr_to_vec().expect("stderr_to_vec に失敗した");
+    assert!(
+        contains(&stdout, b"SYNC_OUT"),
+        "同期 stdout が SYNC_OUT を含むこと: {stdout:?}"
+    );
+    assert!(
+        contains(&stderr, b"SYNC_ERR"),
+        "同期 stderr が SYNC_ERR を含むこと: {stderr:?}"
+    );
+
+    container.rm().expect("rm に失敗した");
 }

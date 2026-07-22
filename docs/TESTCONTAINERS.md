@@ -6,7 +6,7 @@
 |:--|:--|
 | 本家 | testcontainers-rs 0.27.3 (bollard 経由の Docker Engine) |
 | Apple Container | 本クレートの macOS 実装 (XPC)。メイン対象 |
-| Docker Engine API | 本クレートの Linux 実装 (`DockerClient` + unix socket)。ライフサイクルは配線済み、ログ/copy 等は未実装 |
+| Docker Engine API | 本クレートの Linux 実装 (`DockerClient` + unix socket)。ライフサイクルとログ関連は配線済み、copy 等は未実装 |
 
 判定ルール (Apple Container / Docker Engine API 列):
 
@@ -44,17 +44,19 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 
 ## Docker Engine API (Linux) の現状
 
-`DockerClient` (`src/core/client/docker_client.rs`) は `/var/run/docker.sock` 向けに pull / create / start / stop / remove / exec / inspect を実装済みである。`ContainerAsync` の Linux 分岐はライフサイクル系 (`ports` / `exec` / `stop` / `is_running` / `rm` / Drop / `start` 再起動 / `container_state`) を配線済みである。
+`DockerClient` (`src/core/client/docker_client.rs`) は `/var/run/docker.sock` 向けに pull / create / start / stop / remove / exec / inspect / logs を実装済みである。`ContainerAsync` の Linux 分岐はライフサイクル系 (`ports` / `exec` / `stop` / `is_running` / `rm` / Drop / `start` 再起動 / `container_state`) とログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `with_log_consumer`) を配線済みである。
+
+ログは `GET /containers/{id}/logs` を `spawn_blocking` 内の `UnixStream` で叩き、multiplex フレームを demux して stdout / stderr 別の共有バッファ (ストリームあたり 8 MiB、上限超過時は先頭から drop) へ書き込む。`stdout` / `stderr` のリーダーはこの共有バッファを独立オフセットで読む。
 
 その結果:
 
 - `AsyncRunner::pull_image` / `AsyncRunner::start` は動く (既定の空 ready 条件なら完結する)
 - `ports` / `exec` (exit code のみ) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
-- ログ FD を渡さないため `stdout` / `stderr` は空リーダーになる。`WaitFor::Log` / `with_log_consumer` は start 時に明示エラー
+- `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
 - `get_bridge_ip_address` / `copy_file_from` / `exit_code` / `ExitWaitStrategy` は未実装エラーのまま
 - `ImageExt` の一部 (`with_network` / `with_platform` / `with_cap_add` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` 等) は start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み
 
-README の Linux 注意書きと合わせて読むこと。残ギャップはログ・copy・ネットワーク詳細などである。
+README の Linux 注意書きと合わせて読むこと。残ギャップは copy・ネットワーク詳細などである。
 
 ## サマリ (Apple Container)
 
@@ -83,8 +85,8 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはロ
 
 件数の厳密集計より、現状の読み方を優先する。
 
-- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
-- **未配線・未実装が残るもの**: ログ FD / Log 待機 / `with_log_consumer`、`copy_file_from` / `copy_to`、`get_bridge_ip_address`、`exit_code`、`ExitWaitStrategy`、exec の stdout/stderr・Env 本対応
+- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
+- **未配線・未実装が残るもの**: `copy_file_from` / `copy_to`、`get_bridge_ip_address`、`exit_code`、`ExitWaitStrategy`、exec の stdout/stderr・Env 本対応
 - **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_cap_*` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
 
 Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差を同時に見せるためのものである。
@@ -134,7 +136,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_shm_size(self, bytes)` | あり | 対応 | 未実装 | XPC `ContainerCfg.shmSize` に反映 / Docker: start 時に明示エラー (設定構築に未配線) |
 | `with_startup_timeout(self, timeout)` | あり | 対応 | 対応 | `container_req.startup_timeout()` を `AsyncRunner::start` で参照し、`None` の場合は `DEFAULT_STARTUP_TIMEOUT` (60 秒) を使用 |
 | `with_working_dir(self, dir)` | あり | 対応 | 対応 | XPC `initProcess.workingDirectory` に反映 |
-| `with_log_consumer(self, consumer)` | あり | 対応 | 未実装 | macOS: `containerLogs` の FD から行単位で `LogFrame` を配信。Linux: ログ FD が無いため start 時に明示エラー |
+| `with_log_consumer(self, consumer)` | あり | 対応 | 対応 | macOS: `containerLogs` の FD から行単位で `LogFrame` を配信。Linux: demux 済み共有バッファから行単位で `LogFrame` を配信 (行末 `\n` / `\r` 剥がし、終端後の非改行残余は破棄) |
 | `with_host_config_modifier(self, modifier)` | あり | なし | なし | 元の crate が bollard の型を引数に取る API のため、shiguredo では未対応 |
 | `with_reuse(self, reuse)` (feature) | あり | なし | なし | feature = `reusable-containers`。shiguredo には型も feature も無し (21 章参照) |
 | `with_user(self, user)` | あり | 部分対応 | 対応 | 数値 `uid` / `uid:gid` は XPC `initProcess.user.id` に、名前形式は `user.raw.userString` として渡される。Apple container 実行環境によっては非 root UID が機能しない |
@@ -151,7 +153,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `async fn start(self) -> Result<ContainerAsync<I>>` | あり | 対応 | 対応 | XPC `containerCreate` → `containerBootstrap` → `containerStartProcess` → `containerCopyIn`。create / bootstrap / start_process / copy 失敗時の `remove` は Keep 尊重。ログ FD 取得失敗かつ `WaitFor::Log` ありの経路だけは Keep ゲート無しで `remove` し明示エラー (10.1 のログ待機とも関連) / Docker: resolve / pull / create / start / `container_state` / ready まで完結。Log 待機は未対応 |
+| `async fn start(self) -> Result<ContainerAsync<I>>` | あり | 対応 | 対応 | XPC `containerCreate` → `containerBootstrap` → `containerStartProcess` → `containerCopyIn`。create / bootstrap / start_process / copy 失敗時の `remove` は Keep 尊重。ログ FD 取得失敗かつ `WaitFor::Log` ありの経路だけは Keep ゲート無しで `remove` し明示エラー (10.1 のログ待機とも関連) / Docker: resolve / pull / create / start / `container_state` / ready まで完結。logs ストリーム (`?follow=true`) を起動し Log 待機 / `with_log_consumer` に対応。起動失敗時は Log 待機 / consumer 使用なら fail-fast + remove、それ以外は warn + 空リーダー |
 | `async fn pull_image(self) -> Result<ContainerRequest<I>>` | あり | 対応 | 対応 | XPC `imagePull` / Docker: DockerClient::pull_image を直接呼ぶ |
 
 ## 4. `SyncRunner` トレイト (`runners::SyncRunner`, feature = `blocking`)
@@ -207,10 +209,10 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `async fn start(&self) -> Result<()>` | あり | 対応 | 対応 | 停止済みなら Docker `start`。macOS は bootstrap + start_process。`exec_after_start` を実行 / Docker: start_container 配線済み |
 | `async fn stop(&self) -> Result<()>` | あり | 対応 | 対応 | `stop_with_timeout(None)` のエイリアス。timeout 30 秒固定 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | macOS: `Some(0)` は即時 SIGKILL、`Some(t)` (`t < 0`) は長時間 SIGTERM、`None` は 30 秒 SIGTERM / Docker: `None`・負値は `t=30`、`Some(t>=0)` は `t={t}`。404 は冪等成功 |
-| `fn stdout(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 部分対応 | `containerLogs` から取得した stdout FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF) / Docker: Linux の start はログ FD を渡さないため空リーダー |
-| `fn stderr(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 部分対応 | `containerLogs` から取得した stderr FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF)。Apple の 2 本目 FD は bootlog / Docker: Linux の start はログ FD を渡さないため空リーダー |
-| `async fn stdout_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 部分対応 | `stdout` リーダーから全文読み出す / Docker: Linux の start はログ FD を渡さないため空リーダー |
-| `async fn stderr_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 部分対応 | `stderr` リーダーから全文読み出す / Docker: Linux の start はログ FD を渡さないため空リーダー |
+| `fn stdout(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 対応 | `containerLogs` から取得した stdout FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF) / Docker: demux 済み共有バッファを独立オフセットで読む。`follow=true` は 8 MiB リング (上限超過で先頭 drop、`warn` ログのみ)、`follow=false` は呼び出しごとに新規 HTTP セッション |
+| `fn stderr(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 対応 | `containerLogs` から取得した stderr FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF)。Apple の 2 本目 FD は bootlog / Docker: demux が STREAM_TYPE で分離するため本当に stderr のみ。8 MiB リング (上限超過で先頭 drop) |
+| `async fn stdout_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stdout` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る |
+| `async fn stderr_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stderr` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る |
 | `Drop` impl | あり | 部分対応 | 対応 | Runtime 内は専用 std スレッドで `remove_blocking` を非 join で実行 (drop 復帰時点の削除完了は非保証)、Runtime 外は呼び出しスレッドで `remove_blocking` を同期実行 (試行終了まで待つが成功は非保証)。いずれも失敗は `tracing::error` のみで呼び出し側には届かない。常に `force=true`、404 は冪等成功。Keep ゲートは Drop のみで、明示 `rm` は Keep でも削除する |
 
 ## 7. `Container<I>` (sync 版, feature = `blocking`)
@@ -232,10 +234,10 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `pause(&self) -> Result<()>` (async 宣言だが sync impl) | あり | なし | なし | XPCRoute に pause 系が無いためシグネチャ自体を削除済み / Docker: Docker Engine には pause API はあるが未導入 |
 | `unpause(&self) -> Result<()>` | あり | なし | なし | 同上 / Docker: 同上 |
 | `rm(mut self) -> Result<()>` | あり | 対応 | 対応 | Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
-| `stdout(&self, follow) -> Box<dyn BufRead + Send>` | あり | 対応 | 部分対応 | ContainerAsync の同期リーダーへ委譲。`follow=true` は追記ポーリング (呼び出しスレッドをブロック) / Docker: Linux の start はログ FD を渡さないため空リーダー |
-| `stderr(&self, follow) -> Box<dyn BufRead + Send>` | あり | 対応 | 部分対応 | ContainerAsync の同期リーダーへ委譲。`follow=true` は追記ポーリング (呼び出しスレッドをブロック) / Docker: Linux の start はログ FD を渡さないため空リーダー |
-| `stdout_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 部分対応 | `ContainerAsync::stdout_to_vec` に委譲 / Docker: Linux の start はログ FD を渡さないため空リーダー |
-| `stderr_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 部分対応 | `ContainerAsync::stderr_to_vec` に委譲 / Docker: Linux の start はログ FD を渡さないため空リーダー |
+| `stdout(&self, follow) -> Box<dyn BufRead + Send>` | あり | 対応 | 対応 | ContainerAsync の同期リーダーへ委譲。`follow=true` は追記ポーリング (呼び出しスレッドをブロック) / Docker: 共有バッファを `park_timeout(50ms)` 周期起床で読む。`follow=false` は 1-shot 取得 |
+| `stderr(&self, follow) -> Box<dyn BufRead + Send>` | あり | 対応 | 対応 | ContainerAsync の同期リーダーへ委譲。`follow=true` は追記ポーリング (呼び出しスレッドをブロック) / Docker: 共有バッファを `park_timeout(50ms)` 周期起床で読む。`follow=false` は 1-shot 取得 |
+| `stdout_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `ContainerAsync::stdout_to_vec` に委譲 / Docker: 1-shot 取得 |
+| `stderr_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `ContainerAsync::stderr_to_vec` に委譲 / Docker: 1-shot 取得 |
 | `is_running(&self) -> Result<bool>` | あり | 対応 | 対応 | `ContainerAsync::is_running` に委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `container_state(&self) -> Result<ContainerState>` | なし | shiguredo 拡張 | 対応 | `ContainerAsync::container_state` に委譲。本家 0.27 に無し / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `exit_code(&self) -> Result<Option<i64>>` | あり | 部分対応 | 未実装 | `ContainerAsync::exit_code` に委譲。6.1 委譲・制約同じ (観測済みキャッシュのみ) / Docker: 公開 API は未実装エラー (バックグラウンド wait 無し) |
@@ -293,15 +295,15 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `WaitFor::Nothing` | あり | 対応 | 対応 |  |
-| `WaitFor::Log(LogWaitStrategy)` | あり | 対応 | 未実装 | 動作は 10.1 参照 / Docker: ログ FD が無いため start 時に明示エラー |
+| `WaitFor::Log(LogWaitStrategy)` | あり | 対応 | 対応 | 動作は 10.1 参照 / Docker: logs ストリーム (demux + 共有バッファ) で成立。EOF は demux 終端 (`logs_terminated`) で判定 |
 | `WaitFor::Duration { length }` | あり | 対応 | 対応 |  |
 | `WaitFor::Healthcheck(HealthWaitStrategy)` | あり | 未実装 (XPC 制約) | 未実装 | 動作は 10.2 参照 / 両 OS とも即 HealthCheckNotConfigured |
 | `WaitFor::Http(Box<HttpWaitStrategy>)` (feature) | あり | 対応 | 部分対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決は可能。Log 待機との併用は未対応 |
 | `WaitFor::Exit(ExitWaitStrategy)` | あり | 対応 | 未実装 | Docker: Linux では即時未実装エラー |
-| `pub fn message_on_stdout(msg)` | あり | 対応 | 未実装 | Docker: start 時に明示エラー (ログ FD 無し) |
-| `pub fn message_on_stderr(msg)` | あり | 対応 | 未実装 | Docker: start 時に明示エラー (ログ FD 無し) |
-| `pub fn message_on_either_std(msg)` | あり | 対応 | 未実装 | Docker: start 時に明示エラー (ログ FD 無し) |
-| `pub fn log(strategy)` | あり | 対応 | 未実装 | Docker: start 時に明示エラー (ログ FD 無し) |
+| `pub fn message_on_stdout(msg)` | あり | 対応 | 対応 | Docker: demux が stdout を分離するため本当に stdout のみに反応 |
+| `pub fn message_on_stderr(msg)` | あり | 対応 | 対応 | Docker: demux が stderr を分離するため本当に stderr のみに反応 |
+| `pub fn message_on_either_std(msg)` | あり | 対応 | 対応 | Docker: stdout / stderr 両ストリームを並行照合 |
+| `pub fn log(strategy)` | あり | 対応 | 対応 | Docker: logs ストリームで成立 |
 | `pub fn healthcheck() -> WaitFor` | あり | 未実装 (XPC 制約) | 未実装 | Docker: 常に HealthCheckNotConfigured (OS 非依存) |
 | `pub fn http(strategy)` (feature) | あり | 対応 | 部分対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決は可能 |
 | `pub fn exit(strategy)` | あり | 対応 | 未実装 | Docker: ExitWaitStrategy 自体が Linux 未実装のため、生成しても待機時にエラー |
@@ -316,12 +318,12 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `pub fn stdout(msg)` | あり | 対応 | 部分対応 | Docker: Linux の start はログ FD を渡さないため空リーダー |
-| `pub fn stderr(msg)` | あり | 対応 | 部分対応 | Docker: Linux の start はログ FD を渡さないため空リーダー |
-| `pub fn stdout_or_stderr(msg)` | あり | 対応 | 部分対応 | Docker: Linux の start はログ FD を渡さないため空リーダー |
+| `pub fn stdout(msg)` | あり | 対応 | 対応 | Docker: demux 済み stdout 共有バッファを照合 |
+| `pub fn stderr(msg)` | あり | 対応 | 対応 | Docker: demux 済み stderr 共有バッファを照合 |
+| `pub fn stdout_or_stderr(msg)` | あり | 対応 | 対応 | Docker: stdout / stderr 両共有バッファを並行照合 |
 | `pub fn new(source, msg)` | あり | 対応 | 対応 |  |
 | `pub fn with_times(mut self, n)` | あり | 対応 | 対応 |  |
-| `wait_until_ready` impl | あり | 部分対応 | 部分対応 | チャンク境界・非 UTF-8 対応。stderr 側は VM bootlog を指す点に注意 (アプリの stderr は stdout 側ログに混流する) / Docker: ログ FD が無いため非空メッセージは通常 startup timeout まで待つ |
+| `wait_until_ready` impl | あり | 部分対応 | 対応 | チャンク境界・非 UTF-8 対応。stderr 側は VM bootlog を指す点に注意 (アプリの stderr は stdout 側ログに混流する) / Docker: demux が STREAM_TYPE で分離するため stderr は本当に stderr のみ。EOF は demux 終端 (`logs_terminated`) → DRAIN_GRACE → `EndOfStream` で判定 |
 
 ### 10.2 `HealthWaitStrategy`
 
@@ -375,12 +377,12 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `LogFrame::StdOut(Bytes)` | あり | 対応 | 部分対応 | Docker: Linux の start はログ FD を渡さないため空リーダー |
-| `LogFrame::StdErr(Bytes)` | あり | 対応 | 部分対応 | Docker: Linux の start はログ FD を渡さないため空リーダー |
+| `LogFrame::StdOut(Bytes)` | あり | 対応 | 対応 | Docker: demux の STREAM_TYPE=1 フレームから生成 |
+| `LogFrame::StdErr(Bytes)` | あり | 対応 | 対応 | Docker: demux の STREAM_TYPE=2 フレームから生成 |
 | `LogFrame::source(&self) -> LogSource` | あり | 対応 | 対応 |  |
 | `LogFrame::bytes(&self) -> &Bytes` | あり | 対応 | 対応 |  |
-| `LogSource::StdOut` | あり | 対応 | 部分対応 | Docker: Linux の start はログ FD を渡さないため空リーダー |
-| `LogSource::StdErr` | あり | 対応 | 部分対応 | Docker: Linux の start はログ FD を渡さないため空リーダー |
+| `LogSource::StdOut` | あり | 対応 | 対応 | Docker: demux 済み stdout 共有バッファを照合 |
+| `LogSource::StdErr` | あり | 対応 | 対応 | Docker: demux 済み stderr 共有バッファを照合 |
 | `LogSource::BothStd` | あり | 対応 | 対応 | 待機戦略では stdout / stderr を並行照合。出現回数は両ストリーム合算 |
 | `LogSource::includes_stdout()` (`pub(super)`) | あり | なし | なし | 内部メソッド |
 | `LogSource::includes_stderr()` (`pub(super)`) | あり | なし | なし | 内部メソッド |
