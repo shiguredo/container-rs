@@ -137,7 +137,16 @@ impl LogWaitStrategy {
             let mut progressed = false;
             let mut total = 0usize;
             for (reader, matcher) in readers.iter_mut().zip(matchers.iter_mut()) {
-                let n = reader.read(&mut chunk).await.map_err(WaitLogError::Io)?;
+                // 各リーダーをタイムアウト付きで読む。Notify ベースのリーダー (Linux) は
+                // 無音ストリームで永久に Pending になるため、タイムアウトを「今回はデータ無し」
+                // (n=0) として扱い次のリーダーへ進む。これにより `BothStd` で片方のストリームが
+                // 無音でも他方の照合が遅延しない。データが流れている場合は通知がタイムアウトより
+                // 先に read を起床させるため、検出遅延は発生しない。
+                let n = match tokio::time::timeout(POLL_INTERVAL, reader.read(&mut chunk)).await {
+                    Ok(Ok(n)) => n,
+                    Ok(Err(e)) => return Err(WaitLogError::Io(e).into()),
+                    Err(_elapsed) => 0,
+                };
                 let count = if n > 0 {
                     progressed = true;
                     collected.push(&chunk[..n]);
