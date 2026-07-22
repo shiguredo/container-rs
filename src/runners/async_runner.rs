@@ -452,16 +452,31 @@ async fn cleanup_on_ready_failure<I: Image>(
 }
 
 /// `ContainerRequest<I>` から Docker Engine API 用の `ContainerConfig` を構築する。
+///
+/// `with_mapped_port` の明示マッピングに加え、`Image::expose_ports` /
+/// `with_exposed_port` で宣言されたポートのうち未登場のものを
+/// `host_port = 0`（Docker Engine のランダム割当）で追加する。
 #[cfg(target_os = "linux")]
 fn build_container_config<I: Image>(
     req: &ContainerRequest<I>,
 ) -> crate::core::client::ContainerConfig {
+    use crate::core::containers::request::PortMapping;
+
+    // 明示マッピングをベースに、未登場の expose を host_port 0 で足す。
+    let mut ports = req.ports().cloned().unwrap_or_default();
+    for &exposed in req.expose_ports() {
+        if ports.iter().any(|p| p.container_port() == exposed) {
+            continue;
+        }
+        ports.push(PortMapping::new(0, exposed));
+    }
+
     crate::core::client::ContainerConfig {
         image: req.descriptor(),
         entrypoint: req.entrypoint().map(|e| vec![e.to_string()]),
         cmd: req.cmd().map(|c| c.into_owned()).collect(),
         env: req.env_vars().map(|(k, v)| format!("{k}={v}")).collect(),
-        ports: req.ports().cloned().unwrap_or_default(),
+        ports,
         mounts: req.mounts().cloned().collect(),
         name: req.container_name().clone(),
         labels: req.labels().clone(),
@@ -736,5 +751,104 @@ mod tests {
             "一時ファイルの mode が 0o600 であること"
         );
         // ガード破棄で後始末する。
+    }
+}
+
+/// Linux: `build_container_config` のポート合成を検証する。
+///
+/// 既存の macOS 向け `mod tests` は触らず、別モジュールとして追加する。
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use crate::core::ports::IntoContainerPort;
+    use crate::{ContainerRequest, GenericImage, ImageExt};
+
+    use super::build_container_config;
+
+    #[test]
+    fn expose_only_gets_host_port_zero() {
+        // with_exposed_port のみのとき host_port 0 の PortMapping が 1 本載ること。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_exposed_port(80.tcp())
+            .with_cmd(["sleep", "1"]);
+        let cfg = build_container_config(&req);
+        assert_eq!(cfg.ports.len(), 1, "expose のみなら 1 本であること");
+        assert_eq!(cfg.ports[0].container_port(), 80.tcp());
+        assert_eq!(
+            cfg.ports[0].host_port(),
+            0,
+            "create 前は Docker ランダム割当用に host_port が 0 であること"
+        );
+    }
+
+    #[test]
+    fn mapped_port_takes_precedence_over_same_expose() {
+        // 同番号・同プロトコルでは明示マッピングが優先され、自動追加されないこと。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_exposed_port(80.tcp())
+            .with_mapped_port(18080, 80.tcp())
+            .with_cmd(["sleep", "1"]);
+        let cfg = build_container_config(&req);
+        assert_eq!(cfg.ports.len(), 1, "重複は 1 本に収まること");
+        assert_eq!(cfg.ports[0].host_port(), 18080);
+        assert_eq!(cfg.ports[0].container_port(), 80.tcp());
+    }
+
+    #[test]
+    fn mapped_zero_takes_precedence_over_same_expose() {
+        // host_port 0 の明示マッピングも同判定で優先され、expose で二重にならないこと。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_exposed_port(80.tcp())
+            .with_mapped_port(0, 80.tcp())
+            .with_cmd(["sleep", "1"]);
+        let cfg = build_container_config(&req);
+        assert_eq!(cfg.ports.len(), 1, "重複は 1 本に収まること");
+        assert_eq!(cfg.ports[0].host_port(), 0);
+        assert_eq!(cfg.ports[0].container_port(), 80.tcp());
+    }
+
+    #[test]
+    fn different_protocol_same_number_keeps_both() {
+        // 同番号・異プロトコルは別エントリとして両方載ること。
+        // with_exposed_port は GenericImage のメソッドなので mapped より先に呼ぶ。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_exposed_port(80.udp())
+            .with_mapped_port(18080, 80.tcp())
+            .with_cmd(["sleep", "1"]);
+        let cfg = build_container_config(&req);
+        assert_eq!(cfg.ports.len(), 2, "異 proto は 2 本であること");
+        assert!(
+            cfg.ports
+                .iter()
+                .any(|p| p.container_port() == 80.tcp() && p.host_port() == 18080),
+            "tcp の明示マッピングが残ること"
+        );
+        assert!(
+            cfg.ports
+                .iter()
+                .any(|p| p.container_port() == 80.udp() && p.host_port() == 0),
+            "udp の expose が host_port 0 で追加されること"
+        );
+    }
+
+    #[test]
+    fn empty_expose_leaves_ports_empty() {
+        // expose も mapped も無いとき ports は空のままであること。
+        let req: ContainerRequest<GenericImage> =
+            GenericImage::new("alpine", "latest").with_cmd(["sleep", "1"]);
+        let cfg = build_container_config(&req);
+        assert!(cfg.ports.is_empty(), "ports が空であること");
+    }
+
+    #[test]
+    fn duplicate_expose_collapses_to_one_mapping() {
+        // 同じ ContainerPort を二重に expose しても PortMapping は 1 本であること。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_exposed_port(80.tcp())
+            .with_exposed_port(80.tcp())
+            .with_cmd(["sleep", "1"]);
+        let cfg = build_container_config(&req);
+        assert_eq!(cfg.ports.len(), 1, "二重 expose は 1 本に収まること");
+        assert_eq!(cfg.ports[0].host_port(), 0);
+        assert_eq!(cfg.ports[0].container_port(), 80.tcp());
     }
 }

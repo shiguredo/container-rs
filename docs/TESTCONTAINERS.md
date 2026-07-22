@@ -101,7 +101,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `copy_to_sources(&self) -> impl IntoIterator<Item = &CopyToContainer>` | あり | 対応 | 未実装 | `AsyncRunner::start` で XPC `containerCopyIn` を呼ぶ / Docker: トレイト getter は呼べるが、非空なら runner が start 前に明示エラー。実コピーは未実装 |
 | `entrypoint(&self) -> Option<&str>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
 | `cmd(&self) -> impl IntoIterator<Item = impl Into<Cow<'_, str>>>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
-| `expose_ports(&self) -> &[ContainerPort]` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通。公開は `ports()` / mapped port 経由 |
+| `expose_ports(&self) -> &[ContainerPort]` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通。未マッピングの expose は create 時に `HostPort=0` の `PortBindings` に載せる。macOS: 事前に空きホストポートを割当 |
 | `exec_after_start(&self, cs: ContainerState) -> Result<Vec<ExecCommand>>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
 | `exec_before_ready(&self, cs: ContainerState) -> Result<Vec<ExecCommand>>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
 
@@ -265,7 +265,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `cmd(&self) -> impl Iterator<...>` | あり | 対応 | 対応 | `either` 依存を回避した実装 |
 | `descriptor(&self) -> String` | あり | 対応 | 対応 | `name:tag` |
 | `ready_conditions(&self) -> Vec<WaitFor>` | あり | 対応 | 対応 | `ContainerRequest::ready_conditions` オーバーライドが有効 (2 章参照) |
-| `expose_ports(&self) -> &[ContainerPort]` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通。公開は `ports()` / mapped port 経由 |
+| `expose_ports(&self) -> &[ContainerPort]` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通。未マッピングの expose は create 時に `HostPort=0` の `PortBindings` に載せる。macOS: 事前に空きホストポートを割当 |
 | `exec_after_start(&self, cs) -> Result<Vec<ExecCommand>>` | あり | 対応 | 対応 |  |
 | `startup_timeout(&self) -> Option<Duration>` | あり | 対応 | 対応 | `AsyncRunner::start` で `DEFAULT_STARTUP_TIMEOUT` の代替として使用 |
 | `working_dir(&self) -> Option<&str>` | あり | 対応 | 対応 |  |
@@ -724,7 +724,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `pub fn new<S: Into<String>>(name, tag)` | あり | 対応 | 対応 |  |
 | `pub fn with_wait_for(mut, WaitFor)` | あり | 対応 | 対応 |  |
 | `pub fn with_entrypoint(mut, &str)` | あり | 対応 | 対応 |  |
-| `pub fn with_exposed_port(mut, ContainerPort)` | あり | 対応 | 対応 |  |
+| `pub fn with_exposed_port(mut, ContainerPort)` | あり | 対応 | 対応 | Docker: 未マッピングなら `HostPort=0` の `PortBindings` に載せる。macOS: 事前に空きホストポートを割当 |
 | `impl Image for GenericImage` | あり | 対応 | 対応 |  |
 
 ## 20. `GenericBuildableImage` / `BuildableImage` / `BuildContextBuilder` / `BuildImageOptions`

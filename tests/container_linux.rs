@@ -273,3 +273,28 @@ async fn log_wait_fails_fast_on_start() {
         "明示メッセージであること: {err}"
     );
 }
+
+/// `with_exposed_port` だけでホストポートが割当されること。
+///
+/// create 時は host_port 0 を Docker に渡し、起動後に非 0 の割当結果を回収する。
+/// Linux CI (`test-linux-docker`) で必ず実行する。
+#[tokio::test]
+async fn alpine_exposed_port_auto_mapping() {
+    use shiguredo_container::core::IntoContainerPort;
+
+    let container = GenericImage::new("alpine", "latest")
+        .with_exposed_port(80.tcp())
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .start()
+        .await
+        .expect("公開ポート付き alpine コンテナの起動に失敗した");
+
+    let host_port = container
+        .get_host_port_ipv4(80.tcp())
+        .await
+        .expect("公開ホストポートの解決に失敗した");
+    assert_ne!(host_port, 0, "ホストポートが割り当てられること");
+
+    container.stop_with_timeout(Some(0)).await.ok();
+    container.rm().await.ok();
+}

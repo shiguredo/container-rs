@@ -11,5 +11,7 @@
 
 ## develop
 
+- [FIX] Linux で `with_exposed_port` / `Image::expose_ports` がホストポート公開に反映されないのを修正する
+  - @voluntas
 
 ### misc
