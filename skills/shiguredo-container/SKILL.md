@@ -232,7 +232,10 @@ let container = GenericImage::new("nginx", "latest")
 
 ## コンテナの掃除契約
 
-- 既定 (`TESTCONTAINERS_COMMAND` 未設定または `remove`) では `ContainerAsync` / `Container` の Drop 時にコンテナを削除する。削除は専用スレッド上のブロッキング API で行い、ユーザーの tokio Runtime 終了に依存しない
+- 既定 (`TESTCONTAINERS_COMMAND` 未設定または `remove`) では `ContainerAsync` / `Container` の Drop 時にコンテナを削除する。削除経路は Drop が Runtime 内か外かで異なる
+  - Runtime 内 Drop (`Handle::try_current()` が `Ok`): 削除を専用 std スレッドに依頼するが、`drop` からの復帰時点で削除完了は保証しない。`drop` 直後にプロセスが終了すると削除が中断され、残コンテナになり得る
+  - Runtime 外 Drop: 呼び出しスレッドで削除試行が終わるまで待つ (成功は保証しない。失敗は `tracing::error` に記録するのみで呼び出し側には届かない)
+- 削除の完了待ち、または成否の `Result` が必要なら明示 `rm()` を使う (async は `rm().await`、sync は `rm()`)。明示 `rm()` は `TESTCONTAINERS_COMMAND=keep` でも削除する (Drop の `keep` ゲートとは非対称)
 - `TESTCONTAINERS_COMMAND=keep` のときは Drop で削除しない (調査用に残す)
 - `stop()` は LogConsumer 配信を止める。明示的な `rm()` を呼ばなくても Drop で削除される (keep 除く)
 - `watchdog` feature (macOS): 外部 reaper プロセス方式。テストプロセスが SIGKILL / SIGSEGV で死んでも pipe EOF を検知して登録済みコンテナを `container rm --force` する。`keep` 指定時は登録しない

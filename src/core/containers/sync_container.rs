@@ -121,6 +121,24 @@ impl<I: Image> Container<I> {
         block_on_runtime(self.runtime(), self.inner().exit_code())?
     }
 
+    /// コンテナを削除する (同期版)。
+    ///
+    /// 共有ランタイム上で `ContainerAsync::rm` に委譲する。
+    ///
+    /// # 完了保証
+    ///
+    /// `Ok` を返した時点で削除処理は終わっており、成否は返り値の `Result` として
+    /// 呼び出し側に届く。`Drop` は復帰時点の削除完了を保証しないため、削除完了を
+    /// 待ちたい・成否を扱いたい場合はこのメソッドを使うこと。`Err` の場合は削除は
+    /// 完了しておらず (共有ランタイムへの再入検出では削除試行自体が未実行、
+    /// バックエンドからのエラーでは試行済み失敗)、いずれも `Drop` の削除経路
+    /// (Runtime 内なら fire-and-forget、Runtime 外なら同期試行) に委ねられ、
+    /// 最終的な完了時点は保証されない。
+    ///
+    /// # `keep` ゲートとの非対称
+    ///
+    /// このメソッドは `TESTCONTAINERS_COMMAND=keep` でも削除する。`keep` ゲートは
+    /// `Drop` の削除のみを抑止する仕様であり、明示 `rm` には効かない。
     pub fn rm(mut self) -> Result<()> {
         if let Some(inner) = self.inner.take() {
             block_on_runtime(self.runtime(), inner.rm())??;
@@ -213,6 +231,18 @@ impl<I: Image> Container<I> {
     }
 }
 
+/// Drop 時のコンテナ削除は内部の `ContainerAsync` の `Drop` に委譲する。
+///
+/// # 完了保証
+///
+/// 委譲先の `ContainerAsync::drop` は削除完了を保証しない。素の `#[test]` からの
+/// 通常利用のように Runtime 外で drop されるときは呼び出しスレッドで削除試行が
+/// 終わるまで待つが成功は保証されず、ユーザーの tokio Runtime 内で drop される
+/// ときは削除が専用 std スレッドへ丸投げされ `drop` 復帰時点で完了しない場合がある。
+/// 詳細な契約は `ContainerAsync` の `Drop` を参照すること。
+///
+/// 削除の完了待ち、または成否の `Result` が必要なら明示 `rm()` を使うこと。
+/// `TESTCONTAINERS_COMMAND=keep` のときは Drop は削除しない (明示 `rm` は削除する)。
 impl<I: Image> Drop for Container<I> {
     fn drop(&mut self) {
         // `ContainerAsync` の Drop に任せる。`rm` 呼出済みなら `inner` は None。

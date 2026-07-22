@@ -605,6 +605,21 @@ impl<I: Image> ContainerAsync<I> {
         }
     }
 
+    /// コンテナを削除する。
+    ///
+    /// # 完了保証
+    ///
+    /// `rm().await` の復帰時点で削除処理は終わっており、成否は返り値の `Result` として
+    /// 呼び出し側に届く。`Drop` は復帰時点の削除完了を保証しないため、削除完了を待ちたい
+    /// または成否を扱いたい場合はこのメソッドを使うこと。
+    ///
+    /// # `keep` ゲートとの非対称
+    ///
+    /// このメソッドは `TESTCONTAINERS_COMMAND=keep` でも削除する。`keep` ゲートは
+    /// `Drop` の削除のみを抑止する仕様であり、明示 `rm` には効かない。
+    ///
+    /// 削除は常に `force=true` で行われるため実行中でもそのまま削除でき、バックエンドが
+    /// 404 を返した場合 (既に削除済み) は冪等成功として扱う。
     #[cfg(target_os = "macos")]
     pub async fn rm(mut self) -> Result<()> {
         match &self.client {
@@ -615,6 +630,20 @@ impl<I: Image> ContainerAsync<I> {
     }
 
     /// コンテナを削除する。
+    ///
+    /// # 完了保証
+    ///
+    /// `rm().await` の復帰時点で削除処理は終わっており、成否は返り値の `Result` として
+    /// 呼び出し側に届く。`Drop` は復帰時点の削除完了を保証しないため、削除完了を待ちたい
+    /// または成否を扱いたい場合はこのメソッドを使うこと。
+    ///
+    /// # `keep` ゲートとの非対称
+    ///
+    /// このメソッドは `TESTCONTAINERS_COMMAND=keep` でも削除する。`keep` ゲートは
+    /// `Drop` の削除のみを抑止する仕様であり、明示 `rm` には効かない。
+    ///
+    /// 削除は常に `force=true` で行われるため実行中でもそのまま削除でき、バックエンドが
+    /// 404 を返した場合 (既に削除済み) は冪等成功として扱う。
     #[cfg(target_os = "linux")]
     pub async fn rm(mut self) -> Result<()> {
         match &self.client {
@@ -1020,6 +1049,20 @@ async fn remove_copy_out_temp(path: &std::path::Path) {
     }
 }
 
+/// Drop 時のコンテナ削除の契約。
+///
+/// # 完了保証
+///
+/// - Runtime 内 Drop (`Handle::try_current()` が `Ok`): 削除を専用 std スレッドで
+///   `remove_blocking` として実行するが join しない。`drop` からの復帰時点で削除完了は
+///   保証されず、`drop` 直後にプロセスが終了すると削除が中断され得る
+/// - Runtime 外 Drop: 呼び出しスレッドで `remove_blocking` を同期実行し、試行の
+///   終了までは待つ。成功は保証しない
+///
+/// いずれの経路でも失敗は `tracing::error` にのみ記録され、呼び出し側には届かない。
+/// 完了を待ちたい、または成否を `Result` で扱いたい場合は明示 `rm().await` を使うこと。
+/// `TESTCONTAINERS_COMMAND=keep` のときは Drop は削除しない (明示 `rm` は `keep` でも
+/// 削除する。ゲートは非対称)。
 impl<I: Image> Drop for ContainerAsync<I> {
     fn drop(&mut self) {
         // LogConsumer 配信タスクへ停止を通知する。
@@ -1072,7 +1115,7 @@ impl<I: Image> Drop for ContainerAsync<I> {
 
         match tokio::runtime::Handle::try_current() {
             Ok(_) => {
-                // ランタイム内ではユーザー Runtime に依存しない専用スレッドで削除する。
+                // Runtime 内ではユーザー Runtime に依存しない専用スレッドで削除する。
                 // async spawn だと Runtime 終了でタスクが破棄されコンテナが孤立し得る。
                 // join しない (async Drop からの join は deadlock し得る)。
                 std::thread::spawn(move || {
@@ -1082,8 +1125,8 @@ impl<I: Image> Drop for ContainerAsync<I> {
                 });
             }
             Err(_) => {
-                // ランタイム外 (sync Container の drop や Runtime 破棄後)。
-                // 呼び出し復帰までに削除完了を保証するため同期的に実行する。
+                // Runtime 外 (sync Container の drop や Runtime 破棄後)。
+                // 呼び出しスレッドで同期実行し、試行終了まで待つ。契約詳細は Drop の rustdoc 参照。
                 if let Err(e) = remove() {
                     tracing::error!("failed to remove container on drop: {e}");
                 }
