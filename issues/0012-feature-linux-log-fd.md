@@ -2,7 +2,7 @@
 
 - Priority: High
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-07-23
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-log-stream
 - Polished: 2026-07-23
@@ -337,3 +337,58 @@ macOS 側の `refresh_log_streams` (旧 `refresh_log_fds`) は **中身を変更
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass する
 - [ ] `cargo fmt --all -- --check` が pass する
 - [ ] Linux CI (`test-linux-docker`) で追加した統合テストが実行され pass する
+
+## 解決方法
+
+Linux (Docker Engine API) バックエンドでログストリームを実装し、`stdout` / `stderr` /
+`stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `with_log_consumer` / 同期 API を有効化した。
+
+### 実装内容
+
+- 新規モジュール `src/core/client/docker_log_stream.rs` を追加。`GET /containers/{id}/logs`
+  を `spawn_blocking` 内の `UnixStream` で叩き、multiplex フレーム (8 バイトヘッダ) を demux
+  して stdout / stderr 別の共有バッファ (ストリームあたり 8 MiB・drop-oldest) へ書き込む。
+- 共有バッファに対する独立オフセットリーダーを実装。async は `tokio::sync::Notify` で追記待ち
+  (register → buffer 再確認の順で wakeup 取りこぼしを防止)、sync は `park_timeout(50ms)` 周期起床。
+  `follow=false` は呼び出しごとに新規 `?follow=false&tail=all` セッションを張る 1-shot 経路。
+- `ContainerLogSource` enum (`None` / `Fd` (macOS) / `DockerStream` (Linux)) を導入し、
+  `stdout_fd` / `stderr_fd` フィールドを `log_source: Mutex<ContainerLogSource>` に統合。
+  `log_consumers` フィールドの macOS cfg を外し Linux でも保持。
+- `AsyncRunner::start` の Linux 分岐でログセッションと LogConsumer 配信タスクを起動。
+  Log 待機 / consumer 使用時は起動失敗を fail-fast + remove、それ以外は warn + 空リーダーに
+  フォールバック。既存の Log 待機 / with_log_consumer の fail-fast は撤去。
+- `LogWaitStrategy` の EOF 判定を `exit_code_hint().is_some() || logs_terminated()` に拡張
+  (macOS 挙動は不変、Linux は demux 終端で EOF 判定)。
+- 再 start 時の `refresh_log_streams` (Linux) を実装 (旧停止 → restart → 新セッション →
+  差し替え → consumer 再 spawn)。`refresh_log_fds` からリネーム (macOS は中身不変)。
+- `stop` / `rm` / `Drop` の Linux 分岐でログストリームを停止 (`log_stop` + `UnixStream` の
+  `shutdown`)。Drop は Runtime 外で demux / consumer 完了を最大 1 秒 polling。
+- レスポンスデコーダは `max_body_size` を無制限化 (既定 10 MiB のままだと合計ログ 10 MiB 超で
+  ストリームが強制終了するため)。`max_buffer_size` は 64 KiB 据え置き。
+
+### 変更ファイル
+
+- `src/core/client/docker_log_stream.rs` (新規)、`src/core/client.rs`、`src/core/client/docker_client.rs`
+- `src/core/containers/async_container.rs`、`src/core/containers/sync_container.rs` (doc)
+- `src/runners/async_runner.rs`、`src/core/wait/log_strategy.rs`
+- `tests/container_linux.rs`、`docs/TESTCONTAINERS.md`、`README.md`、`CHANGES.md`、`Cargo.toml` (tokio `sync` feature)
+
+### 追加したテスト
+
+- 単体テスト (`docker_log_stream.rs` 内 `#[cfg(test)]`): demux (正常 / チャンク境界 / 未知
+  STREAM_TYPE / 巨大 payload_len / 空 payload)、共有バッファ (drop-oldest / skip / 独立オフセット /
+  Notify 起床 / terminated EOF)、Content-Type 判定、異常 EOF でハングしない回帰 (実 Unix ソケット)、
+  デコーダ無制限の回帰。
+- 統合テスト (`tests/container_linux.rs`): `message_on_stdout` / `message_on_stderr` /
+  `message_on_either_std` 成立、`stdout_to_vec` / `stderr_to_vec` の demux 分離、follow リーダー、
+  `with_log_consumer` フレーム受信、`EndOfStream` (EOF)、再 start 再武装 (タイムスタンプ marker)、
+  stop 後の新規リーダー EOF、同期 API。既存 `log_wait_fails_fast_on_start` は削除。
+
+### 検証
+
+- `cargo clippy --all-targets --all-features -- -D warnings` が macOS / Linux (`x86_64-unknown-linux-gnu`)
+  両ターゲットで pass。`cargo fmt --all --check` pass。macOS の単体テスト pass。
+- Linux 統合テストは Linux CI (`test-linux-docker`) で実行される (ローカルは macOS のためクロスコンパイル検証のみ)。
+- `/review-diff-code` を 3 周実施し、致命的・重要の指摘 (oneshot 異常 EOF ビジーループ、デコーダ
+  10 MiB 制限、起動エラー握り潰し、demux panic ガード、consumer 完了フラグ競合、fallback fd 安全性、
+  キャンセル時タスクリーク、テスト欠落等) を全て修正済み。
