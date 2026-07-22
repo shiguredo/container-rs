@@ -5,21 +5,19 @@
 
 pub mod exec;
 
+use std::{fmt, net::IpAddr, pin::Pin, sync::Arc, time::Duration};
+
+#[cfg(target_os = "macos")]
 use std::{
-    fmt,
-    future::Future,
-    net::IpAddr,
     os::fd::{FromRawFd, RawFd},
-    pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
-    time::Duration,
 };
 
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, ReadBuf};
+use tokio::io::{AsyncBufRead, AsyncReadExt};
+
+#[cfg(target_os = "macos")]
+use tokio::io::{AsyncBufReadExt, ReadBuf};
 
 use crate::core::client::Client;
 use crate::core::host::Host;
@@ -38,6 +36,21 @@ use crate::{
 use crate::core::copy::CopyFromContainerError;
 use crate::core::error::ExecError;
 
+/// ログ取得元の抽象。macOS は FD、Linux は Docker ログストリーム。
+///
+/// 両バックエンドのログ取得元を単一の型で保持するため enum で表現する。
+/// `Arc` を含む variant があるため Copy にはならない。
+pub(crate) enum ContainerLogSource {
+    /// ログ未取得 (空リーダーを返す)。macOS の `logs()` 失敗時や Linux のフォールバック時。
+    None,
+    /// macOS (XPC): `containerLogs` が返した stdout / stderr の FD。Drop で close する。
+    #[cfg(target_os = "macos")]
+    Fd { stdout: RawFd, stderr: RawFd },
+    /// Linux (Docker Engine API): demux されたログストリーム。
+    #[cfg(target_os = "linux")]
+    DockerStream(Arc<crate::core::client::docker_log_stream::DockerLogsHandle>),
+}
+
 /// 実行中コンテナ。Drop で削除される。
 pub struct ContainerAsync<I: Image> {
     id: String,
@@ -48,15 +61,13 @@ pub struct ContainerAsync<I: Image> {
     /// `containerWait` を別スレッドで待ち、終了時に値が入る。
     /// 世代番号で再 start 後の旧スレッド書き込みを破棄する。
     wait_state: Arc<std::sync::Mutex<WaitState>>,
-    /// macOS (XPC) で `containerLogs` から取得した stdout / stderr の FD。
-    /// 再 start 時に差し替えるため Mutex で保持し、Drop で close する。
-    stdout_fd: std::sync::Mutex<Option<RawFd>>,
-    stderr_fd: std::sync::Mutex<Option<RawFd>>,
-    /// LogConsumer 配信タスクへの停止指示。再 start 時に新旧を差し替える。
+    /// ログ取得元。再 start 時に差し替えるため Mutex で保持する。
+    log_source: std::sync::Mutex<ContainerLogSource>,
+    /// LogConsumer 配信タスクへの停止指示 (macOS)。再 start 時に新旧を差し替える。
+    #[cfg(target_os = "macos")]
     log_stop: std::sync::Mutex<Arc<AtomicBool>>,
     /// LogConsumer 再 spawn 用に保持する。未登録なら None。
-    /// Linux では再 start 経路が未実装のため保持しない (初期 spawn の Arc はタスク側が持つ)。
-    #[cfg(target_os = "macos")]
+    /// 再 start (`refresh_log_streams`) で consumer を再武装するため両プラットフォームで保持する。
     log_consumers: Option<Arc<Vec<Box<dyn crate::core::logs::consumer::LogConsumer + 'static>>>>,
 }
 
@@ -127,56 +138,53 @@ pub(crate) fn spawn_exit_code_waiter(
 
 impl<I: Image> ContainerAsync<I> {
     /// `AsyncRunner::start` から呼ばれる構築子。
+    ///
+    /// macOS は `log_source` の FD から LogConsumer 配信タスクを spawn する。
+    /// Linux は配信タスクの spawn は `AsyncRunner::start` 側で行い、ここでは `log_consumers`
+    /// の保持だけを行う (再 start 時の再武装用)。
     pub(crate) fn new(
         id: String,
         client: Client,
-        mut image: ContainerRequest<I>,
+        #[cfg_attr(target_os = "linux", expect(unused_mut))] mut image: ContainerRequest<I>,
         wait_state: Arc<std::sync::Mutex<WaitState>>,
-        stdout_fd: Option<RawFd>,
-        stderr_fd: Option<RawFd>,
+        log_source: ContainerLogSource,
+        #[cfg(target_os = "linux")] log_consumers: Option<
+            Arc<Vec<Box<dyn crate::core::logs::consumer::LogConsumer + 'static>>>,
+        >,
     ) -> Self {
-        let log_consumers = std::mem::take(&mut image.log_consumers);
-        let has_consumers = !log_consumers.is_empty();
-        let log_stop = Arc::new(AtomicBool::new(false));
-        // consumer には独立オフセットのリーダーを渡す。
+        // macOS: image から consumer を取り出し、FD に接続して配信タスクを spawn する。
         // 以前は FD 自体を consumer に奪わせていたため、`stdout()` / ログ待機戦略が
         // 空リーダーになり、`with_log_consumer` + `message_on_stdout` の併用が必ず失敗していた。
+        // 今は独立オフセットのリーダーを渡すため FD は消費しない。
         #[cfg(target_os = "macos")]
-        let log_consumers = if has_consumers {
-            let consumers = Arc::new(log_consumers);
-            spawn_log_consumer_task(
-                stdout_fd,
-                log_stop.clone(),
-                consumers.clone(),
-                crate::core::logs::LogFrame::StdOut,
-            );
-            spawn_log_consumer_task(
-                stderr_fd,
-                log_stop.clone(),
-                consumers.clone(),
-                crate::core::logs::LogFrame::StdErr,
-            );
-            // 再 start 時の再 spawn 用に保持する。
-            Some(consumers)
-        } else {
-            None
+        let (log_stop, log_consumers) = {
+            let taken = std::mem::take(&mut image.log_consumers);
+            let log_stop = Arc::new(AtomicBool::new(false));
+            let log_consumers = if taken.is_empty() {
+                None
+            } else {
+                let consumers = Arc::new(taken);
+                let (out_fd, err_fd) = match &log_source {
+                    ContainerLogSource::Fd { stdout, stderr } => (Some(*stdout), Some(*stderr)),
+                    ContainerLogSource::None => (None, None),
+                };
+                spawn_log_consumer_task(
+                    out_fd,
+                    log_stop.clone(),
+                    consumers.clone(),
+                    crate::core::logs::LogFrame::StdOut,
+                );
+                spawn_log_consumer_task(
+                    err_fd,
+                    log_stop.clone(),
+                    consumers.clone(),
+                    crate::core::logs::LogFrame::StdErr,
+                );
+                // 再 start 時の再 spawn 用に保持する。
+                Some(consumers)
+            };
+            (std::sync::Mutex::new(log_stop), log_consumers)
         };
-        #[cfg(target_os = "linux")]
-        if has_consumers {
-            let consumers = Arc::new(log_consumers);
-            spawn_log_consumer_task(
-                stdout_fd,
-                log_stop.clone(),
-                consumers.clone(),
-                crate::core::logs::LogFrame::StdOut,
-            );
-            spawn_log_consumer_task(
-                stderr_fd,
-                log_stop.clone(),
-                consumers,
-                crate::core::logs::LogFrame::StdErr,
-            );
-        }
 
         Self {
             id,
@@ -184,10 +192,9 @@ impl<I: Image> ContainerAsync<I> {
             client,
             dropped: false,
             wait_state,
-            stdout_fd: std::sync::Mutex::new(stdout_fd),
-            stderr_fd: std::sync::Mutex::new(stderr_fd),
-            log_stop: std::sync::Mutex::new(log_stop),
+            log_source: std::sync::Mutex::new(log_source),
             #[cfg(target_os = "macos")]
+            log_stop,
             log_consumers,
         }
     }
@@ -432,13 +439,14 @@ impl<I: Image> ContainerAsync<I> {
             c.start_process(&self.id).await?;
             self.reset_wait_state_and_respawn();
             // 再 bootstrap 後は旧ログ FD が死ぬため、差し替えて consumer も再武装する。
-            self.refresh_log_fds(c).await?;
+            self.refresh_log_streams(c).await?;
         }
         #[cfg(target_os = "linux")]
         if let Client::Linux(c) = &self.client
             && !c.container_state(&self.id).await?.running
         {
-            c.start_container(&self.id).await?;
+            // 旧ログストリーム停止 → コンテナ再起動 → 新ログストリーム起動を一括で行う。
+            self.refresh_log_streams(c).await?;
         }
 
         // exec_after_start を実行する (本家の公開 start() と同じ構造)。
@@ -460,12 +468,12 @@ impl<I: Image> ContainerAsync<I> {
         spawn_exit_code_waiter(self.id.clone(), self.wait_state.clone(), generation);
     }
 
-    /// 再 start 後にログ FD を再取得し、旧 FD を close、LogConsumer を再 spawn する。
+    /// 再 start 後にログ FD を再取得し、旧 FD を close、LogConsumer を再 spawn する (macOS)。
     ///
     /// `logs()` が成功するまで旧 `log_stop` / FD / consumer は維持する。
     /// 失敗時は部分更新せず `Err` を返す (呼び出し側の `start` が失敗する)。
     #[cfg(target_os = "macos")]
-    async fn refresh_log_fds(
+    async fn refresh_log_streams(
         &self,
         client: &crate::core::client::xpc_client::XpcClient,
     ) -> Result<()> {
@@ -486,40 +494,111 @@ impl<I: Image> ContainerAsync<I> {
             new_stop.clone();
 
         {
-            let mut stdout = self
-                .stdout_fd
+            let mut source = self
+                .log_source
                 .lock()
-                .expect("stdout file descriptor mutex must not be poisoned while refreshing logs");
-            if let Some(old) = stdout.replace(new_out) {
-                unsafe { libc::close(old) };
+                .expect("log source mutex must not be poisoned while refreshing logs");
+            // 旧 FD を close。
+            if let ContainerLogSource::Fd { stdout, stderr } = *source {
+                unsafe { libc::close(stdout) };
+                unsafe { libc::close(stderr) };
             }
-        }
-        {
-            let mut stderr = self
-                .stderr_fd
-                .lock()
-                .expect("stderr file descriptor mutex must not be poisoned while refreshing logs");
-            if let Some(old) = stderr.replace(new_err) {
-                unsafe { libc::close(old) };
-            }
+            *source = ContainerLogSource::Fd {
+                stdout: new_out,
+                stderr: new_err,
+            };
         }
 
         if let Some(consumers) = &self.log_consumers {
-            let out = *self.stdout_fd.lock().expect(
-                "stdout file descriptor mutex must not be poisoned while restarting consumers",
-            );
-            let err = *self.stderr_fd.lock().expect(
-                "stderr file descriptor mutex must not be poisoned while restarting consumers",
-            );
             spawn_log_consumer_task(
-                out,
+                Some(new_out),
                 new_stop.clone(),
                 consumers.clone(),
                 crate::core::logs::LogFrame::StdOut,
             );
             spawn_log_consumer_task(
-                err,
+                Some(new_err),
                 new_stop,
+                consumers.clone(),
+                crate::core::logs::LogFrame::StdErr,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// 再 start 時にログストリームを再武装する (Linux)。
+    ///
+    /// race 防止と失敗時整合性のため、旧経路の停止を `start_container` (docker restart) より
+    /// 前に行う。新規セッション起動に失敗した場合は `stop_container` で巻き戻し、docker 側だけ
+    /// 動いて log が古い、というちぐはぐな状態を残さない。
+    ///
+    /// 旧経路を先に停止する設計上、新規セッション起動に失敗して `Err` を返した時点で
+    /// `log_source` は停止済み (terminated) の旧ハンドルを指したままになる。この場合ログは
+    /// 即 EOF になるが、次回の `start()` で再 refresh されて回復する。
+    #[cfg(target_os = "linux")]
+    async fn refresh_log_streams(
+        &self,
+        client: &crate::core::client::docker_client::DockerClient,
+    ) -> Result<()> {
+        use crate::core::client::docker_log_stream::spawn_log_consumer_task;
+
+        // 1. 旧経路の停止 (docker restart より前)。
+        let old_handle = {
+            let source = self
+                .log_source
+                .lock()
+                .expect("log source mutex must not be poisoned while refreshing logs");
+            match &*source {
+                ContainerLogSource::DockerStream(handle) => Some(handle.clone()),
+                ContainerLogSource::None => None,
+            }
+        };
+        if let Some(handle) = &old_handle {
+            handle.stop();
+        }
+
+        // 2. コンテナ再起動。
+        client.start_container(&self.id).await?;
+
+        // ログストリームが無かったコンテナは再起動後もログ無しでよい。
+        if old_handle.is_none() {
+            return Ok(());
+        }
+
+        // 3. 新規 follow=true セッション起動。失敗時は docker 側を止めて巻き戻す。
+        let new_handle = match client.spawn_log_session(&self.id).await {
+            Ok(handle) => handle,
+            Err(e) => {
+                if let Err(stop_err) = client.stop(&self.id, Some(0)).await {
+                    tracing::warn!(
+                        "failed to stop container after log refresh failure: {stop_err}"
+                    );
+                }
+                return Err(e);
+            }
+        };
+
+        // 4-5. log_source を新ストリームに差し替え。
+        {
+            let mut source = self
+                .log_source
+                .lock()
+                .expect("log source mutex must not be poisoned while refreshing logs");
+            *source = ContainerLogSource::DockerStream(new_handle.clone());
+        }
+
+        // 6. consumer 再 spawn。
+        if let Some(consumers) = &self.log_consumers {
+            spawn_log_consumer_task(
+                new_handle.clone(),
+                new_handle.stdout_stream(),
+                consumers.clone(),
+                crate::core::logs::LogFrame::StdOut,
+            );
+            spawn_log_consumer_task(
+                new_handle.clone(),
+                new_handle.stderr_stream(),
                 consumers.clone(),
                 crate::core::logs::LogFrame::StdErr,
             );
@@ -533,17 +612,37 @@ impl<I: Image> ContainerAsync<I> {
     }
 
     pub async fn stop_with_timeout(&self, timeout_seconds: Option<i32>) -> Result<()> {
-        // LogConsumer 配信を止める (Drop を待たない)。
-        self.log_stop
-            .lock()
-            .expect("log stop mutex must not be poisoned while stopping container")
-            .store(true, Ordering::Relaxed);
+        // LogConsumer 配信 / ログストリームを止める (Drop を待たない)。
+        self.stop_log_delivery();
 
         match &self.client {
             #[cfg(target_os = "macos")]
             Client::MacOs(c) => c.stop(&self.id, timeout_seconds).await,
             #[cfg(target_os = "linux")]
             Client::Linux(c) => c.stop(&self.id, timeout_seconds).await,
+        }
+    }
+
+    /// ログ配信を停止する。macOS は停止フラグ、Linux はログストリームの `shutdown`。
+    ///
+    /// `stop` / `rm` / `Drop` の共通前置きとして呼ぶ。
+    fn stop_log_delivery(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            self.log_stop
+                .lock()
+                .expect("log stop mutex must not be poisoned while stopping log delivery")
+                .store(true, Ordering::Relaxed);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let source = self
+                .log_source
+                .lock()
+                .expect("log source mutex must not be poisoned while stopping log delivery");
+            if let ContainerLogSource::DockerStream(handle) = &*source {
+                handle.stop();
+            }
         }
     }
 
@@ -563,6 +662,28 @@ impl<I: Image> ContainerAsync<I> {
             .lock()
             .expect("wait state mutex must not be poisoned while reading exit code")
             .exit_code()
+    }
+
+    /// ログストリームが終端したか (Linux の demux 完了)。macOS では常に false。
+    ///
+    /// `LogWaitStrategy` の EOF 判定に使う。macOS は `exit_code_hint` 経路で EOF 判定するため
+    /// 常に false を返す。Linux は demux タスクが TCP EOF / 停止を検出すると true になる。
+    pub(crate) fn logs_terminated(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            false
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let source = self
+                .log_source
+                .lock()
+                .expect("log source mutex must not be poisoned while checking log termination");
+            match &*source {
+                ContainerLogSource::DockerStream(handle) => handle.logs_terminated(),
+                ContainerLogSource::None => false,
+            }
+        }
     }
 
     /// バックグラウンドの `containerWait` が観測した exit code を返す (未終了なら `None`)。
@@ -646,6 +767,9 @@ impl<I: Image> ContainerAsync<I> {
     /// 404 を返した場合 (既に削除済み) は冪等成功として扱う。
     #[cfg(target_os = "linux")]
     pub async fn rm(mut self) -> Result<()> {
+        // 共通の前置き: remove より前にログストリームを止める。remove の await 中に
+        // demux 側の完了フラグが立つため、後続の Drop での polling がほぼ即抜けする。
+        self.stop_log_delivery();
         match &self.client {
             Client::Linux(c) => c.remove(&self.id, true).await?,
         }
@@ -653,41 +777,85 @@ impl<I: Image> ContainerAsync<I> {
         Ok(())
     }
 
-    /// stdout のリーダーを返す。macOS (XPC) では `containerLogs` から取得した FD を読む。
+    /// stdout のリーダーを返す。
     ///
-    /// リーダーは独立した読み取り位置を持ち、常にログ先頭から読む。
-    /// `follow = true` のときは末尾到達後も追記をポーリングする。init プロセス終了または
-    /// コンテナ Drop / ログ FD 差し替えで EOF する。
+    /// # macOS
+    ///
+    /// `containerLogs` から取得した FD を pread で読む。リーダーは独立した読み取り位置を
+    /// 持ち、常にログ先頭から読む。`follow = true` のときは末尾到達後も追記をポーリングする。
+    /// init プロセス終了またはコンテナ Drop / ログ FD 差し替えで EOF する。
+    ///
+    /// # Linux
+    ///
+    /// `follow = true` では demux 開始時点以降のログを先頭から読む。8 MiB 上限で先頭が
+    /// drop された場合は取りこぼした旨を `warn` ログに出力し、読み進みは継続する。再 start
+    /// (`refresh_log_streams`) で demux 開始時点が更新されると、以前に取得した古いリーダーは
+    /// 新バッファに接続されない。`follow = false` では呼び出しごとに新規 HTTP セッションを
+    /// 張って現時点までの全ログを取得するため、ループで N 回呼ばず結果を保持すること。
     pub fn stdout(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>> {
-        fd_reader_or_empty(
-            *self
-                .stdout_fd
-                .lock()
-                .expect("stdout file descriptor mutex must not be poisoned while reading logs"),
-            follow,
-            self.log_stop_flag(),
-            self.wait_state.clone(),
-        )
+        let source = self
+            .log_source
+            .lock()
+            .expect("log source mutex must not be poisoned while reading logs");
+        match &*source {
+            ContainerLogSource::None => Box::pin(tokio::io::BufReader::new(tokio::io::empty())),
+            #[cfg(target_os = "macos")]
+            ContainerLogSource::Fd { stdout, .. } => fd_reader_or_empty(
+                Some(*stdout),
+                follow,
+                self.log_stop_flag(),
+                self.wait_state.clone(),
+            ),
+            #[cfg(target_os = "linux")]
+            ContainerLogSource::DockerStream(handle) => {
+                if follow {
+                    Box::pin(handle.stdout_reader())
+                } else {
+                    Box::pin(tokio::io::BufReader::new(handle.stdout_oneshot()))
+                }
+            }
+        }
     }
 
-    /// stderr のリーダーを返す。macOS (XPC) では `containerLogs` から取得した FD を読む。
+    /// stderr のリーダーを返す。
     ///
-    /// リーダーは独立した読み取り位置を持ち、常にログ先頭から読む。
-    /// `follow = true` のときは末尾到達後も追記をポーリングする。init プロセス終了または
-    /// コンテナ Drop / ログ FD 差し替えで EOF する。
+    /// # macOS
     ///
+    /// `containerLogs` から取得した FD を pread で読む。リーダーは独立した読み取り位置を
+    /// 持ち、常にログ先頭から読む。`follow = true` のときは末尾到達後も追記をポーリングする。
     /// 注意: Apple container の `containerLogs` が返す 2 本目の FD は VM の bootlog であり、
     /// アプリケーションの stderr は stdout 側のログに混流する。
+    ///
+    /// # Linux
+    ///
+    /// Docker Engine API は STREAM_TYPE で stdout / stderr を分離するため、`follow = true`
+    /// では本当に stderr のみのログを読む (macOS より優れた挙動)。8 MiB 上限で先頭が
+    /// drop された場合は取りこぼした旨を `warn` ログに出力し、読み進みは継続する。
+    /// `follow = false` では呼び出しごとに新規 HTTP セッションを張って現時点までの全ログを
+    /// 取得するため、ループで N 回呼ばず結果を保持すること。
     pub fn stderr(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>> {
-        fd_reader_or_empty(
-            *self
-                .stderr_fd
-                .lock()
-                .expect("stderr file descriptor mutex must not be poisoned while reading logs"),
-            follow,
-            self.log_stop_flag(),
-            self.wait_state.clone(),
-        )
+        let source = self
+            .log_source
+            .lock()
+            .expect("log source mutex must not be poisoned while reading logs");
+        match &*source {
+            ContainerLogSource::None => Box::pin(tokio::io::BufReader::new(tokio::io::empty())),
+            #[cfg(target_os = "macos")]
+            ContainerLogSource::Fd { stderr, .. } => fd_reader_or_empty(
+                Some(*stderr),
+                follow,
+                self.log_stop_flag(),
+                self.wait_state.clone(),
+            ),
+            #[cfg(target_os = "linux")]
+            ContainerLogSource::DockerStream(handle) => {
+                if follow {
+                    Box::pin(handle.stderr_reader())
+                } else {
+                    Box::pin(tokio::io::BufReader::new(handle.stderr_oneshot()))
+                }
+            }
+        }
     }
 
     /// stdout の同期リーダーを返す。
@@ -695,16 +863,30 @@ impl<I: Image> ContainerAsync<I> {
     /// リーダーは独立した読み取り位置を持ち、常にログ先頭から読む。
     /// `follow = true` のときは末尾到達後も追記をポーリングする。呼び出しスレッドをブロックするため、
     /// tokio ランタイムワーカー上や LogConsumer コールバックからは呼ばないこと。
+    /// Linux の `follow = true` は `tokio::sync::Notify` を使わず `park_timeout(50ms)` で周期起床する。
     pub(crate) fn stdout_sync(&self, follow: bool) -> Box<dyn std::io::BufRead + Send> {
-        fd_reader_or_empty_sync(
-            *self
-                .stdout_fd
-                .lock()
-                .expect("stdout file descriptor mutex must not be poisoned while reading logs"),
-            follow,
-            self.log_stop_flag(),
-            self.wait_state.clone(),
-        )
+        let source = self
+            .log_source
+            .lock()
+            .expect("log source mutex must not be poisoned while reading logs");
+        match &*source {
+            ContainerLogSource::None => Box::new(std::io::BufReader::new(std::io::empty())),
+            #[cfg(target_os = "macos")]
+            ContainerLogSource::Fd { stdout, .. } => fd_reader_or_empty_sync(
+                Some(*stdout),
+                follow,
+                self.log_stop_flag(),
+                self.wait_state.clone(),
+            ),
+            #[cfg(target_os = "linux")]
+            ContainerLogSource::DockerStream(handle) => {
+                if follow {
+                    Box::new(std::io::BufReader::new(handle.stdout_sync_reader()))
+                } else {
+                    Box::new(std::io::BufReader::new(handle.stdout_sync_oneshot()))
+                }
+            }
+        }
     }
 
     /// stderr の同期リーダーを返す。
@@ -712,22 +894,37 @@ impl<I: Image> ContainerAsync<I> {
     /// リーダーは独立した読み取り位置を持ち、常にログ先頭から読む。
     /// `follow = true` のときは末尾到達後も追記をポーリングする。呼び出しスレッドをブロックするため、
     /// tokio ランタイムワーカー上や LogConsumer コールバックからは呼ばないこと。
+    /// Linux の `follow = true` は `tokio::sync::Notify` を使わず `park_timeout(50ms)` で周期起床する。
     ///
     /// 注意: Apple container の `containerLogs` が返す 2 本目の FD は VM の bootlog であり、
     /// アプリケーションの stderr は stdout 側のログに混流する。
     pub(crate) fn stderr_sync(&self, follow: bool) -> Box<dyn std::io::BufRead + Send> {
-        fd_reader_or_empty_sync(
-            *self
-                .stderr_fd
-                .lock()
-                .expect("stderr file descriptor mutex must not be poisoned while reading logs"),
-            follow,
-            self.log_stop_flag(),
-            self.wait_state.clone(),
-        )
+        let source = self
+            .log_source
+            .lock()
+            .expect("log source mutex must not be poisoned while reading logs");
+        match &*source {
+            ContainerLogSource::None => Box::new(std::io::BufReader::new(std::io::empty())),
+            #[cfg(target_os = "macos")]
+            ContainerLogSource::Fd { stderr, .. } => fd_reader_or_empty_sync(
+                Some(*stderr),
+                follow,
+                self.log_stop_flag(),
+                self.wait_state.clone(),
+            ),
+            #[cfg(target_os = "linux")]
+            ContainerLogSource::DockerStream(handle) => {
+                if follow {
+                    Box::new(std::io::BufReader::new(handle.stderr_sync_reader()))
+                } else {
+                    Box::new(std::io::BufReader::new(handle.stderr_sync_oneshot()))
+                }
+            }
+        }
     }
 
-    /// 現在の LogConsumer / follow 停止フラグを返す。
+    /// 現在の LogConsumer / follow 停止フラグを返す (macOS)。
+    #[cfg(target_os = "macos")]
     fn log_stop_flag(&self) -> Arc<AtomicBool> {
         self.log_stop
             .lock()
@@ -792,11 +989,13 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 /// 互いの読み取り位置を進めてしまい「後から読んだ側にログの前半が見えない」誤動作になる。
 /// `read_at` (pread) は共有オフセットを使わず動かさないので、各リーダーが独立に読める。
 /// `containerLogs` の FD は通常ファイルなので pread が使える。
+#[cfg(target_os = "macos")]
 struct FdReader {
     file: std::fs::File,
     pos: u64,
 }
 
+#[cfg(target_os = "macos")]
 impl FdReader {
     /// `fd` を dup して所有するリーダーを作る。dup 失敗時は None。
     fn dup_from(fd: RawFd) -> Option<Self> {
@@ -827,12 +1026,14 @@ impl FdReader {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl std::io::Read for FdReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.read_at(buf)
     }
 }
 
+#[cfg(target_os = "macos")]
 impl tokio::io::AsyncRead for FdReader {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -855,6 +1056,7 @@ impl tokio::io::AsyncRead for FdReader {
 ///
 /// `follow = false` では末尾 (0 バイト) で EOF。`follow = true` では追記をポーリングし、
 /// init プロセス終了または `stop` フラグで EOF する。
+#[cfg(target_os = "macos")]
 struct FollowFdReader {
     inner: FdReader,
     follow: bool,
@@ -864,6 +1066,7 @@ struct FollowFdReader {
     delay: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
+#[cfg(target_os = "macos")]
 impl FollowFdReader {
     fn new(
         inner: FdReader,
@@ -893,6 +1096,7 @@ impl FollowFdReader {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl std::io::Read for FollowFdReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         loop {
@@ -907,6 +1111,7 @@ impl std::io::Read for FollowFdReader {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl tokio::io::AsyncRead for FollowFdReader {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -943,6 +1148,7 @@ impl tokio::io::AsyncRead for FollowFdReader {
 }
 
 /// FD から独立オフセットのバッファ付きリーダーを作る。FD が無い / dup 失敗時は空リーダー。
+#[cfg(target_os = "macos")]
 fn fd_reader_or_empty(
     fd: Option<RawFd>,
     follow: bool,
@@ -960,6 +1166,7 @@ fn fd_reader_or_empty(
 /// FD から独立オフセットの同期バッファ付きリーダーを作る。
 ///
 /// FD が無い、または dup に失敗した場合は空リーダーを返す。
+#[cfg(target_os = "macos")]
 fn fd_reader_or_empty_sync(
     fd: Option<RawFd>,
     follow: bool,
@@ -974,11 +1181,12 @@ fn fd_reader_or_empty_sync(
     }
 }
 
-/// LogConsumer へログ行を配信するタスクを起動する。
+/// LogConsumer へログ行を配信するタスクを起動する (macOS・FD ベース)。
 ///
 /// EOF は「ログの終端」ではなく「現時点の末尾」なので、停止指示 (`stop`) が来るまで
 /// ポーリングで追記を読み続ける。以前は最初の EOF でタスクが終了してしまい、
 /// それ以降のログが consumer に届かなかった。
+#[cfg(target_os = "macos")]
 fn spawn_log_consumer_task(
     fd: Option<RawFd>,
     stop: Arc<AtomicBool>,
@@ -1065,29 +1273,49 @@ async fn remove_copy_out_temp(path: &std::path::Path) {
 /// 削除する。ゲートは非対称)。
 impl<I: Image> Drop for ContainerAsync<I> {
     fn drop(&mut self) {
-        // LogConsumer 配信タスクへ停止を通知する。
-        self.log_stop
-            .lock()
-            .expect("log stop mutex must not be poisoned while dropping container")
-            .store(true, Ordering::Relaxed);
+        // 共通の前置き: ログ配信を停止する (macOS: 停止フラグ、Linux: shutdown)。
+        self.stop_log_delivery();
 
-        // containerLogs の FD はここで close する。
+        // macOS: containerLogs の FD はここで close する。
         // close する者がいないと、コンテナ 1 つにつき 2 fd がリークする。
-        if let Some(fd) = self
-            .stdout_fd
-            .lock()
-            .expect("stdout file descriptor mutex must not be poisoned while dropping container")
-            .take()
+        #[cfg(target_os = "macos")]
         {
-            unsafe { libc::close(fd) };
+            let mut source = self
+                .log_source
+                .lock()
+                .expect("log source mutex must not be poisoned while dropping container");
+            if let ContainerLogSource::Fd { stdout, stderr } = *source {
+                unsafe { libc::close(stdout) };
+                unsafe { libc::close(stderr) };
+            }
+            *source = ContainerLogSource::None;
         }
-        if let Some(fd) = self
-            .stderr_fd
-            .lock()
-            .expect("stderr file descriptor mutex must not be poisoned while dropping container")
-            .take()
+
+        // Linux: Runtime 外ならログタスク (demux / consumer) の完了を最大 1 秒 polling する。
+        // Runtime 内では削除完了を保証しないのと同型で、ログタスク完了も保証しない。
+        #[cfg(target_os = "linux")]
         {
-            unsafe { libc::close(fd) };
+            let handle = {
+                let source = self
+                    .log_source
+                    .lock()
+                    .expect("log source mutex must not be poisoned while dropping container");
+                match &*source {
+                    ContainerLogSource::DockerStream(handle) => Some(handle.clone()),
+                    ContainerLogSource::None => None,
+                }
+            };
+            if let Some(handle) = handle
+                && tokio::runtime::Handle::try_current().is_err()
+            {
+                // 各周は「フラグ確認 → sleep」の順。既に完了済みなら 0 回 sleep で即抜ける。
+                for _ in 0..20 {
+                    if handle.all_done() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
         }
 
         if self.dropped {

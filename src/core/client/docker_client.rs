@@ -360,6 +360,21 @@ impl DockerClient {
         Ok(ContainerSnapshot { running, ports })
     }
 
+    /// コンテナのログストリーム (`?follow=true`) を起動し、ハンドルを返す。
+    ///
+    /// `docker_log_stream::spawn_log_session` をこのクライアントのソケットパスで呼ぶ。
+    /// ログの demux / 共有バッファ / LogConsumer 配信は呼び出し側 (`AsyncRunner::start`) が組み立てる。
+    pub(crate) async fn spawn_log_session(
+        &self,
+        id: &str,
+    ) -> Result<std::sync::Arc<crate::core::client::docker_log_stream::DockerLogsHandle>> {
+        crate::core::client::docker_log_stream::spawn_log_session(
+            self.socket_path.clone(),
+            id.to_string(),
+        )
+        .await
+    }
+
     /// Docker Engine API に HTTP リクエストを送信する。
     async fn request(&self, method: &str, path: &str, body: Option<Vec<u8>>) -> Result<Response> {
         let socket_path = self.socket_path.clone();
@@ -384,7 +399,13 @@ impl DockerClient {
 }
 
 /// Docker Engine API 向け HTTP/1.1 リクエストをエンコードする。
-fn encode_docker_api_request(method: &str, path: &str, body: Option<&[u8]>) -> Result<Vec<u8>> {
+///
+/// ログストリーム (`docker_log_stream`) でも再利用するため `pub(crate)` で公開する。
+pub(crate) fn encode_docker_api_request(
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+) -> Result<Vec<u8>> {
     // Method は動的文字列なので Method::new で構築する。
     let method_obj = shiguredo_http11::Method::new(method).map_err(http11_err)?;
     let mut request = Request::new(method_obj, path)
@@ -626,7 +647,9 @@ impl ExecStartConfig {
 /// `/` を含むイメージ参照を `/images/{name}/json` に埋め込むとき、生の `/` は
 /// ルート区切りになるため `%2F` に変換する。RFC 3986 unreserved 以外を符号化す
 /// る (Go の `PathEscape` に近い挙動)。
-fn percent_encode_path_segment(s: &str) -> String {
+///
+/// ログストリーム (`docker_log_stream`) でも再利用するため `pub(crate)` で公開する。
+pub(crate) fn percent_encode_path_segment(s: &str) -> String {
     percent_encode(s)
 }
 

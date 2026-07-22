@@ -31,7 +31,16 @@ shiguredo_http11 = "2026.6"
 # 非同期ランタイム
 tokio = {
   version = "1.53",
-  features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "time"]
+  features = [
+    "fs",
+    "io-util",
+    "macros",
+    "net",
+    "rt",
+    "rt-multi-thread",
+    "sync",
+    "time",
+  ]
 }
 # ログ出力
 tracing = "0.1"

@@ -10,6 +10,7 @@ use crate::{
     ContainerAsync, ContainerRequest, Image,
     core::{
         client::Client,
+        containers::async_container::ContainerLogSource,
         error::{Result, WaitContainerError},
         wait::WaitFor,
     },
@@ -46,7 +47,9 @@ where
     I: Image,
 {
     async fn start(self) -> Result<ContainerAsync<I>> {
-        let container_req = self.into();
+        // Linux は log_consumers を start 内で take するため mut が必要。macOS は new 内で take する。
+        #[cfg_attr(target_os = "macos", expect(unused_mut))]
+        let mut container_req = self.into();
         let client = Client::detect()?;
 
         #[cfg(target_os = "macos")]
@@ -203,8 +206,11 @@ where
             // コンテナログ用の FD を取得。
             // Log 戦略があるのに FD が取れない場合は startup_timeout まで待つより
             // 明示エラーで落とす。Log が無い場合は従来どおり warn + None 続行。
-            let (stdout_fd, stderr_fd) = match client.logs(&id).await {
-                Ok((out, err)) => (Some(out), Some(err)),
+            let log_source = match client.logs(&id).await {
+                Ok((out, err)) => ContainerLogSource::Fd {
+                    stdout: out,
+                    stderr: err,
+                },
                 Err(e) => {
                     if ready_conditions_require_log_fds(&ready_conditions) {
                         if let Err(rm_err) = client.remove(&id, true).await {
@@ -215,7 +221,7 @@ where
                         return Err(log_fd_required_error(&e));
                     }
                     tracing::warn!("failed to get log fds: {e}");
-                    (None, None)
+                    ContainerLogSource::None
                 }
             };
 
@@ -225,8 +231,7 @@ where
                 Client::MacOs(client),
                 container_req,
                 wait_state,
-                stdout_fd,
-                stderr_fd,
+                log_source,
             );
 
             // extra_hosts は ready 共通化の外 (呼び出し前) に残す。
@@ -259,14 +264,6 @@ where
                 return Err(crate::Error::other(msg));
             }
 
-            // ログ FD が無いため Log 待機は成立しない。timeout まで空振りさせない。
-            let ready_conditions = container_req.ready_conditions();
-            if ready_conditions_require_log_fds(&ready_conditions) {
-                return Err(crate::Error::other(
-                    "log wait is not supported on Linux (log file descriptors are unavailable)",
-                ));
-            }
-
             let descriptor = container_req.descriptor();
 
             // イメージの descriptor を解決。未発見時はプルして再試行。
@@ -296,15 +293,24 @@ where
             let startup_timeout = container_req
                 .startup_timeout()
                 .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
+            let ready_conditions = container_req.ready_conditions();
 
-            // ContainerAsync を構築。Linux ではログ FD は未対応。
+            // ログストリームを起動する。Log 待機 / with_log_consumer 使用時は起動失敗を
+            // fail-fast + remove に振り、それ以外は warn + 空リーダーにフォールバックする。
+            // consumer の take は二重 spawn を避けるため start 内 (ここ) で行う。
+            let log_required = linux_log_stream_required(&container_req, &ready_conditions);
+            let log_consumers = std::mem::take(&mut container_req.log_consumers);
+            let (log_source, stored_consumers) =
+                start_linux_log_stream(&client, &id, log_consumers, log_required).await?;
+
+            // ContainerAsync を構築。
             let container = ContainerAsync::new(
                 id,
                 Client::Linux(client),
                 container_req,
                 crate::core::containers::async_container::new_wait_state(),
-                None,
-                None,
+                log_source,
+                stored_consumers,
             );
 
             run_ready_sequence(container, startup_timeout, ready_conditions).await
@@ -487,10 +493,12 @@ fn build_container_config<I: Image>(
     }
 }
 
-/// ready_conditions に `WaitFor::Log` が含まれているか。
+/// ready_conditions に `WaitFor::Log` が含まれているか (macOS)。
 ///
 /// ログ FD 取得失敗時に Log 戦略へ進むと EOF 後もポーリングし続け、
 /// `startup_timeout` まで原因不明に待つため、事前判定に使う。
+/// Linux はログストリームで Log 待機が成立するため macOS 限定。
+#[cfg(target_os = "macos")]
 fn ready_conditions_require_log_fds(ready_conditions: &[WaitFor]) -> bool {
     ready_conditions
         .iter()
@@ -503,6 +511,78 @@ fn log_fd_required_error(cause: &crate::Error) -> crate::Error {
     crate::Error::other(format!(
         "log wait requires log file descriptors, but containerLogs failed: {cause}"
     ))
+}
+
+/// Linux でログストリームの起動が必須か。
+///
+/// `WaitFor::Log` を使うか `with_log_consumer` が登録されている場合は、起動失敗を
+/// fail-fast + remove に振る。それ以外は空リーダーへのフォールバックを許す。
+#[cfg(target_os = "linux")]
+fn linux_log_stream_required<I: Image>(
+    req: &ContainerRequest<I>,
+    ready_conditions: &[WaitFor],
+) -> bool {
+    ready_conditions
+        .iter()
+        .any(|c| matches!(c, WaitFor::Log(_)))
+        || !req.log_consumers.is_empty()
+}
+
+/// Linux のログストリーム (`?follow=true`) を起動し、LogConsumer 配信タスクを spawn する。
+///
+/// 起動成功時は `ContainerLogSource::DockerStream` と再 start 用の consumer Arc を返す。
+/// 起動失敗時は `log_required` なら Keep ゲート付き明示 rm でロールバックして `Err` を返し、
+/// それ以外は warn して `ContainerLogSource::None` にフォールバックする。
+#[cfg(target_os = "linux")]
+async fn start_linux_log_stream(
+    client: &crate::core::client::DockerClient,
+    id: &str,
+    log_consumers: Vec<Box<dyn crate::core::logs::consumer::LogConsumer + 'static>>,
+    log_required: bool,
+) -> Result<(
+    crate::core::containers::async_container::ContainerLogSource,
+    Option<std::sync::Arc<Vec<Box<dyn crate::core::logs::consumer::LogConsumer + 'static>>>>,
+)> {
+    use crate::core::client::docker_log_stream::spawn_log_consumer_task;
+
+    let has_consumers = !log_consumers.is_empty();
+    match client.spawn_log_session(id).await {
+        Ok(handle) => {
+            let stored = if has_consumers {
+                let consumers = std::sync::Arc::new(log_consumers);
+                spawn_log_consumer_task(
+                    handle.clone(),
+                    handle.stdout_stream(),
+                    consumers.clone(),
+                    crate::core::logs::LogFrame::StdOut,
+                );
+                spawn_log_consumer_task(
+                    handle.clone(),
+                    handle.stderr_stream(),
+                    consumers.clone(),
+                    crate::core::logs::LogFrame::StdErr,
+                );
+                Some(consumers)
+            } else {
+                None
+            };
+            Ok((ContainerLogSource::DockerStream(handle), stored))
+        }
+        Err(e) => {
+            if log_required {
+                if matches!(
+                    crate::core::env::Config.command(),
+                    crate::core::env::Command::Remove
+                ) && let Err(rm_err) = client.remove(id, true).await
+                {
+                    tracing::warn!("failed to remove container {id} during rollback: {rm_err}");
+                }
+                return Err(e);
+            }
+            tracing::warn!("failed to start log stream; logs will be empty: {e}");
+            Ok((ContainerLogSource::None, None))
+        }
+    }
 }
 
 /// Linux では設定構築に載らない ImageExt 項目を列挙する。
@@ -539,11 +619,6 @@ fn linux_unsupported_request_reason<I: Image>(req: &ContainerRequest<I>) -> Opti
     }
     if req.ssh() {
         return Some("with_ssh() is not implemented on Linux");
-    }
-    if !req.log_consumers.is_empty() {
-        return Some(
-            "with_log_consumer() is not supported on Linux (log file descriptors are unavailable)",
-        );
     }
     None
 }

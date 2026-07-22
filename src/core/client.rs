@@ -9,6 +9,8 @@ use std::sync::Arc;
 pub(crate) mod container_cfg;
 #[cfg(target_os = "linux")]
 pub(crate) mod docker_client;
+#[cfg(target_os = "linux")]
+pub(crate) mod docker_log_stream;
 pub(crate) mod http_decode;
 #[cfg(target_os = "macos")]
 pub(crate) mod image_config;

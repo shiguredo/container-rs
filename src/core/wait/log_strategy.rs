@@ -137,7 +137,16 @@ impl LogWaitStrategy {
             let mut progressed = false;
             let mut total = 0usize;
             for (reader, matcher) in readers.iter_mut().zip(matchers.iter_mut()) {
-                let n = reader.read(&mut chunk).await.map_err(WaitLogError::Io)?;
+                // 各リーダーをタイムアウト付きで読む。Notify ベースのリーダー (Linux) は
+                // 無音ストリームで永久に Pending になるため、タイムアウトを「今回はデータ無し」
+                // (n=0) として扱い次のリーダーへ進む。これにより `BothStd` で片方のストリームが
+                // 無音でも他方の照合が遅延しない。データが流れている場合は通知がタイムアウトより
+                // 先に read を起床させるため、検出遅延は発生しない。
+                let n = match tokio::time::timeout(POLL_INTERVAL, reader.read(&mut chunk)).await {
+                    Ok(Ok(n)) => n,
+                    Ok(Err(e)) => return Err(WaitLogError::Io(e).into()),
+                    Err(_elapsed) => 0,
+                };
                 let count = if n > 0 {
                     progressed = true;
                     collected.push(&chunk[..n]);
@@ -157,7 +166,8 @@ impl LogWaitStrategy {
             // 全ストリーム EOF。ログは追記されうるので待って読み直す。
             // プロセス終了後は DRAIN_GRACE だけ追加で読み、それでも現れなければ打ち切る。
             // 全体の時間制限は呼び出し側の startup_timeout が担う。
-            if container.exit_code_hint().is_some() {
+            // macOS は exit_code_hint 経路、Linux は logs_terminated (demux 終端) 経路で EOF 判定する。
+            if container.exit_code_hint().is_some() || container.logs_terminated() {
                 let at = exited_at.get_or_insert_with(tokio::time::Instant::now);
                 if at.elapsed() >= DRAIN_GRACE {
                     return Err(WaitContainerError::WaitLog(WaitLogError::EndOfStream(
