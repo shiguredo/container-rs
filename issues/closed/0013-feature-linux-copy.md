@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-07-23
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-copy
 - Polished: 2026-07-22
@@ -201,3 +201,51 @@ issue `0028-refactor-public-api-surface.md` (High) が `CopyTargetOptions.path` 
 - [ ] `CHANGES.md` の `## develop` に `[ADD]` エントリと担当者行 (`- @<ユーザー名>`) を追加する (種別順は `CHANGE → ADD → UPDATE → FIX`)
 - [ ] `.github/workflows/ci.yml` の `test-linux-docker` job で `cargo test --all-features` が pass する (追加で必要なイメージがあれば `Pull test images` ステップを更新する)
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass する
+
+## 解決方法
+
+Linux (Docker Engine API) バックエンドで `copy_file_from` と `with_copy_to` を実装した。
+Docker Engine API の archive エンドポイント (`GET/PUT /containers/{id}/archive`) を自前 POSIX
+ustar 実装で叩き、単一 regular file の転送を配線した。
+
+### 実装内容
+
+- 新規モジュール `src/core/client/docker_tar.rs` を追加。`build_single_file_ustar` (1 エントリ
+  ustar 構築) と `parse_first_regular_file_from_ustar` (先頭 regular file 展開) を実装。
+  チェックサムは標準 tar 算法 (chksum 空白埋め 512 バイト合計)、`Vec::with_capacity` 不使用。
+  uid/gid (8 進 7 桁) / size (8 進 11 桁) の上限超過は入口で fail-fast (暗黙桁詰め防止)。
+- `encode_docker_api_request` の第 3 引数を `Option<(&[u8], &'static str)>` (body + content-type)
+  に一般化。既存 JSON 呼び出しは不変。`request_with_content_type` / `copy_from` / `copy_to` を追加。
+- `ContainerAsync::copy_file_from` Linux 分岐: source 絶対パス検証 → `copy_from` → ustar 展開 →
+  `Cursor` 経由で `CopyFileFromContainer` へ。ディレクトリは `IsDirectory`、404 は `ContainerNotFound`。
+- `copy_to_sources_linux` を新設し `AsyncRunner::start` の `start_container` 成功後・`ContainerAsync::new`
+  前に挿入。target.path の dirname/basename 分割 (絶対パス必須・末尾スラッシュ拒否)、File ソースの
+  symlink 検証、`mode` / `uid` / `gid` を tar ヘッダ + `copyUIDGID=true` で反映。失敗時は Keep-gated rm。
+- 既存の copy_to fail-fast を削除。`CopyToContainer` の Linux dead_code attr を削除。doc を更新。
+
+### 変更ファイル
+
+- `src/core/client/docker_tar.rs` (新規)、`src/core/client.rs`、`src/core/client/docker_client.rs`
+- `src/core/containers/async_container.rs`、`src/core/copy.rs`、`src/runners/async_runner.rs`
+- `tests/container_linux.rs`、`docs/TESTCONTAINERS.md`、`CHANGES.md`、`Cargo.toml` / `Cargo.lock` (proptest dev-dep)
+
+### 追加したテスト
+
+- 単体テスト + PBT (`docker_tar.rs` 内 `#[cfg(test)]`): ゴールデン (フィールド配置)・ラウンド
+  トリップ・チェックサム破損・空 archive・directory・gzip・特殊 typeflag・truncated header/data・
+  不正 8 進・uid/gid 上限超過拒否・不正名拒否。PBT は (name, data, mode, uid, gid) のラウンドトリップ。
+- 統合テスト (`tests/container_linux.rs`): Data/File コピー往復・PathBuf ターゲット・mode/uid/gid 反映
+  (`stat` 検証)・`IsDirectory`・`ContainerNotFound`。`unimplemented_boundaries_return_err` から
+  `copy_file_from` の Err 期待を削除。
+
+### 検証
+
+- `cargo clippy --all-targets --all-features -- -D warnings` が macOS / Linux 両ターゲットで pass。
+  `cargo fmt --all --check` pass。macOS 単体テスト pass。
+- レビューで Docker Desktop (Linux VM) 実地検証: 自然ファイルは typeflag '0' (PAX 無し)、`/etc` は
+  typeflag '5' → `IsDirectory` を確認。
+- `/review-diff-code` を実施し、致命的・重要 (uid/gid/size 暗黙桁詰め、エラーパステスト欠落、
+  末尾スラッシュ silent strip) を修正済み。
+- 設計上の既知の割り切り: 404 は id 由来・path 由来を区別せず `ContainerNotFound` に寄せる
+  (既存 `container_state` と同じ扱い、issue 設計方針どおり)。メモリ完結 (MVP、ストリーミング未対応)。
+- Linux 統合テストは Linux CI (`test-linux-docker`) で実行される。

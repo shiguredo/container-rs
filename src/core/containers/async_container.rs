@@ -253,6 +253,12 @@ impl<I: Image> ContainerAsync<I> {
     ///
     /// apple/container の `containerCopyOut` はディレクトリもコピーできるが、
     /// 本 API はファイル専用のため、ディレクトリなら `IsDirectory` で拒否する。
+    ///
+    /// # Linux
+    ///
+    /// Docker Engine API の `GET /containers/{id}/archive` で取得した tar を自前 ustar パーサ
+    /// (`docker_tar`) で展開し、先頭 regular file の内容を `target` へ渡す。`source` は絶対パス
+    /// 必須。ディレクトリを指定すると tar 先頭エントリの typeflag で `IsDirectory` になる。
     pub async fn copy_file_from<T: CopyFileFromContainer>(
         &self,
         source: impl Into<String> + Send,
@@ -282,9 +288,20 @@ impl<I: Image> ContainerAsync<I> {
                 result
             }
             #[cfg(target_os = "linux")]
-            Client::Linux(_) => {
-                let _ = (source.into(), target);
-                Err(Error::other("copy_file_from() is not implemented on Linux"))
+            Client::Linux(c) => {
+                let source = source.into();
+                // Docker Engine の 400 相当を明示エラーで返すため、絶対パスを事前検証する。
+                if source.is_empty() || !source.starts_with('/') {
+                    return Err(Error::other("copy_file_from path must be absolute"));
+                }
+                let tar = c.copy_from(&self.id, &source).await?;
+                let content =
+                    crate::core::client::docker_tar::parse_first_regular_file_from_ustar(&tar)
+                        .map_err(Error::other)?;
+                target
+                    .copy_from_reader(std::io::Cursor::new(content))
+                    .await
+                    .map_err(Error::other)
             }
         }
     }

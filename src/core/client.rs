@@ -11,6 +11,8 @@ pub(crate) mod container_cfg;
 pub(crate) mod docker_client;
 #[cfg(target_os = "linux")]
 pub(crate) mod docker_log_stream;
+#[cfg(target_os = "linux")]
+pub(crate) mod docker_tar;
 pub(crate) mod http_decode;
 #[cfg(target_os = "macos")]
 pub(crate) mod image_config;

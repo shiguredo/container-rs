@@ -29,6 +29,9 @@ use crate::core::{
     wait::CmdWaitFor,
 };
 
+#[cfg(target_os = "linux")]
+use crate::core::copy::{CopyDataSource, CopyToContainer};
+
 const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// コンテナを非同期に起動するトレイト。
@@ -253,12 +256,6 @@ where
                 Client::MacOs(_) => unreachable!("Linux block is not compiled on macOS"),
             };
 
-            // Linux では copy_to / with_copy_to 未実装。
-            // 黙って無視するとコンテナ内にファイルが無い状態で進むため、作成前に fail-fast する。
-            if container_req.copy_to_sources().next().is_some() {
-                return Err(crate::Error::other("copy_to() is not implemented on Linux"));
-            }
-
             // Linux で設定構築に載らない ImageExt は黙って成功させない。
             if let Some(msg) = linux_unsupported_request_reason(&container_req) {
                 return Err(crate::Error::other(msg));
@@ -278,6 +275,19 @@ where
             // 呼び出し元がすぐ終了 (テストプロセス等) しても削除が完了することを保証する。
             // Keep 指定時は構築前ロールバックでも削除しない (失敗したコンテナを残して調査する)。
             if let Err(e) = client.start_container(&id).await {
+                if matches!(
+                    crate::core::env::Config.command(),
+                    crate::core::env::Command::Remove
+                ) && let Err(rm_err) = client.remove(&id, true).await
+                {
+                    tracing::warn!("failed to remove container {id} during rollback: {rm_err}");
+                }
+                return Err(e);
+            }
+
+            // with_copy_to のファイルを投入する (macOS が start_process 後に呼ぶのと揃える)。
+            // 失敗時は Keep-gated 明示 rm でロールバックする。
+            if let Err(e) = copy_to_sources_linux(&client, &id, &container_req).await {
                 if matches!(
                     crate::core::env::Config.command(),
                     crate::core::env::Command::Remove
@@ -743,6 +753,89 @@ async fn copy_to_sources<I: Image>(
                     .copy_in(id, guard.as_path(), &src.target.path, src.target.mode)
                     .await?;
                 // Data コピー用の一時ファイルはガードの Drop で削除する。
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// `ContainerRequest::copy_to_sources` をコンテナへコピーする (Linux)。
+///
+/// Docker Engine API の `PUT /containers/{id}/archive` を自前 ustar (`docker_tar`) で叩く。
+/// 単一 regular file のみ。親ディレクトリの自動作成は行わない (macOS `createParents` との差)。
+#[cfg(target_os = "linux")]
+async fn copy_to_sources_linux<I: Image>(
+    client: &crate::core::client::docker_client::DockerClient,
+    id: &str,
+    req: &ContainerRequest<I>,
+) -> Result<()> {
+    use crate::core::client::docker_tar::build_single_file_ustar;
+    use crate::core::copy::CopyToContainerError;
+
+    fn name_err(msg: impl Into<String>) -> crate::Error {
+        crate::Error::other(CopyToContainerError::PathNameError(msg.into()))
+    }
+
+    // iterator の型を future に含めないため、あらかじめ collect する (Send 維持)。
+    let sources: Vec<&CopyToContainer> = req.copy_to_sources().collect();
+    for src in sources {
+        // target.path を dirname (親ディレクトリ) / basename (ファイル名) に分割する。
+        let target_path = std::path::Path::new(&src.target.path);
+        if !target_path.is_absolute() {
+            return Err(name_err("copy_to target path must be absolute"));
+        }
+        // 末尾スラッシュは Rust の Path が黙って除去するため、明示的に検出して拒否する
+        // (silent strip しない。例: "/tmp/" は basename "tmp" に正規化されてしまう)。
+        if src.target.path.ends_with('/') {
+            return Err(name_err("copy_to target path must not end with a slash"));
+        }
+        // file_name() が None になる場合 (例: "/tmp/..") は拒否。
+        let basename = target_path
+            .file_name()
+            .ok_or_else(|| name_err("copy_to target path must have a file name"))?
+            .to_str()
+            .ok_or_else(|| name_err("copy_to target file name is not valid UTF-8"))?;
+        let dirname = target_path
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".to_string());
+
+        // source から byte 列を取り出し、1 エントリの tar を組んで投入する。
+        match &src.source {
+            CopyDataSource::File(path) => {
+                // symlink を追跡しないよう symlink_metadata で file_type を確認する。
+                let meta = tokio::fs::symlink_metadata(path)
+                    .await
+                    .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+                let ft = meta.file_type();
+                if ft.is_symlink() || !ft.is_file() {
+                    return Err(name_err("copy_to source is not a regular file"));
+                }
+                let data = tokio::fs::read(path)
+                    .await
+                    .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+                let tar = build_single_file_ustar(
+                    basename,
+                    &data,
+                    src.target.mode,
+                    src.target.uid,
+                    src.target.gid,
+                )
+                .map_err(crate::Error::other)?;
+                client.copy_to(id, &dirname, tar).await?;
+            }
+            CopyDataSource::Data(data) => {
+                // Vec 全体を move せず借用で tar へ書き込む。
+                let tar = build_single_file_ustar(
+                    basename,
+                    data,
+                    src.target.mode,
+                    src.target.uid,
+                    src.target.gid,
+                )
+                .map_err(crate::Error::other)?;
+                client.copy_to(id, &dirname, tar).await?;
             }
         }
     }

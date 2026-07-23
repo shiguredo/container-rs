@@ -5,7 +5,6 @@
 #![cfg(target_os = "linux")]
 
 use std::future::Future;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -229,13 +228,6 @@ async fn unimplemented_boundaries_return_err() {
         .get_bridge_ip_address()
         .await
         .expect_err("get_bridge_ip_address は Linux で未対応であること");
-    container
-        .copy_file_from(
-            "/etc/hostname",
-            PathBuf::from("/tmp/container-rs-copy-from-test"),
-        )
-        .await
-        .expect_err("copy_file_from は Linux で未実装であること");
     container
         .exit_code()
         .await
@@ -546,15 +538,17 @@ fn last_restart_marker(stdout: &[u8]) -> Option<Vec<u8>> {
 /// 再 start (stop → start) 後にログストリームが再武装され、新実行のログが読めること。
 ///
 /// Docker Engine の `POST /containers/{id}/start` は create 時の cmd を再実行する。
-/// タイムスタンプ入り marker を使い、初回 start の marker A と再起動後の marker B が
+/// UUID marker を使い、初回 start の marker A と再起動後の marker B が
 /// 異なることを通じて、新規リーダーが新バッファに接続されることを検証する。
 #[tokio::test]
 async fn restart_rearms_log_stream() {
+    // marker は kernel の UUID で一意化する。BusyBox の date は %N (nanosecond) 非対応で
+    // 秒単位になり、同一秒内の再起動で marker が一致して flaky になるため。
     let container = GenericImage::new("alpine", "latest")
         .with_cmd([
             "sh",
             "-c",
-            "echo RESTART_MARKER-$(date +%s%N); tail -f /dev/null",
+            "echo RESTART_MARKER-$(cat /proc/sys/kernel/random/uuid); tail -f /dev/null",
         ])
         .with_startup_timeout(Duration::from_secs(15))
         .start()
@@ -666,4 +660,143 @@ fn sync_stdout_to_vec_returns_logs() {
     );
 
     container.rm().expect("rm に失敗した");
+}
+
+/// `with_copy_to` (Data ソース) で投入したファイルを `copy_file_from` (Vec<u8>) で回収できること。
+#[tokio::test]
+async fn copy_to_data_and_copy_file_from_round_trip() {
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/hello.txt", b"hello copy".to_vec())
+        .start()
+        .await
+        .expect("起動に失敗した");
+
+    let content: Vec<u8> = container
+        .copy_file_from("/tmp/hello.txt", Vec::new())
+        .await
+        .expect("copy_file_from に失敗した");
+    assert_eq!(
+        content, b"hello copy",
+        "Data コピーの往復で内容が一致すること"
+    );
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// `with_copy_to` (File ソース) と `copy_file_from` (PathBuf ターゲット) の往復が成立すること。
+#[tokio::test]
+async fn copy_to_file_source_and_copy_file_from_pathbuf_target() {
+    // ホストに一時ファイルを用意し、File ソースとして投入する。
+    let host_src =
+        std::env::temp_dir().join(format!("container-rs-copy-src-{}.txt", std::process::id()));
+    tokio::fs::write(&host_src, b"from host file")
+        .await
+        .expect("ホストファイル書き込みに失敗した");
+
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/from_host.txt", host_src.clone())
+        .start()
+        .await
+        .expect("起動に失敗した");
+
+    // PathBuf ターゲットでホストへ回収する。
+    let host_dst =
+        std::env::temp_dir().join(format!("container-rs-copy-dst-{}.txt", std::process::id()));
+    container
+        .copy_file_from("/tmp/from_host.txt", host_dst.clone())
+        .await
+        .expect("copy_file_from (PathBuf) に失敗した");
+    let recovered = tokio::fs::read(&host_dst)
+        .await
+        .expect("回収ファイル読み込みに失敗した");
+    assert_eq!(
+        recovered, b"from host file",
+        "File ソース + PathBuf ターゲットの往復で内容が一致すること"
+    );
+
+    let _ = tokio::fs::remove_file(&host_src).await;
+    let _ = tokio::fs::remove_file(&host_dst).await;
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// `CopyTargetOptions` の mode / uid / gid がコンテナ内ファイルに反映されること。
+#[tokio::test]
+async fn copy_to_applies_mode_uid_gid() {
+    use shiguredo_container::core::copy::CopyTargetOptions;
+
+    let target = CopyTargetOptions {
+        mode: 0o755,
+        uid: 1000,
+        gid: 1000,
+        ..CopyTargetOptions::new("/tmp/script.sh")
+    };
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to(target, b"#!/bin/sh\necho hi\n".to_vec())
+        .start()
+        .await
+        .expect("起動に失敗した");
+
+    // stat の結果をコンテナ内ファイルに書き出し、copy_file_from で回収して検証する
+    // (Linux の exec は stdout を取得できないため)。
+    container
+        .exec(ExecCommand::new([
+            "sh",
+            "-c",
+            "stat -c '%a %u %g' /tmp/script.sh > /tmp/stat.out",
+        ]))
+        .await
+        .expect("stat の exec に失敗した");
+    let stat: Vec<u8> = container
+        .copy_file_from("/tmp/stat.out", Vec::new())
+        .await
+        .expect("stat 結果の回収に失敗した");
+    assert_eq!(
+        stat, b"755 1000 1000\n",
+        "mode / uid / gid が tar ヘッダどおりに反映されること"
+    );
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// ディレクトリの `copy_file_from` は `IsDirectory` で拒否されること。
+#[tokio::test]
+async fn copy_file_from_directory_is_is_directory() {
+    let container = start_alpine().await;
+
+    let err = container
+        .copy_file_from("/etc", Vec::new())
+        .await
+        .expect_err("ディレクトリの copy_file_from は失敗すること");
+    assert!(
+        err.to_string().contains("is a directory"),
+        "IsDirectory エラーであること: {err}"
+    );
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// 存在しない (削除済み) コンテナへの `copy_file_from` が `ContainerNotFound` になること。
+#[tokio::test]
+async fn copy_file_from_nonexistent_container_is_not_found() {
+    let container = start_alpine().await;
+    let id = container.id().to_string();
+
+    // 外部で削除してコンテナを無くす。
+    let status = std::process::Command::new("docker")
+        .args(["rm", "-f", &id])
+        .status()
+        .expect("docker rm -f の実行に失敗した");
+    assert!(status.success(), "docker rm -f が成功すること");
+
+    let err = container
+        .copy_file_from("/etc/hostname", Vec::new())
+        .await
+        .expect_err("削除済みコンテナの copy_file_from は失敗すること");
+    match err {
+        Error::Client(ClientError::ContainerNotFound(_)) => {}
+        other => panic!("ContainerNotFound 以外のエラー: {other}"),
+    }
 }
