@@ -765,82 +765,180 @@ async fn copy_to_sources<I: Image>(
 
 /// `ContainerRequest::copy_to_sources` をコンテナへコピーする (Linux)。
 ///
-/// Docker Engine API の `PUT /containers/{id}/archive` を自前 ustar (`docker_tar`) で叩く。
-/// 単一 regular file のみ。親ディレクトリの自動作成は行わない (macOS `createParents` との差)。
+/// Docker Engine API の `PUT /containers/{id}/archive?path=/` を自前 ustar (`UstarBuilder`) で叩く。
+/// 相対パス + 中間 directory エントリで親ディレクトリを自動作成し、ホストディレクトリも再帰投入する。
 #[cfg(target_os = "linux")]
 async fn copy_to_sources_linux<I: Image>(
     client: &crate::core::client::docker_client::DockerClient,
     id: &str,
     req: &ContainerRequest<I>,
 ) -> Result<()> {
-    use crate::core::client::docker_tar::build_single_file_ustar;
+    use std::path::{Path, PathBuf};
+
+    use crate::core::client::docker_tar::UstarBuilder;
     use crate::core::copy::CopyToContainerError;
 
     fn name_err(msg: impl Into<String>) -> crate::Error {
         crate::Error::other(CopyToContainerError::PathNameError(msg.into()))
     }
 
+    /// 先頭の `/` をすべて除いた相対パスを返す。空ならエラー。
+    fn make_path_relative(path: &str) -> Result<String> {
+        let relative = path.trim_start_matches('/');
+        if relative.is_empty() {
+            return Err(name_err("copy_to target path must not be root only"));
+        }
+        Ok(relative.to_string())
+    }
+
+    /// `relative` の祖先 directory（末尾 `/`）を順に追記する。`relative` 自身は書かない。
+    fn append_ancestor_directories(
+        builder: &mut UstarBuilder,
+        relative: &str,
+        uid: u32,
+        gid: u32,
+    ) -> Result<()> {
+        let mut acc = String::new();
+        let parts: Vec<&str> = relative.split('/').collect();
+        // 最後の要素はファイル名またはディレクトリ名自身なので祖先から除外する。
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if part.is_empty() {
+                continue;
+            }
+            if !acc.is_empty() {
+                acc.push('/');
+            }
+            acc.push_str(part);
+            let dir_path = format!("{acc}/");
+            builder
+                .append_directory(&dir_path, 0o755, uid, gid)
+                .map_err(crate::Error::other)?;
+        }
+        Ok(())
+    }
+
+    /// ホストディレクトリを深さ優先で walk し、tar に畳む。
+    fn append_host_directory(
+        builder: &mut UstarBuilder,
+        host_root: &Path,
+        tar_root: &str,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<()> {
+        // ディレクトリエントリの列挙は同期でよい (コピーは start 前の短時間処理)。
+        let mut stack: Vec<PathBuf> = vec![host_root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let entries = std::fs::read_dir(&dir)
+                .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+            // 決定的な順序にする。
+            let mut children: Vec<_> = entries
+                .collect::<std::io::Result<Vec<_>>>()
+                .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+            children.sort_by_key(|e| e.file_name());
+            // 深さ優先のため逆順 push。
+            for entry in children.into_iter().rev() {
+                let path = entry.path();
+                let meta = std::fs::symlink_metadata(&path)
+                    .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+                let ft = meta.file_type();
+                let rel = path
+                    .strip_prefix(host_root)
+                    .map_err(|_| name_err("copy_to walk path escaped source root"))?;
+                let rel_str = rel.to_str().ok_or_else(|| {
+                    name_err("copy_to source path under directory is not valid UTF-8")
+                })?;
+                let tar_path = if rel_str.is_empty() {
+                    tar_root.to_string()
+                } else {
+                    format!("{tar_root}/{rel_str}")
+                };
+                if ft.is_symlink() {
+                    return Err(name_err("copy_to source contains a symlink"));
+                }
+                if ft.is_dir() {
+                    builder
+                        .append_directory(&format!("{tar_path}/"), 0o755, uid, gid)
+                        .map_err(crate::Error::other)?;
+                    stack.push(path);
+                    continue;
+                }
+                if !ft.is_file() {
+                    return Err(name_err(
+                        "copy_to source contains a non-regular file".to_string(),
+                    ));
+                }
+                let data = std::fs::read(&path)
+                    .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+                builder
+                    .append_file(&tar_path, &data, mode, uid, gid)
+                    .map_err(crate::Error::other)?;
+            }
+        }
+        Ok(())
+    }
+
     // iterator の型を future に含めないため、あらかじめ collect する (Send 維持)。
     let sources: Vec<&CopyToContainer> = req.copy_to_sources().collect();
     for src in sources {
-        // target.path を dirname (親ディレクトリ) / basename (ファイル名) に分割する。
-        let target_path = std::path::Path::new(&src.target.path);
+        let target_path = Path::new(&src.target.path);
         if !target_path.is_absolute() {
             return Err(name_err("copy_to target path must be absolute"));
         }
-        // 末尾スラッシュは Rust の Path が黙って除去するため、明示的に検出して拒否する
-        // (silent strip しない。例: "/tmp/" は basename "tmp" に正規化されてしまう)。
+        // 末尾スラッシュは Rust の Path が黙って除去するため、明示的に検出して拒否する。
         if src.target.path.ends_with('/') {
             return Err(name_err("copy_to target path must not end with a slash"));
         }
         // file_name() が None になる場合 (例: "/tmp/..") は拒否。
-        let basename = target_path
-            .file_name()
-            .ok_or_else(|| name_err("copy_to target path must have a file name"))?
-            .to_str()
-            .ok_or_else(|| name_err("copy_to target file name is not valid UTF-8"))?;
-        let dirname = target_path
-            .parent()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/".to_string());
+        if target_path.file_name().is_none() {
+            return Err(name_err("copy_to target path must have a file name"));
+        }
+        let relative = make_path_relative(&src.target.path)?;
+        let mode = src.target.mode;
+        let uid = src.target.uid;
+        let gid = src.target.gid;
 
-        // source から byte 列を取り出し、1 エントリの tar を組んで投入する。
+        let mut builder = UstarBuilder::new();
         match &src.source {
             CopyDataSource::File(path) => {
-                // symlink を追跡しないよう symlink_metadata で file_type を確認する。
                 let meta = tokio::fs::symlink_metadata(path)
                     .await
                     .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
                 let ft = meta.file_type();
-                if ft.is_symlink() || !ft.is_file() {
-                    return Err(name_err("copy_to source is not a regular file"));
+                if ft.is_symlink() {
+                    return Err(name_err("copy_to source is a symlink"));
                 }
-                let data = tokio::fs::read(path)
-                    .await
-                    .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
-                let tar = build_single_file_ustar(
-                    basename,
-                    &data,
-                    src.target.mode,
-                    src.target.uid,
-                    src.target.gid,
-                )
-                .map_err(crate::Error::other)?;
-                client.copy_to(id, &dirname, tar).await?;
+                if ft.is_dir() {
+                    append_ancestor_directories(&mut builder, &relative, uid, gid)?;
+                    builder
+                        .append_directory(&format!("{relative}/"), 0o755, uid, gid)
+                        .map_err(crate::Error::other)?;
+                    // 空ディレクトリでも root エントリだけで成功する。
+                    append_host_directory(&mut builder, path, &relative, mode, uid, gid)?;
+                } else if ft.is_file() {
+                    append_ancestor_directories(&mut builder, &relative, uid, gid)?;
+                    let data = tokio::fs::read(path)
+                        .await
+                        .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+                    builder
+                        .append_file(&relative, &data, mode, uid, gid)
+                        .map_err(crate::Error::other)?;
+                } else {
+                    return Err(name_err(
+                        "copy_to source is not a regular file or directory",
+                    ));
+                }
             }
             CopyDataSource::Data(data) => {
-                // Vec 全体を move せず借用で tar へ書き込む。
-                let tar = build_single_file_ustar(
-                    basename,
-                    data,
-                    src.target.mode,
-                    src.target.uid,
-                    src.target.gid,
-                )
-                .map_err(crate::Error::other)?;
-                client.copy_to(id, &dirname, tar).await?;
+                append_ancestor_directories(&mut builder, &relative, uid, gid)?;
+                builder
+                    .append_file(&relative, data, mode, uid, gid)
+                    .map_err(crate::Error::other)?;
             }
         }
+        let tar = builder.finish().map_err(crate::Error::other)?;
+        // 本家 testcontainers-rs と同様、常にコンテナルートへ展開する。
+        client.copy_to(id, "/", tar).await?;
     }
 
     Ok(())

@@ -11,7 +11,9 @@
 
 ## develop
 
-- [CHANGE] Linux の `with_copy_to` 投入を create 後・start 前完了の公開契約へ変更する（macOS は start 後のまま。親 dir 不在パスは失敗する）
+- [CHANGE] Linux の `with_copy_to` 投入を create 後・start 前完了の公開契約へ変更する（macOS は start 後のまま）
+  - @voluntas
+- [ADD] `with_copy_to` で親ディレクトリ自動作成とディレクトリ一括投入に対応する
   - @voluntas
 - [ADD] Linux で HTTP ログストリームを demux して `stdout` / `stderr` / `LogConsumer` / `WaitFor::Log` を有効化する
   - @voluntas
