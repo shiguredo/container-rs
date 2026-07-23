@@ -11,6 +11,8 @@
 
 ## develop
 
+- [CHANGE] Linux の `with_copy_to` 投入を create 後・start 前完了の公開契約へ変更する（macOS は start 後のまま。親 dir 不在パスは失敗する）
+  - @voluntas
 - [ADD] Linux で HTTP ログストリームを demux して `stdout` / `stderr` / `LogConsumer` / `WaitFor::Log` を有効化する
   - @voluntas
 - [ADD] Linux で Docker Engine API の archive エンドポイント経由の `copy_file_from` / `with_copy_to` を実装する

@@ -35,6 +35,17 @@ pub trait ImageExt<I: Image> {
     -> ContainerRequest<I>;
     fn with_host(self, key: impl Into<String>, value: impl Into<ExtraHost>) -> ContainerRequest<I>;
     fn with_mount(self, mount: impl Into<Mount>) -> ContainerRequest<I>;
+    /// コンテナへコピーするファイルを登録する。
+    ///
+    /// # タイミング契約
+    ///
+    /// - **Linux (Docker Engine API)**: 初回の `AsyncRunner::start` で `create` 後・
+    ///   `start` 前に投入が完了する。初期プロセスが起動時に読むファイルにも使える。
+    /// - **macOS (Apple container)**: `start_process` 後に `containerCopyIn` で投入する。
+    ///   running でないと XPC が拒否するため、起動前投入の公開契約は無い。
+    ///   初期プロセスが起動時に読むファイルには、利用側の起動待ち等が別途必要になり得る。
+    ///
+    /// 停止後の `ContainerAsync::start`（再起動）では再投入しない。
     fn with_copy_to(
         self,
         target: impl Into<CopyTargetOptions>,

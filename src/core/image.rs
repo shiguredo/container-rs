@@ -47,7 +47,10 @@ where
         std::iter::empty()
     }
 
-    /// 起動時にコンテナへコピーするファイル。
+    /// コンテナへコピーするファイル。
+    ///
+    /// 投入タイミングは `ImageExt::with_copy_to` のタイミング契約に従う。
+    /// Linux は初回 start の create 後・start 前、macOS は start_process 後である。
     fn copy_to_sources(&self) -> impl IntoIterator<Item = &CopyToContainer> {
         std::iter::empty()
     }

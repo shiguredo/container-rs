@@ -158,8 +158,9 @@ where
             }
 
             // copy_to_sources を実行。
-            // Apple container の containerCopyIn はコンテナが running の場合にのみ
-            // 利用できるため、start_process 後に実行する。
+            // Apple container の containerCopyIn はコンテナが running でないと
+            // `invalidState: ... is not running` になるため、start_process 後に実行する。
+            // 起動前投入は Linux のみの公開契約である（1.0.0 / 1.1.0 で実測済み）。
             if let Err(e) = copy_to_sources(&client, &id, &container_req).await {
                 // コピー失敗時もロールバック。
                 // Keep 指定時は構築前ロールバックでも削除しない (失敗したコンテナを残して調査する)。
@@ -270,11 +271,10 @@ where
             let config = build_container_config(&container_req);
             let id = client.create_container(config).await?;
 
-            // 作成に成功した後に起動。起動失敗時はロールバック。
-            // 失敗時のロールバックは spawn の投げっぱなしにせず await する。
-            // 呼び出し元がすぐ終了 (テストプロセス等) しても削除が完了することを保証する。
-            // Keep 指定時は構築前ロールバックでも削除しない (失敗したコンテナを残して調査する)。
-            if let Err(e) = client.start_container(&id).await {
+            // with_copy_to のファイルを投入する。
+            // 起動前投入契約のため、create 後・start 前に実行する。
+            // 失敗時は Keep-gated 明示 rm でロールバックする (未 start)。
+            if let Err(e) = copy_to_sources_linux(&client, &id, &container_req).await {
                 if matches!(
                     crate::core::env::Config.command(),
                     crate::core::env::Command::Remove
@@ -285,9 +285,12 @@ where
                 return Err(e);
             }
 
-            // with_copy_to のファイルを投入する (macOS が start_process 後に呼ぶのと揃える)。
-            // 失敗時は Keep-gated 明示 rm でロールバックする。
-            if let Err(e) = copy_to_sources_linux(&client, &id, &container_req).await {
+            // 作成・コピーに成功した後に起動。起動失敗時はロールバック。
+            // 失敗時のロールバックは spawn の投げっぱなしにせず await する。
+            // 呼び出し元がすぐ終了 (テストプロセス等) しても削除が完了することを保証する。
+            // Keep 指定時は構築前ロールバックでも削除しない (失敗したコンテナを残して調査する)。
+            // copy 済みでも個別巻き戻しはせず、コンテナ単位の明示 rm のみ行う。
+            if let Err(e) = client.start_container(&id).await {
                 if matches!(
                     crate::core::env::Config.command(),
                     crate::core::env::Command::Remove

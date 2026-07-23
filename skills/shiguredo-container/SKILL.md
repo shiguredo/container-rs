@@ -66,7 +66,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `with_platform` | 対応 (`"linux/amd64"` で rosetta / pull / architecture に反映) | start 時に明示エラー |
 | `with_network` | 部分対応 (事前に `container network create` が必要。自動作成しない) | start 時に明示エラー |
 | `with_mount` | 対応 (Bind / Volume / Tmpfs) | Bind のみ (`ro`/`rw` 付き)。Volume / Tmpfs は明示エラー |
-| `with_copy_to` | 部分対応 (XPC `containerCopyIn`。`uid` / `gid` は非反映) | 部分対応 (start 後に `PUT /containers/{id}/archive`。単一 regular file のみ・親ディレクトリ自動作成なし。`mode` / `uid` / `gid` は反映) |
+| `with_copy_to` | 部分対応 (XPC `containerCopyIn`。start 後 copy。起動前契約なし。`uid` / `gid` は非反映) | 部分対応 (create → copy → start。`PUT /containers/{id}/archive`。単一 regular file のみ・親ディレクトリ自動作成なし。`mode` / `uid` / `gid` は反映) |
 | `with_log_consumer` | 対応 (行単位で `LogFrame` を配信) | 対応 (demux 済み共有バッファから行単位で配信。行末 `\n` / `\r` 剥がし、終端後の非改行残余は破棄) |
 | `with_privileged` | 部分対応 (`capAdd: ["ALL"]` 相当) | 対応 |
 | `with_cap_add`, `with_cap_drop`, `with_shm_size`, `with_readonly_rootfs`, `with_open_stdin`, `with_hostname` | 対応 | start 時に明示エラー |
@@ -211,13 +211,14 @@ let stdout = result.stdout_to_vec().await?; // Linux では常に空
 // コンテナ → ホスト (Vec<u8> または PathBuf に受ける)
 let bytes: Vec<u8> = container.copy_file_from("/etc/os-release", Vec::new()).await?;
 
-// ホスト → コンテナ (start 前に指定)
+// ホスト → コンテナ (リクエスト組み立ては start 前。実コピー実行タイミングは OS 依存)
+// Linux: create 後・start 前に投入完了。macOS: start_process 後に投入（起動前契約なし）
 use shiguredo_container::core::{CopyToContainer, CopyTargetOptions};
 let image = GenericImage::new("alpine", "latest")
     .with_copy_to("/etc/config.json", b"{}".to_vec());
 ```
 
-Linux は単一 regular file のみ対応 (親ディレクトリの自動作成なし)。
+Linux は単一 regular file のみ対応 (親ディレクトリの自動作成なし)。`with_copy_to` の起動前投入は Linux のみの公開契約である。
 
 ### LogConsumer
 

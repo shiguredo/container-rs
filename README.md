@@ -25,6 +25,8 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 
 > [!WARNING]
 > Linux ではライフサイクル (start / exec / stop / rm / Drop) に加えログ関連 (stdout / stderr / ログ待機 / LogConsumer) とファイルコピー (`copy_file_from` / `with_copy_to`) も動くが、bridge IP 取得・exec の stdout / stderr・ネットワーク系設定などは未対応のままである。対応範囲は [testcontainers-rs / Apple Container / Docker Engine API の比較](docs/TESTCONTAINERS.md) を参照してください。
+>
+> `with_copy_to` の起動前投入は Linux のみ。macOS は start 後コピーのため、初期プロセスが起動時に読むファイルには利用側の起動待ち等が別途必要になり得る。
 
 ## モチベーション
 
