@@ -6,6 +6,7 @@
 - Model: qwen3.8-max-preview
 - Branch: feature/linux-exec-output
 - Polished:
+- Reporter: @voluntas
 
 ## 目的
 
@@ -14,6 +15,12 @@ Linux (Docker Engine API) バックエンドで exec の stdout/stderr 取得と
 ## 優先度根拠
 
 exec の出力取得はコンテナ内のコマンド結果を検証する基本的な機能であり、`CmdWaitFor::StdOutMessage` / `StdErrMessage` の前提でもある。現状は exit code のみ取得できており、出力が必要なテストは代替手段 (ファイル書き出し + copy) が必要。Medium。
+
+利用者フィードバック (mqtt-rs の移行) でも具体的な需要が確認されている:
+
+- `exec_before_ready` で「コンテナの中からポーリングして成功するまで待つ」という本家どおりの使い方ができる
+- Mosquitto の起動待ちシェルや SCRAM 用の API リトライをテスト側に抱えずに済む道が増える
+- 失敗時にコンテナ内コマンドの出力で原因を追える
 
 ## 現状
 
