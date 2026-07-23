@@ -100,7 +100,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `ready_conditions(&self) -> Vec<WaitFor>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
 | `env_vars(&self) -> impl IntoIterator<Item = (impl Into<Cow<'_, str>>, impl Into<Cow<'_, str>>)>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
 | `mounts(&self) -> impl IntoIterator<Item = &Mount>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
-| `copy_to_sources(&self) -> impl IntoIterator<Item = &CopyToContainer>` | あり | 対応 | 未実装 | `AsyncRunner::start` で XPC `containerCopyIn` を呼ぶ / Docker: トレイト getter は呼べるが、非空なら runner が start 前に明示エラー。実コピーは未実装 |
+| `copy_to_sources(&self) -> impl IntoIterator<Item = &CopyToContainer>` | あり | 対応 | 対応 | `AsyncRunner::start` で XPC `containerCopyIn` を呼ぶ / Docker: `copy_to_sources_linux` が `PUT /containers/{id}/archive` を自前 ustar で叩く |
 | `entrypoint(&self) -> Option<&str>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
 | `cmd(&self) -> impl IntoIterator<Item = impl Into<Cow<'_, str>>>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
 | `expose_ports(&self) -> &[ContainerPort]` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通。未マッピングの expose は create 時に `HostPort=0` の `PortBindings` に載せる。macOS: 事前に空きホストポートを割当 |
@@ -123,7 +123,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_host(self, key, value)` | あり | 部分対応 | 未実装 | `ExtraHost::Addr` はコンテナ起動後に `exec` で `/etc/hosts` へ追記する。`ExtraHost::HostGateway` は起動時に明示エラー / Docker: start 時に明示エラー (設定構築に未配線) |
 | `with_hostname(self, hostname)` | あり | 対応 | 未実装 | 明示 hostname → container_name → id の優先で `networks[0].options.hostname` に反映 / Docker: start 時に明示エラー (設定構築に未配線) |
 | `with_mount(self, mount)` | あり | 対応 | 部分対応 | Bind/Volume/Tmpfs を XPC の `virtiofs/volume/tmpfs` にマップ / Docker: Bind は HostConfig.Binds に `ro`/`rw` 付きで反映。Volume/Tmpfs は create 時に明示エラー |
-| `with_copy_to(self, target, source)` | あり | 部分対応 | 未実装 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` は XPC 非反映 / Docker: 非空なら `AsyncRunner::start` が作成前に `copy_to() is not implemented on Linux` |
+| `with_copy_to(self, target, source)` | あり | 部分対応 | 部分対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` は XPC 非反映 / Docker: 自前 ustar で単一 regular file を投入。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で反映。親ディレクトリの自動作成は無し、コピー後 mtime は epoch |
 | `with_mapped_port(self, host_port, container_port)` | あり | 対応 | 対応 | `publishedPorts` に反映 |
 | `with_exposed_host_port(self, port)` (feature) | あり | なし | なし | `host-port-exposure` feature、Rust 側で SSH tunnel 実装が必要 |
 | `with_exposed_host_ports(self, ports)` (feature) | あり | なし | なし | 同上 |
@@ -192,7 +192,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `async fn is_running(&self) -> Result<bool>` | あり | 対応 | 対応 | `XpcClient::container_state` の `running` を返す / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn container_state(&self) -> Result<ContainerState>` | なし | shiguredo 拡張 | 対応 | XPC `containerState`。本家 0.27 に無し。`ContainerState::from_container` は本メソッドへ委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn exit_code(&self) -> Result<Option<i64>>` | あり | 部分対応 | 未実装 | バックグラウンド wait の観測済みキャッシュのみ。未観測のときは停止後も `None` (都度 `containerWait` はしない) / Docker: 公開 API は未実装エラー (バックグラウンド wait 無し) |
-| `async fn copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 未実装 | XPC `containerCopyOut` でホスト上の一時ファイルに書き出し、`CopyFileFromContainer` に流し込む / Docker: copy 未実装。公開 API は未実装エラー |
+| `async fn copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 対応 | XPC `containerCopyOut` でホスト上の一時ファイルに書き出し、`CopyFileFromContainer` に流し込む / Docker: `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開し先頭 regular file を渡す。ディレクトリは `IsDirectory`、source は絶対パス必須 |
 | `async fn rm(mut self) -> Result<()>` | あり | 対応 | 対応 | XPC `containerDelete` / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 
 ### 6.2 RawContainer のメソッド (本家では Deref 経由、shiguredo では ContainerAsync に直接)
@@ -227,7 +227,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `get_bridge_ip_address(&self) -> Result<IpAddr>` | あり | 対応 | 未実装 | `ContainerAsync::get_bridge_ip_address` に委譲 / Docker: DockerClient に bridge IP 取得は無く、公開 API は未実装エラー |
 | `get_host(&self) -> Result<Host>` | あり | 対応 | 部分対応 | `ContainerAsync::get_host` に委譲 (macOS では `localhost` 固定) / Docker: localhost 固定 |
 | `exec(&self, cmd: ExecCommand) -> Result<SyncExecResult>` | あり | 部分対応 | 部分対応 | `ContainerAsync::exec` に委譲。Linux は exit code のみ |
-| `copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 未実装 | `ContainerAsync::copy_file_from` に委譲 / Docker: copy 未実装。公開 API は未実装エラー |
+| `copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 対応 | `ContainerAsync::copy_file_from` に委譲 / Docker: `ContainerAsync` 経由で Docker archive API を利用 |
 | `stop(&self) -> Result<()>` | あり | 対応 | 対応 | `stop_with_timeout(None)` のエイリアス / Docker: stop_with_timeout 対応に依存 |
 | `stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | `ContainerAsync::stop_with_timeout` に委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `start(&self) -> Result<()>` | あり | 対応 | 対応 | `ContainerAsync::start` に委譲 / Docker: container_state 対応に依存 |

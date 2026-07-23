@@ -45,6 +45,10 @@ tokio = {
 # ログ出力
 tracing = "0.1"
 
+[dev-dependencies]
+# docker_tar の PBT (プロパティベーステスト) に使用
+proptest = "1.11"
+
 [build-dependencies]
 # xpc_bridge.c をコンパイルするため
 cc = "1.2"

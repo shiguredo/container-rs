@@ -307,6 +307,7 @@ dependencies = [
  "cc",
  "libc",
  "nojson",
+ "proptest",
  "shiguredo_http11",
  "tokio",
  "tracing",

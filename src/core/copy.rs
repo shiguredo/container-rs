@@ -87,9 +87,9 @@ impl From<&str> for CopyTargetOptions {
 ///
 /// macOS (XPC) では `AsyncRunner::start` の `copy_to_sources` 処理で
 /// XPC `containerCopyIn` ルートを使ってコピーされる。
+/// Linux (Docker Engine API) では `copy_to_sources_linux` が `PUT /containers/{id}/archive` を
+/// 自前 POSIX ustar (`docker_tar`) で叩き、単一 regular file を投入する。
 #[derive(Debug, Clone)]
-// Linux ではコピー処理が未配線のためフィールドが未読になる
-#[cfg_attr(target_os = "linux", expect(dead_code))]
 pub struct CopyToContainer {
     pub(crate) source: CopyDataSource,
     pub(crate) target: CopyTargetOptions,
@@ -191,7 +191,9 @@ impl From<std::io::Error> for CopyToContainerError {
 /// コンテナからのファイルコピー先。
 ///
 /// macOS (XPC) では `ContainerAsync::copy_file_from` が `containerCopyOut` で一時ファイルへ
-/// コピーし、そのリーダーをこのトレイトへ渡す。Linux では `copy_file_from` は未実装である。
+/// コピーし、そのリーダーをこのトレイトへ渡す。Linux (Docker Engine API) では
+/// `GET /containers/{id}/archive` で取得した tar を自前 ustar パーサ (`docker_tar`) で展開し、
+/// 先頭 regular file の内容を `Cursor` に載せてこのトレイトへ渡す。
 pub trait CopyFileFromContainer: Sized + Send {
     type Output: Send;
     fn copy_from_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(

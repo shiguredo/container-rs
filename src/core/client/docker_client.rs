@@ -383,7 +383,11 @@ impl DockerClient {
 
         tokio::task::spawn_blocking(move || -> Result<Response> {
             // encode 失敗時にソケットを開かないよう、connect より先にエンコードする。
-            let request_bytes = encode_docker_api_request(&method, &path, body.as_deref())?;
+            let request_bytes = encode_docker_api_request(
+                &method,
+                &path,
+                body.as_deref().map(|b| (b, "application/json")),
+            )?;
 
             let mut stream = UnixStream::connect(&socket_path)?;
             stream.write_all(&request_bytes)?;
@@ -396,15 +400,92 @@ impl DockerClient {
         .await
         .map_err(|e| ClientError::Other(format!("spawn_blocking failed: {e}")))?
     }
+
+    /// 任意の Content-Type でボディを送る HTTP リクエスト (tar 送信用)。
+    ///
+    /// 既存の JSON 固定 `request` は変更せず、`copy_to` 専用に分ける (既存呼び出しへの影響を最小化)。
+    async fn request_with_content_type(
+        &self,
+        method: &str,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &'static str,
+    ) -> Result<Response> {
+        let socket_path = self.socket_path.clone();
+        let method = method.to_string();
+        let path = path.to_string();
+
+        tokio::task::spawn_blocking(move || -> Result<Response> {
+            let request_bytes =
+                encode_docker_api_request(&method, &path, Some((body.as_slice(), content_type)))?;
+
+            let mut stream = UnixStream::connect(&socket_path)?;
+            stream.write_all(&request_bytes)?;
+            read_http11_response(&mut stream, &method)
+        })
+        .await
+        .map_err(|e| ClientError::Other(format!("spawn_blocking failed: {e}")))?
+    }
+
+    /// コンテナからファイルを取り出す (`GET /containers/{id}/archive`)。
+    ///
+    /// レスポンスボディの生 tar を返す。404 は `ContainerNotFound` に寄せる
+    /// (既存 `container_state` と同じ扱い)。
+    pub(crate) async fn copy_from(&self, id: &str, path: &str) -> Result<Vec<u8>> {
+        let api_path = format!(
+            "/containers/{}/archive?path={}",
+            percent_encode_path_segment(id),
+            percent_encode_component(path)
+        );
+        let response = self.request("GET", &api_path, None).await?;
+        if response.status_code() == 404 {
+            return Err(ClientError::ContainerNotFound(id.to_string()).into());
+        }
+        if response.status_code() >= 400 {
+            return Err(ClientError::Other(format!(
+                "failed to copy from container: {}",
+                response.status_code()
+            ))
+            .into());
+        }
+        Ok(response.body_bytes().unwrap_or(&[]).to_vec())
+    }
+
+    /// コンテナへ tar を投入する (`PUT /containers/{id}/archive`)。
+    ///
+    /// `dir` は投入先ディレクトリ。`copyUIDGID=true` で tar ヘッダの uid / gid を反映する。
+    /// 404 は `ContainerNotFound` に寄せる。
+    pub(crate) async fn copy_to(&self, id: &str, dir: &str, tar: Vec<u8>) -> Result<()> {
+        let api_path = format!(
+            "/containers/{}/archive?path={}&copyUIDGID=true",
+            percent_encode_path_segment(id),
+            percent_encode_component(dir)
+        );
+        let response = self
+            .request_with_content_type("PUT", &api_path, tar, "application/x-tar")
+            .await?;
+        if response.status_code() == 404 {
+            return Err(ClientError::ContainerNotFound(id.to_string()).into());
+        }
+        if response.status_code() >= 400 {
+            return Err(ClientError::Other(format!(
+                "failed to copy to container: {}",
+                response.status_code()
+            ))
+            .into());
+        }
+        Ok(())
+    }
 }
 
 /// Docker Engine API 向け HTTP/1.1 リクエストをエンコードする。
 ///
-/// ログストリーム (`docker_log_stream`) でも再利用するため `pub(crate)` で公開する。
+/// ログストリーム (`docker_log_stream`) と tar 送信 (`copy_to`) で再利用するため
+/// `pub(crate)` で公開する。`body` は `(本体, Content-Type)` のタプル。
 pub(crate) fn encode_docker_api_request(
     method: &str,
     path: &str,
-    body: Option<&[u8]>,
+    body: Option<(&[u8], &'static str)>,
 ) -> Result<Vec<u8>> {
     // Method は動的文字列なので Method::new で構築する。
     let method_obj = shiguredo_http11::Method::new(method).map_err(http11_err)?;
@@ -415,9 +496,9 @@ pub(crate) fn encode_docker_api_request(
         // keep-alive で対向が接続を保持しないよう明示的に閉じる。
         .header("Connection", "close")
         .map_err(http11_err)?;
-    if let Some(body) = body {
+    if let Some((body, content_type)) = body {
         request = request
-            .header("Content-Type", "application/json")
+            .header("Content-Type", content_type)
             .map_err(http11_err)?;
         request = request
             .header("Content-Length", &body.len().to_string())
