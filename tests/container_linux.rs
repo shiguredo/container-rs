@@ -684,6 +684,44 @@ async fn copy_to_data_and_copy_file_from_round_trip() {
     container.rm().await.expect("rm に失敗した");
 }
 
+/// 初回 start 経路で、初期プロセスが start 前に投入された新規ファイルを読めること。
+#[tokio::test]
+async fn copy_to_visible_before_initial_process() {
+    let marker = "COPY_BEFORE_START_OK";
+    let container = GenericImage::new("alpine", "latest")
+        .with_wait_for(WaitFor::message_on_stdout(marker))
+        .with_cmd([
+            "sh",
+            "-c",
+            "test -f /tmp/payload.txt && cat /tmp/payload.txt && exec tail -f /dev/null",
+        ])
+        .with_copy_to("/tmp/payload.txt", format!("{marker}\n").into_bytes())
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect("起動前コピーの可視性検証に失敗した");
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// 初回 start 経路で、初期プロセスが start 前に上書きされた既存ファイルの新内容を読むこと。
+#[tokio::test]
+async fn copy_to_overwrite_visible_before_initial_process() {
+    let marker = "COPY_OVERWRITE_BEFORE_START_OK";
+    let container = GenericImage::new("alpine", "latest")
+        .with_wait_for(WaitFor::message_on_stdout(marker))
+        .with_cmd([
+            "sh",
+            "-c",
+            "test -f /etc/motd && cat /etc/motd && exec tail -f /dev/null",
+        ])
+        .with_copy_to("/etc/motd", format!("{marker}\n").into_bytes())
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect("既存パス上書きの起動前可視性検証に失敗した");
+    container.rm().await.expect("rm に失敗した");
+}
+
 /// `with_copy_to` (File ソース) と `copy_file_from` (PathBuf ターゲット) の往復が成立すること。
 #[tokio::test]
 async fn copy_to_file_source_and_copy_file_from_pathbuf_target() {

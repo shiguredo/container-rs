@@ -3,6 +3,10 @@
 //! macOS (XPC) では `CopyToContainer` の tar 構築は未実装。`AsyncRunner::start` の
 //! `copy_to_sources` 処理で XPC の `containerCopyIn` を呼ぶが、tar 経由ではなく
 //! 単一ファイルコピーになるため、本家と完全同じ挙動にはならない点に注意。
+//!
+//! 投入タイミングは OS で異なる。Linux は create 後・start 前、macOS は
+//! start_process 後（起動前投入の公開契約は Linux のみ）。詳細は
+//! `ImageExt::with_copy_to` を参照すること。
 
 use std::path::PathBuf;
 
@@ -86,9 +90,10 @@ impl From<&str> for CopyTargetOptions {
 /// コンテナへコピーするファイル。
 ///
 /// macOS (XPC) では `AsyncRunner::start` の `copy_to_sources` 処理で
-/// XPC `containerCopyIn` ルートを使ってコピーされる。
+/// XPC `containerCopyIn` ルートを使ってコピーされる（`start_process` 後）。
 /// Linux (Docker Engine API) では `copy_to_sources_linux` が `PUT /containers/{id}/archive` を
-/// 自前 POSIX ustar (`docker_tar`) で叩き、単一 regular file を投入する。
+/// 自前 POSIX ustar (`docker_tar`) で叩き、単一 regular file を投入する（create 後・start 前）。
+/// タイミング契約の詳細は `ImageExt::with_copy_to` を参照すること。
 #[derive(Debug, Clone)]
 pub struct CopyToContainer {
     pub(crate) source: CopyDataSource,

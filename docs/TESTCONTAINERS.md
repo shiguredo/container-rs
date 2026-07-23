@@ -53,7 +53,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `AsyncRunner::pull_image` / `AsyncRunner::start` は動く (既定の空 ready 条件なら完結する)
 - `ports` / `exec` (exit code のみ) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
-- `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は start 後に `PUT /containers/{id}/archive` へ自前 ustar を投入する (単一 regular file のみ・親ディレクトリ自動作成なし。`mode` / `uid` / `gid` は反映)
+- `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive` へ自前 ustar を投入する (単一 regular file のみ・親ディレクトリ自動作成なし。`mode` / `uid` / `gid` は反映)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり）。起動前投入は Linux のみの公開契約
 - `get_bridge_ip_address` / `exit_code` / `ExitWaitStrategy` は未実装エラーのまま
 - `ImageExt` の一部 (`with_network` / `with_platform` / `with_cap_add` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` 等) は start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み
 
@@ -101,7 +101,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `ready_conditions(&self) -> Vec<WaitFor>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
 | `env_vars(&self) -> impl IntoIterator<Item = (impl Into<Cow<'_, str>>, impl Into<Cow<'_, str>>)>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
 | `mounts(&self) -> impl IntoIterator<Item = &Mount>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
-| `copy_to_sources(&self) -> impl IntoIterator<Item = &CopyToContainer>` | あり | 対応 | 対応 | `AsyncRunner::start` で XPC `containerCopyIn` を呼ぶ / Docker: `copy_to_sources_linux` が `PUT /containers/{id}/archive` を自前 ustar で叩く |
+| `copy_to_sources(&self) -> impl IntoIterator<Item = &CopyToContainer>` | あり | 対応 | 対応 | `AsyncRunner::start` で XPC `containerCopyIn` を呼ぶ（start_process 後） / Docker: `copy_to_sources_linux` が create 後・start 前に `PUT /containers/{id}/archive` を自前 ustar で叩く。起動前投入は Linux のみの公開契約 |
 | `entrypoint(&self) -> Option<&str>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
 | `cmd(&self) -> impl IntoIterator<Item = impl Into<Cow<'_, str>>>` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通 |
 | `expose_ports(&self) -> &[ContainerPort]` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通。未マッピングの expose は create 時に `HostPort=0` の `PortBindings` に載せる。macOS: 事前に空きホストポートを割当 |
@@ -124,7 +124,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_host(self, key, value)` | あり | 部分対応 | 未実装 | `ExtraHost::Addr` はコンテナ起動後に `exec` で `/etc/hosts` へ追記する。`ExtraHost::HostGateway` は起動時に明示エラー / Docker: start 時に明示エラー (設定構築に未配線) |
 | `with_hostname(self, hostname)` | あり | 対応 | 未実装 | 明示 hostname → container_name → id の優先で `networks[0].options.hostname` に反映 / Docker: start 時に明示エラー (設定構築に未配線) |
 | `with_mount(self, mount)` | あり | 対応 | 部分対応 | Bind/Volume/Tmpfs を XPC の `virtiofs/volume/tmpfs` にマップ / Docker: Bind は HostConfig.Binds に `ro`/`rw` 付きで反映。Volume/Tmpfs は create 時に明示エラー |
-| `with_copy_to(self, target, source)` | あり | 部分対応 | 部分対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` は XPC 非反映 / Docker: 自前 ustar で単一 regular file を投入。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で反映。親ディレクトリの自動作成は無し、コピー後 mtime は epoch |
+| `with_copy_to(self, target, source)` | あり | 部分対応 | 部分対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` は XPC 非反映。投入は start_process 後（起動前契約なし） / Docker: create 後・start 前に自前 ustar で単一 regular file を投入。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で反映。親ディレクトリの自動作成は無し、コピー後 mtime は epoch。起動前投入は Linux のみの公開契約 |
 | `with_mapped_port(self, host_port, container_port)` | あり | 対応 | 対応 | `publishedPorts` に反映 |
 | `with_exposed_host_port(self, port)` (feature) | あり | なし | なし | `host-port-exposure` feature、Rust 側で SSH tunnel 実装が必要 |
 | `with_exposed_host_ports(self, ports)` (feature) | あり | なし | なし | 同上 |
@@ -154,7 +154,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `async fn start(self) -> Result<ContainerAsync<I>>` | あり | 対応 | 対応 | XPC `containerCreate` → `containerBootstrap` → `containerStartProcess` → `containerCopyIn`。create / bootstrap / start_process / copy 失敗時の `remove` は Keep 尊重。ログ FD 取得失敗かつ `WaitFor::Log` ありの経路だけは Keep ゲート無しで `remove` し明示エラー (10.1 のログ待機とも関連) / Docker: resolve / pull / create / start / `container_state` / ready まで完結。logs ストリーム (`?follow=true`) を起動し Log 待機 / `with_log_consumer` に対応。起動失敗時は Log 待機 / consumer 使用なら fail-fast + remove、それ以外は warn + 空リーダー |
+| `async fn start(self) -> Result<ContainerAsync<I>>` | あり | 対応 | 対応 | XPC `containerCreate` → `containerBootstrap` → `containerStartProcess` → `containerCopyIn`。create / bootstrap / start_process / copy 失敗時の `remove` は Keep 尊重。ログ FD 取得失敗かつ `WaitFor::Log` ありの経路だけは Keep ゲート無しで `remove` し明示エラー (10.1 のログ待機とも関連) / Docker: resolve → pull → create → copy (`PUT /archive`) → start → `container_state` → ready まで完結。logs ストリーム (`?follow=true`) を起動し Log 待機 / `with_log_consumer` に対応。起動失敗時は Log 待機 / consumer 使用なら fail-fast + remove、それ以外は warn + 空リーダー |
 | `async fn pull_image(self) -> Result<ContainerRequest<I>>` | あり | 対応 | 対応 | XPC `imagePull` / Docker: DockerClient::pull_image を直接呼ぶ |
 
 ## 4. `SyncRunner` トレイト (`runners::SyncRunner`, feature = `blocking`)

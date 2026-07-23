@@ -2,7 +2,7 @@
 
 - Priority: High
 - Created: 2026-07-23
-- Completed:
+- Completed: 2026-07-23
 - Model: Claude Fable 5
 - Branch: feature/change-copy-to-before-start
 - Polished: 2026-07-23
@@ -176,6 +176,29 @@ testcontainers-rs では次のように書けた。Docker が create → archive
 - `CHANGES.md` に影響範囲（OS 差・親 dir 前提の破壊を含む）を書いた `[CHANGE]` がある
 - `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass する
 
+## macOS 実測結果
+
+- 実施日: 2026-07-23
+- OS: macOS 26.5.2 (Build 25F84)
+- 手順: `create_container` → `bootstrap_container` の後、`start_process` 前に既存の `copy_to_sources`（XPC `containerCopyIn`）を実行
+- 1.0.0 での結果: 失敗。エラー全文:
+  `Client(Xpc("XPC error invalidState: container c-80831-1784778212691883000-0 is not running"))`
+- 1.1.0 での再実測: 同じく失敗。エラー全文:
+  `Client(Xpc("XPC error invalidState: container c-67112-1784779224025071000-0 is not running"))`
+  - Apple container CLI: 1.1.0 (build: release)
+  - container-apiserver: 1.1.0 (build: release)
+- 判定: bootstrap 後・start_process 前の移動は不可（1.0.0 / 1.1.0 とも）。コピー位置は start_process 後のまま維持する
+- 残作業: 起動前にファイルを見せる手段は別 issue（`issues/0045-add-macos-prestart-file-visibility.md`）へ切り出した
+
 ## 解決方法
 
-（実装時に過去形で書き直す。着手時は「設計方針」「完了条件」を正とする。）
+Linux の `AsyncRunner::start` で `copy_to_sources_linux` を `create_container` 成功後・`start_container` 前に移し、起動前投入を公開契約にした。失敗時は Keep-gated 明示 rm のみ（コピー個別の巻き戻しはしない）。
+
+macOS は Apple container 1.0.0 / 1.1.0 で bootstrap 後・`start_process` 前の `containerCopyIn` を実測し、いずれも `invalidState: ... is not running` で失敗したためコピー位置は現状維持とした。制約は README / `docs/TESTCONTAINERS.md` / SKILL / rustdoc に文書化し、残作業は `issues/0045-add-macos-prestart-file-visibility.md` へ切り出した。
+
+変更ファイル:
+
+- `src/runners/async_runner.rs`: Linux の呼び出し順とコメント。macOS コメントを実測結果に合わせて更新
+- `src/core/image/image_ext.rs` / `src/core/image.rs` / `src/core/copy.rs`: タイミング契約の rustdoc
+- `tests/container_linux.rs`: `copy_to_visible_before_initial_process` / `copy_to_overwrite_visible_before_initial_process` を追加
+- `docs/TESTCONTAINERS.md` / `skills/shiguredo-container/SKILL.md` / `README.md` / `CHANGES.md`: OS 差を含む契約記述
