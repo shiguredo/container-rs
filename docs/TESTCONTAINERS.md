@@ -53,7 +53,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `AsyncRunner::pull_image` / `AsyncRunner::start` は動く (既定の空 ready 条件なら完結する)
 - `ports` / `exec` (exit code のみ) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
-- `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive` へ自前 ustar を投入する (単一 regular file のみ・親ディレクトリ自動作成なし。`mode` / `uid` / `gid` は反映)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり）。起動前投入は Linux のみの公開契約
+- `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入する (親ディレクトリ自動作成・ディレクトリ一括投入対応。配下 regular file の `mode` / `uid` / `gid` は反映。中間 directory の mode は `0o755`。コピー後 mtime は epoch)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり。親作成は `createParents`）。起動前投入は Linux のみの公開契約
 - `get_bridge_ip_address` / `exit_code` / `ExitWaitStrategy` は未実装エラーのまま
 - `ImageExt` の一部 (`with_network` / `with_platform` / `with_cap_add` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` 等) は start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み
 
@@ -86,7 +86,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップは br
 
 件数の厳密集計より、現状の読み方を優先する。
 
-- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。単一 regular file のみ)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
+- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
 - **未配線・未実装が残るもの**: `get_bridge_ip_address`、`exit_code`、`ExitWaitStrategy`、exec の stdout/stderr・Env 本対応
 - **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_cap_*` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
 
@@ -124,7 +124,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_host(self, key, value)` | あり | 部分対応 | 未実装 | `ExtraHost::Addr` はコンテナ起動後に `exec` で `/etc/hosts` へ追記する。`ExtraHost::HostGateway` は起動時に明示エラー / Docker: start 時に明示エラー (設定構築に未配線) |
 | `with_hostname(self, hostname)` | あり | 対応 | 未実装 | 明示 hostname → container_name → id の優先で `networks[0].options.hostname` に反映 / Docker: start 時に明示エラー (設定構築に未配線) |
 | `with_mount(self, mount)` | あり | 対応 | 部分対応 | Bind/Volume/Tmpfs を XPC の `virtiofs/volume/tmpfs` にマップ / Docker: Bind は HostConfig.Binds に `ro`/`rw` 付きで反映。Volume/Tmpfs は create 時に明示エラー |
-| `with_copy_to(self, target, source)` | あり | 部分対応 | 部分対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` は XPC 非反映。投入は start_process 後（起動前契約なし） / Docker: create 後・start 前に自前 ustar で単一 regular file を投入。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で反映。親ディレクトリの自動作成は無し、コピー後 mtime は epoch。起動前投入は Linux のみの公開契約 |
+| `with_copy_to(self, target, source)` | あり | 対応 | 対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` は XPC 非反映。投入は start_process 後（起動前契約なし）。親作成は `createParents`。ホストディレクトリの再帰投入可（Apple container 1.1.0 で実測） / Docker: create 後・start 前に自前 ustar で `path=/` へ投入。親ディレクトリ自動作成・ディレクトリ一括投入対応。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で regular file に反映（中間 directory の mode は `0o755`）。コピー後 mtime は epoch。起動前投入は Linux のみの公開契約 |
 | `with_mapped_port(self, host_port, container_port)` | あり | 対応 | 対応 | `publishedPorts` に反映 |
 | `with_exposed_host_port(self, port)` (feature) | あり | なし | なし | `host-port-exposure` feature、Rust 側で SSH tunnel 実装が必要 |
 | `with_exposed_host_ports(self, ports)` (feature) | あり | なし | なし | 同上 |

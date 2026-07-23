@@ -799,6 +799,161 @@ async fn copy_to_applies_mode_uid_gid() {
     container.rm().await.expect("rm に失敗した");
 }
 
+/// 存在しない親ディレクトリ配下への Data 投入が成功し、中間 dir の mode / uid / gid も反映されること。
+#[tokio::test]
+async fn copy_to_creates_missing_parents_for_data() {
+    use shiguredo_container::core::copy::CopyTargetOptions;
+
+    let target = CopyTargetOptions {
+        mode: 0o640,
+        uid: 1000,
+        gid: 1000,
+        ..CopyTargetOptions::new("/var/container-rs-copy-missing/a.txt")
+    };
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to(target, b"parent-ok\n".to_vec())
+        .start()
+        .await
+        .expect("親ディレクトリ自動作成付きの起動に失敗した");
+
+    let content: Vec<u8> = container
+        .copy_file_from("/var/container-rs-copy-missing/a.txt", Vec::new())
+        .await
+        .expect("投入ファイルの回収に失敗した");
+    assert_eq!(
+        content, b"parent-ok\n",
+        "親作成後のファイル内容が一致すること"
+    );
+
+    container
+        .exec(ExecCommand::new([
+            "sh",
+            "-c",
+            "stat -c '%a %u %g' /var/container-rs-copy-missing > /tmp/dir.stat && \
+             stat -c '%a %u %g' /var/container-rs-copy-missing/a.txt > /tmp/file.stat",
+        ]))
+        .await
+        .expect("stat の exec に失敗した");
+    let dir_stat: Vec<u8> = container
+        .copy_file_from("/tmp/dir.stat", Vec::new())
+        .await
+        .expect("中間 dir の stat 回収に失敗した");
+    let file_stat: Vec<u8> = container
+        .copy_file_from("/tmp/file.stat", Vec::new())
+        .await
+        .expect("ファイルの stat 回収に失敗した");
+    assert_eq!(
+        dir_stat, b"755 1000 1000\n",
+        "中間ディレクトリの mode / uid / gid が規則どおりであること"
+    );
+    assert_eq!(
+        file_stat, b"640 1000 1000\n",
+        "ファイルの mode / uid / gid が target どおりであること"
+    );
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// ホストディレクトリの再帰投入が、存在しない親配下でも成功すること。
+#[tokio::test]
+async fn copy_to_directory_source_with_missing_parents() {
+    use shiguredo_container::core::copy::CopyTargetOptions;
+    use std::fs;
+
+    let host_dir =
+        std::env::temp_dir().join(format!("container-rs-copy-dir-{}", std::process::id()));
+    let nested = host_dir.join("nested");
+    fs::create_dir_all(&nested).expect("ホスト一時ディレクトリの作成に失敗した");
+    fs::write(host_dir.join("root.txt"), b"root\n").expect("root.txt の書き込みに失敗した");
+    fs::write(nested.join("child.txt"), b"child\n").expect("child.txt の書き込みに失敗した");
+    // 空サブディレクトリも残す。
+    fs::create_dir_all(host_dir.join("empty")).expect("空ディレクトリの作成に失敗した");
+
+    let target = CopyTargetOptions {
+        mode: 0o600,
+        uid: 1000,
+        gid: 1000,
+        ..CopyTargetOptions::new("/var/container-rs-copy-missing-dir")
+    };
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to(target, host_dir.clone())
+        .start()
+        .await
+        .expect("ディレクトリ投入付きの起動に失敗した");
+
+    let root: Vec<u8> = container
+        .copy_file_from("/var/container-rs-copy-missing-dir/root.txt", Vec::new())
+        .await
+        .expect("root.txt の回収に失敗した");
+    let child: Vec<u8> = container
+        .copy_file_from(
+            "/var/container-rs-copy-missing-dir/nested/child.txt",
+            Vec::new(),
+        )
+        .await
+        .expect("child.txt の回収に失敗した");
+    assert_eq!(root, b"root\n");
+    assert_eq!(child, b"child\n");
+
+    container
+        .exec(ExecCommand::new([
+            "sh",
+            "-c",
+            "test -d /var/container-rs-copy-missing-dir/empty && \
+             stat -c '%a %u %g' /var/container-rs-copy-missing-dir > /tmp/root.stat && \
+             stat -c '%a %u %g' /var/container-rs-copy-missing-dir/root.txt > /tmp/file.stat",
+        ]))
+        .await
+        .expect("空ディレクトリと stat の確認に失敗した");
+    let root_stat: Vec<u8> = container
+        .copy_file_from("/tmp/root.stat", Vec::new())
+        .await
+        .expect("投入ルート dir の stat 回収に失敗した");
+    let file_stat: Vec<u8> = container
+        .copy_file_from("/tmp/file.stat", Vec::new())
+        .await
+        .expect("投入ファイルの stat 回収に失敗した");
+    assert_eq!(
+        root_stat, b"755 1000 1000\n",
+        "投入ルートディレクトリの mode / uid / gid が規則どおりであること"
+    );
+    assert_eq!(
+        file_stat, b"600 1000 1000\n",
+        "配下ファイルに target.mode / uid / gid が適用されること"
+    );
+
+    container.rm().await.expect("rm に失敗した");
+    let _ = fs::remove_dir_all(&host_dir);
+}
+
+/// ディレクトリソース内の symlink は PathNameError で拒否されること。
+#[tokio::test]
+async fn copy_to_directory_with_symlink_is_rejected() {
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    let host_dir =
+        std::env::temp_dir().join(format!("container-rs-copy-symlink-{}", std::process::id()));
+    fs::create_dir_all(&host_dir).expect("ホスト一時ディレクトリの作成に失敗した");
+    fs::write(host_dir.join("real.txt"), b"x\n").expect("real.txt の書き込みに失敗した");
+    symlink("real.txt", host_dir.join("link.txt")).expect("symlink の作成に失敗した");
+
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/symlink-src", host_dir.clone())
+        .start()
+        .await
+        .expect_err("symlink を含むディレクトリ投入は失敗すること");
+    assert!(
+        err.to_string().contains("symlink") || err.to_string().contains("copy path error"),
+        "symlink 拒否のエラーであること: {err}"
+    );
+
+    let _ = fs::remove_dir_all(&host_dir);
+}
+
 /// ディレクトリの `copy_file_from` は `IsDirectory` で拒否されること。
 #[tokio::test]
 async fn copy_file_from_directory_is_is_directory() {

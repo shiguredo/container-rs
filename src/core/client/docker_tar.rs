@@ -1,10 +1,11 @@
 //! Docker Engine API の archive エンドポイントで使う自前 POSIX ustar 実装。
 //!
-//! 対象は単一 regular file のみ。ディレクトリ・symlink・特殊ファイル・PAX / GNU 拡張は
-//! 扱わない。tar / HTTP ともにメモリ完結 (MVP)。
+//! regular file と directory (typeflag `'5'`) の書き込み、複数エントリ、`prefix[155]` 分割に
+//! 対応する。symlink・特殊ファイル・PAX / GNU 拡張は扱わない。tar / HTTP ともにメモリ完結 (MVP)。
 //!
-//! `build_single_file_ustar` は 1 エントリの ustar を構築し、`parse_first_regular_file_from_ustar`
-//! は先頭エントリが regular file ならその内容を、directory なら `IsDirectory` を返す。
+//! 本番の投入は `UstarBuilder` を使う。`build_single_file_ustar` は単一 file の薄いラッパ
+//! (単体テスト互換)。`parse_first_regular_file_from_ustar` は先頭エントリが regular file なら
+//! その内容を、directory なら `IsDirectory` を返す。
 
 use std::io::{Error as IoError, ErrorKind};
 
@@ -27,6 +28,11 @@ const CHKSUM_LEN: usize = 8;
 const TYPEFLAG_OFF: usize = 156;
 const MAGIC_OFF: usize = 257;
 const VERSION_OFF: usize = 263;
+const PREFIX_OFF: usize = 345;
+const PREFIX_LEN: usize = 155;
+
+/// name フィールドに収める最大バイト長 (NUL 終端用に 1 バイト空ける)。
+const NAME_MAX: usize = NAME_LEN - 1;
 
 /// typeflag: regular file (NUL または '0')。
 const TYPEFLAG_REGULAR: u8 = b'0';
@@ -48,10 +54,12 @@ fn invalid_data(msg: &'static str) -> CopyFromContainerError {
     CopyFromContainerError::Io(IoError::new(ErrorKind::InvalidData, msg))
 }
 
+/// パス名エラーを生成する短縮形。
+fn path_err(msg: impl Into<String>) -> CopyToContainerError {
+    CopyToContainerError::PathNameError(msg.into())
+}
+
 /// `field` (長さ `digits + 1`) に `value` を `digits` 桁の 8 進 ASCII + NUL で書く。
-///
-/// `value` が `digits` 桁に収まらない場合は下位桁が優先され上位は切り詰められる
-/// (mode / uid / gid / size はそれぞれ既定の桁数に収まる値を想定)。
 fn write_octal(field: &mut [u8], value: u64, digits: usize) {
     let mut v = value;
     for i in (0..digits).rev() {
@@ -108,37 +116,75 @@ fn parse_chksum(field: &[u8]) -> Result<u32, CopyFromContainerError> {
     Ok(value)
 }
 
-/// 単一 regular file の ustar archive を構築する。
+/// 相対パスを ustar の `name` / `prefix` に分割する。
 ///
-/// `name` は basename (Docker の path クエリで dirname は別送するため 99 バイト以下)。
-/// `mtime` は再現性のため常に 0 (エポック)。archive 終端は 512 バイト NUL ブロック 2 個。
-pub(crate) fn build_single_file_ustar(
-    name: &str,
-    data: &[u8],
+/// - 全体が `NAME_MAX` 以下なら prefix 空
+/// - 超過時は要素境界での合法分割のうち **name が最長**のものを採る
+/// - directory の末尾 `/` は常に name 側に残す
+fn split_ustar_path(path: &str) -> Result<(String, String), CopyToContainerError> {
+    let bytes = path.as_bytes();
+    if bytes.is_empty() {
+        return Err(path_err("tar entry path must not be empty"));
+    }
+    if bytes.contains(&0) {
+        return Err(path_err("tar entry path must not contain NUL"));
+    }
+    if bytes.len() <= NAME_MAX {
+        return Ok((path.to_string(), String::new()));
+    }
+
+    // directory 末尾 `/` は分割点にしないため、探索範囲から末尾の `/` を除く。
+    let search_end = if bytes.last() == Some(&b'/') {
+        bytes.len() - 1
+    } else {
+        bytes.len()
+    };
+    if search_end == 0 {
+        return Err(path_err("tar entry path must not be empty"));
+    }
+
+    let mut best: Option<(usize, usize)> = None; // (name_len, prefix_len)
+    for i in 0..search_end {
+        if bytes[i] != b'/' {
+            continue;
+        }
+        let prefix_len = i;
+        let name_len = bytes.len() - (i + 1);
+        if !(1..=NAME_MAX).contains(&name_len) {
+            continue;
+        }
+        if !(1..=PREFIX_LEN).contains(&prefix_len) {
+            continue;
+        }
+        match best {
+            None => best = Some((name_len, prefix_len)),
+            Some((best_name, _)) if name_len > best_name => best = Some((name_len, prefix_len)),
+            _ => {}
+        }
+    }
+
+    let Some((name_len, prefix_len)) = best else {
+        return Err(path_err(format!(
+            "tar entry path too long to fit ustar name/prefix: {} bytes",
+            bytes.len()
+        )));
+    };
+    let prefix = path[..prefix_len].to_string();
+    let name = path[prefix_len + 1..].to_string();
+    debug_assert_eq!(name.len(), name_len);
+    Ok((name, prefix))
+}
+
+/// ヘッダ 1 ブロックを組み立ててバッファへ追記する。
+fn append_header(
+    out: &mut Vec<u8>,
+    relative_path: &str,
+    typeflag: u8,
+    size: u64,
     mode: u32,
     uid: u32,
     gid: u32,
-) -> Result<Vec<u8>, CopyToContainerError> {
-    let name_bytes = name.as_bytes();
-    if name_bytes.is_empty() {
-        return Err(CopyToContainerError::PathNameError(
-            "tar entry name must not be empty".to_string(),
-        ));
-    }
-    // 99 バイト以下を許容、100 以上は拒否 (NUL 終端を強く要求する実装との相互運用性優先)。
-    if name_bytes.len() >= NAME_LEN {
-        return Err(CopyToContainerError::PathNameError(format!(
-            "tar entry name too long: {} bytes (max 99)",
-            name_bytes.len()
-        )));
-    }
-    if name_bytes.contains(&0) {
-        return Err(CopyToContainerError::PathNameError(
-            "tar entry name must not contain NUL".to_string(),
-        ));
-    }
-    // ustar の uid / gid は 8 進 7 桁、size は 8 進 11 桁が上限。超過はヘッダの暗黙桁詰め
-    // (メタデータ / データ破損) になるため、公開入力の境界で fail-fast する。
+) -> Result<(), CopyToContainerError> {
     if (uid as u64) > OCTAL_7DIGIT_MAX {
         return Err(overflow_err(format!(
             "uid {uid} exceeds ustar 7-octal-digit limit ({OCTAL_7DIGIT_MAX})"
@@ -149,16 +195,21 @@ pub(crate) fn build_single_file_ustar(
             "gid {gid} exceeds ustar 7-octal-digit limit ({OCTAL_7DIGIT_MAX})"
         )));
     }
-    if (data.len() as u64) > OCTAL_11DIGIT_MAX {
+    if size > OCTAL_11DIGIT_MAX {
         return Err(overflow_err(format!(
-            "data size {} exceeds ustar 11-octal-digit limit ({OCTAL_11DIGIT_MAX})",
-            data.len()
+            "data size {size} exceeds ustar 11-octal-digit limit ({OCTAL_11DIGIT_MAX})"
         )));
     }
 
+    let (name, prefix) = split_ustar_path(relative_path)?;
+    let name_bytes = name.as_bytes();
+    let prefix_bytes = prefix.as_bytes();
+
     let mut header = [0u8; BLOCK_SIZE];
     header[NAME_OFF..NAME_OFF + name_bytes.len()].copy_from_slice(name_bytes);
-    // mode は下位 12 ビットのみ。
+    if !prefix_bytes.is_empty() {
+        header[PREFIX_OFF..PREFIX_OFF + prefix_bytes.len()].copy_from_slice(prefix_bytes);
+    }
     write_octal(
         &mut header[MODE_OFF..MODE_OFF + 8],
         (mode & 0o7777) as u64,
@@ -166,31 +217,109 @@ pub(crate) fn build_single_file_ustar(
     );
     write_octal(&mut header[UID_OFF..UID_OFF + 8], uid as u64, 7);
     write_octal(&mut header[GID_OFF..GID_OFF + 8], gid as u64, 7);
-    write_octal(
-        &mut header[SIZE_OFF..SIZE_OFF + SIZE_LEN],
-        data.len() as u64,
-        11,
-    );
+    write_octal(&mut header[SIZE_OFF..SIZE_OFF + SIZE_LEN], size, 11);
     write_octal(&mut header[MTIME_OFF..MTIME_OFF + SIZE_LEN], 0, 11);
-    header[TYPEFLAG_OFF] = TYPEFLAG_REGULAR;
+    header[TYPEFLAG_OFF] = typeflag;
     header[MAGIC_OFF..MAGIC_OFF + 6].copy_from_slice(b"ustar\0");
     header[VERSION_OFF..VERSION_OFF + 2].copy_from_slice(b"00");
-    // uname / gname は空 (uid / gid を優先)。devmajor / devminor / prefix は未使用 (0 埋め)。
 
-    // チェックサム: chksum フィールドを空白で埋めた状態の 512 バイト全体の符号なし合計。
     header[CHKSUM_OFF..CHKSUM_OFF + CHKSUM_LEN].copy_from_slice(&[0x20; CHKSUM_LEN]);
     let sum: u32 = header.iter().map(|&b| b as u32).sum();
     write_chksum(&mut header[CHKSUM_OFF..CHKSUM_OFF + CHKSUM_LEN], sum);
 
-    let mut out = Vec::new();
     out.extend_from_slice(&header);
-    out.extend_from_slice(data);
-    // データ本体を 512 バイト境界まで NUL パディング。
-    let pad = (BLOCK_SIZE - (data.len() % BLOCK_SIZE)) % BLOCK_SIZE;
-    out.extend(std::iter::repeat_n(0u8, pad));
-    // archive 終端: 512 バイト NUL ブロック 2 個。
-    out.extend(std::iter::repeat_n(0u8, BLOCK_SIZE * 2));
-    Ok(out)
+    Ok(())
+}
+
+/// 複数エントリの ustar archive を構築するビルダー。
+///
+/// `append_*` のたびにヘッダ (+ データ) をバッファへ書き、`finish` で終端 NUL ブロック 2 個を
+/// 一度だけ付ける。複数回の `build_single_file_ustar` 連結はしてはならない。
+pub(crate) struct UstarBuilder {
+    buf: Vec<u8>,
+}
+
+impl UstarBuilder {
+    /// 空のビルダーを返す。
+    pub(crate) fn new() -> Self {
+        Self { buf: Vec::new() }
+    }
+
+    /// directory エントリを追記する。`relative_path` は末尾 `/` 必須。
+    pub(crate) fn append_directory(
+        &mut self,
+        relative_path_with_trailing_slash: &str,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), CopyToContainerError> {
+        if !relative_path_with_trailing_slash.ends_with('/') {
+            return Err(path_err(
+                "directory tar entry path must end with a slash".to_string(),
+            ));
+        }
+        append_header(
+            &mut self.buf,
+            relative_path_with_trailing_slash,
+            TYPEFLAG_DIRECTORY,
+            0,
+            mode,
+            uid,
+            gid,
+        )
+    }
+
+    /// regular file エントリを追記する。
+    pub(crate) fn append_file(
+        &mut self,
+        relative_path: &str,
+        data: &[u8],
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), CopyToContainerError> {
+        if relative_path.ends_with('/') {
+            return Err(path_err(
+                "file tar entry path must not end with a slash".to_string(),
+            ));
+        }
+        append_header(
+            &mut self.buf,
+            relative_path,
+            TYPEFLAG_REGULAR,
+            data.len() as u64,
+            mode,
+            uid,
+            gid,
+        )?;
+        self.buf.extend_from_slice(data);
+        let pad = (BLOCK_SIZE - (data.len() % BLOCK_SIZE)) % BLOCK_SIZE;
+        self.buf.extend(std::iter::repeat_n(0u8, pad));
+        Ok(())
+    }
+
+    /// archive 終端 (NUL 512×2) を付けてバイト列を返す。
+    pub(crate) fn finish(mut self) -> Result<Vec<u8>, CopyToContainerError> {
+        self.buf.extend(std::iter::repeat_n(0u8, BLOCK_SIZE * 2));
+        Ok(self.buf)
+    }
+}
+
+/// 単一 regular file の ustar archive を構築する。
+///
+/// 内部は `UstarBuilder` に 1 file だけ積む薄いラッパ。中間 directory は付けない。
+/// 本番の投入は `UstarBuilder` を直接使う。本関数は単体テスト互換用。
+#[cfg(test)]
+pub(crate) fn build_single_file_ustar(
+    name: &str,
+    data: &[u8],
+    mode: u32,
+    uid: u32,
+    gid: u32,
+) -> Result<Vec<u8>, CopyToContainerError> {
+    let mut builder = UstarBuilder::new();
+    builder.append_file(name, data, mode, uid, gid)?;
+    builder.finish()
 }
 
 /// ustar archive の先頭エントリを parse し、regular file ならその内容を返す。
@@ -201,7 +330,6 @@ pub(crate) fn build_single_file_ustar(
 pub(crate) fn parse_first_regular_file_from_ustar(
     bytes: &[u8],
 ) -> Result<Vec<u8>, CopyFromContainerError> {
-    // gzip magic の検出 (Content-Encoding ヘッダを見なくても拒否できるようにする)。
     if bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b {
         return Err(CopyFromContainerError::UnsupportedEntry("gzip"));
     }
@@ -209,7 +337,6 @@ pub(crate) fn parse_first_regular_file_from_ustar(
         return Err(invalid_data("truncated tar header"));
     }
     let header = &bytes[..BLOCK_SIZE];
-    // 先頭ブロックが全 NUL ならエントリ無し (空 archive)。
     if header.iter().all(|&b| b == 0) {
         return Err(CopyFromContainerError::EmptyArchive);
     }
@@ -225,7 +352,6 @@ pub(crate) fn parse_first_regular_file_from_ustar(
         _ => return Err(CopyFromContainerError::UnsupportedEntry("unknown typeflag")),
     }
 
-    // チェックサム検証: chksum フィールドを空白で埋め直して合計を再計算し、数値比較する。
     let stored = parse_chksum(&header[CHKSUM_OFF..CHKSUM_OFF + CHKSUM_LEN])?;
     let mut sum_header = [0u8; BLOCK_SIZE];
     sum_header.copy_from_slice(header);
@@ -266,19 +392,17 @@ mod tests {
         // 既知の入力についてヘッダ各フィールドが仕様どおりのバイト列になること (ゴールデン)。
         let tar = build_single_file_ustar("hello.txt", b"world", 0o644, 1000, 1000)
             .expect("build が成功すること");
-        // archive = ヘッダ 512 + データ 512 (パディング込み) + 終端 1024。
         assert_eq!(tar.len(), 512 + 512 + 1024);
         let header = &tar[..512];
         assert_eq!(field_str(header, NAME_OFF, NAME_LEN), b"hello.txt");
         assert_eq!(field_str(header, MODE_OFF, 8), b"0000644");
-        assert_eq!(field_str(header, UID_OFF, 8), b"0001750"); // 1000 = 0o1750
+        assert_eq!(field_str(header, UID_OFF, 8), b"0001750");
         assert_eq!(field_str(header, GID_OFF, 8), b"0001750");
-        assert_eq!(field_str(header, SIZE_OFF, SIZE_LEN), b"00000000005"); // 5 バイト
+        assert_eq!(field_str(header, SIZE_OFF, SIZE_LEN), b"00000000005");
         assert_eq!(field_str(header, MTIME_OFF, SIZE_LEN), b"00000000000");
         assert_eq!(header[TYPEFLAG_OFF], b'0');
         assert_eq!(&header[MAGIC_OFF..MAGIC_OFF + 6], b"ustar\0");
         assert_eq!(&header[VERSION_OFF..VERSION_OFF + 2], b"00");
-        // チェックサムがヘッダ合計と一致すること。
         let stored = parse_chksum(&header[CHKSUM_OFF..CHKSUM_OFF + CHKSUM_LEN])
             .expect("chksum が parse できること");
         let mut sum_header = [0u8; 512];
@@ -286,7 +410,6 @@ mod tests {
         sum_header[CHKSUM_OFF..CHKSUM_OFF + CHKSUM_LEN].copy_from_slice(&[0x20; 8]);
         let computed: u32 = sum_header.iter().map(|&b| b as u32).sum();
         assert_eq!(stored, computed, "チェックサムがヘッダ合計と一致すること");
-        // データ本体。
         assert_eq!(&tar[512..517], b"world");
     }
 
@@ -304,7 +427,7 @@ mod tests {
         // チェックサム破損入力は InvalidData で失敗すること。
         let mut tar =
             build_single_file_ustar("a", b"data", 0o644, 0, 0).expect("build が成功すること");
-        tar[CHKSUM_OFF] ^= 0xFF; // チェックサムを破壊
+        tar[CHKSUM_OFF] ^= 0xFF;
         let err =
             parse_first_regular_file_from_ustar(&tar).expect_err("破損チェックサムは失敗すること");
         assert!(
@@ -328,13 +451,11 @@ mod tests {
     #[test]
     fn parse_directory_entry_is_is_directory() {
         // typeflag '5' の先頭エントリは IsDirectory であること。
-        let mut tar =
-            build_single_file_ustar("dir", b"", 0o755, 0, 0).expect("build が成功すること");
-        tar[TYPEFLAG_OFF] = TYPEFLAG_DIRECTORY;
-        // typeflag 変更でチェックサムがずれるため再計算する。
-        tar[CHKSUM_OFF..CHKSUM_OFF + CHKSUM_LEN].copy_from_slice(&[0x20; CHKSUM_LEN]);
-        let sum: u32 = tar[..512].iter().map(|&b| b as u32).sum();
-        write_chksum(&mut tar[CHKSUM_OFF..CHKSUM_OFF + CHKSUM_LEN], sum);
+        let mut builder = UstarBuilder::new();
+        builder
+            .append_directory("dir/", 0o755, 0, 0)
+            .expect("directory 追記が成功すること");
+        let tar = builder.finish().expect("finish が成功すること");
         let err = parse_first_regular_file_from_ustar(&tar).expect_err("directory は失敗すること");
         assert!(
             matches!(err, CopyFromContainerError::IsDirectory),
@@ -355,16 +476,17 @@ mod tests {
 
     #[test]
     fn build_rejects_invalid_name() {
-        // 空名・100 バイト以上・NUL 混入は PathNameError であること。
+        // 空名・NUL 混入は PathNameError であること。
         assert!(build_single_file_ustar("", b"x", 0o644, 0, 0).is_err());
+        assert!(build_single_file_ustar("a\0b", b"x", 0o644, 0, 0).is_err());
+        // 単一要素が 100 バイト以上で prefix 分割不能なら拒否。
         let long = "a".repeat(100);
         assert!(build_single_file_ustar(&long, b"x", 0o644, 0, 0).is_err());
-        assert!(build_single_file_ustar("a\0b", b"x", 0o644, 0, 0).is_err());
     }
 
     #[test]
     fn build_rejects_uid_gid_overflow() {
-        // uid / gid が 8 進 7 桁上限 (0o7777777) を超えると fail-fast すること (F1 の回帰)。
+        // uid / gid が 8 進 7 桁上限を超えると fail-fast すること。
         let over = (OCTAL_7DIGIT_MAX + 1) as u32;
         assert!(
             build_single_file_ustar("a", b"x", 0o644, over, 0).is_err(),
@@ -374,7 +496,6 @@ mod tests {
             build_single_file_ustar("a", b"x", 0o644, 0, over).is_err(),
             "gid 上限超過は拒否されること"
         );
-        // 上限ちょうどは許容されること。
         let max = OCTAL_7DIGIT_MAX as u32;
         assert!(build_single_file_ustar("a", b"x", 0o644, max, max).is_ok());
     }
@@ -425,7 +546,7 @@ mod tests {
         // ヘッダの size より実データが短い場合は Io(InvalidData) であること。
         let mut tar =
             build_single_file_ustar("f", b"0123456789", 0o644, 0, 0).expect("build が成功すること");
-        tar.truncate(512 + 4); // データ本体を途中で切断
+        tar.truncate(512 + 4);
         let err = parse_first_regular_file_from_ustar(&tar).expect_err("データ切断は失敗すること");
         assert!(
             matches!(err, CopyFromContainerError::Io(_)),
@@ -435,11 +556,10 @@ mod tests {
 
     #[test]
     fn parse_invalid_octal_field_is_error() {
-        // size フィールドに不正な 8 進文字 (例: '9') が入ると Io(InvalidData) であること。
+        // size フィールドに不正な 8 進文字が入ると Io(InvalidData) であること。
         let mut tar =
             build_single_file_ustar("f", b"x", 0o644, 0, 0).expect("build が成功すること");
-        tar[SIZE_OFF] = b'9'; // 不正な 8 進数字
-        // チェックサムを再計算してチェックサム検証は通過させる。
+        tar[SIZE_OFF] = b'9';
         tar[CHKSUM_OFF..CHKSUM_OFF + CHKSUM_LEN].copy_from_slice(&[0x20; CHKSUM_LEN]);
         let sum: u32 = tar[..512].iter().map(|&b| b as u32).sum();
         write_chksum(&mut tar[CHKSUM_OFF..CHKSUM_OFF + CHKSUM_LEN], sum);
@@ -447,6 +567,94 @@ mod tests {
         assert!(
             matches!(err, CopyFromContainerError::Io(_)),
             "invalid octal は Io エラーであること: {err}"
+        );
+    }
+
+    #[test]
+    fn builder_directory_and_file_layout() {
+        // directory → file の順で書き、typeflag / size / 終端が仕様どおりであること。
+        let mut builder = UstarBuilder::new();
+        builder
+            .append_directory("var/", 0o755, 1000, 1000)
+            .expect("directory 追記が成功すること");
+        builder
+            .append_file("var/a.txt", b"hi", 0o644, 1000, 1000)
+            .expect("file 追記が成功すること");
+        let tar = builder.finish().expect("finish が成功すること");
+        // dir ヘッダ 512 + file ヘッダ 512 + data 512 + 終端 1024。
+        assert_eq!(tar.len(), 512 + 512 + 512 + 1024);
+        assert_eq!(tar[TYPEFLAG_OFF], TYPEFLAG_DIRECTORY);
+        assert_eq!(field_str(&tar[..512], NAME_OFF, NAME_LEN), b"var/");
+        assert_eq!(field_str(&tar[..512], SIZE_OFF, SIZE_LEN), b"00000000000");
+        let file_header = &tar[512..1024];
+        assert_eq!(file_header[TYPEFLAG_OFF], TYPEFLAG_REGULAR);
+        assert_eq!(field_str(file_header, NAME_OFF, NAME_LEN), b"var/a.txt");
+        assert_eq!(&tar[1024..1026], b"hi");
+        assert!(
+            tar[tar.len() - 1024..].iter().all(|&b| b == 0),
+            "終端が NUL 512×2 であること"
+        );
+    }
+
+    #[test]
+    fn split_prefers_longest_name() {
+        // 100 バイト超のパスで、最長 name 分割になること。
+        let prefix_part = "p".repeat(20);
+        let name_part = "n".repeat(90);
+        let path = format!("{prefix_part}/{name_part}");
+        assert!(path.len() > NAME_MAX);
+        let (name, prefix) = split_ustar_path(&path).expect("分割できること");
+        assert_eq!(name, name_part);
+        assert_eq!(prefix, prefix_part);
+        assert!(name.len() <= NAME_MAX);
+        assert!(prefix.len() <= PREFIX_LEN);
+    }
+
+    #[test]
+    fn split_directory_keeps_trailing_slash_in_name() {
+        // directory の末尾 `/` が name 側に残ること。
+        let prefix_part = "d".repeat(50);
+        let mid = "m".repeat(50);
+        let path = format!("{prefix_part}/{mid}/");
+        assert!(path.len() > NAME_MAX);
+        let (name, prefix) = split_ustar_path(&path).expect("分割できること");
+        assert!(name.ends_with('/'), "name が末尾 / を持つこと: {name}");
+        assert!(
+            !prefix.ends_with('/'),
+            "prefix に末尾 / を残さないこと: {prefix}"
+        );
+        assert_eq!(format!("{prefix}/{name}"), path);
+    }
+
+    #[test]
+    fn builder_rejects_directory_without_slash() {
+        // directory パスに末尾 `/` が無いと拒否すること。
+        let mut builder = UstarBuilder::new();
+        let err = builder
+            .append_directory("var", 0o755, 0, 0)
+            .expect_err("末尾スラッシュ無しは失敗すること");
+        assert!(
+            matches!(err, CopyToContainerError::PathNameError(_)),
+            "PathNameError であること: {err}"
+        );
+    }
+
+    #[test]
+    fn builder_uses_prefix_for_long_path() {
+        // 長い相対パスが prefix フィールドに載ること。
+        let prefix_part = "a".repeat(40);
+        let name_part = "b".repeat(80);
+        let path = format!("{prefix_part}/{name_part}");
+        let mut builder = UstarBuilder::new();
+        builder
+            .append_file(&path, b"x", 0o644, 0, 0)
+            .expect("長いパスの追記が成功すること");
+        let tar = builder.finish().expect("finish が成功すること");
+        let header = &tar[..512];
+        assert_eq!(field_str(header, NAME_OFF, NAME_LEN), name_part.as_bytes());
+        assert_eq!(
+            field_str(header, PREFIX_OFF, PREFIX_LEN),
+            prefix_part.as_bytes()
         );
     }
 

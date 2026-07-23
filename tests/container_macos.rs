@@ -847,6 +847,77 @@ mod test_container_xpc {
         let _ = std::fs::remove_file(&src);
     }
 
+    /// ホストディレクトリを `with_copy_to` したときの XPC 挙動を実測する。
+    #[tokio::test]
+    async fn xpc_alpine_with_copy_to_directory() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        let host_dir = std::env::temp_dir().join(format!(
+            "shiguredo_container_test_copy_dir_{}",
+            std::process::id()
+        ));
+        let nested = host_dir.join("nested");
+        std::fs::create_dir_all(&nested).expect("ホスト一時ディレクトリの作成に失敗した");
+        std::fs::write(host_dir.join("root.txt"), b"root from host\n")
+            .expect("root.txt の書き込みに失敗した");
+        std::fs::write(nested.join("child.txt"), b"child from host\n")
+            .expect("child.txt の書き込みに失敗した");
+
+        let start = GenericImage::new("alpine", "latest")
+            .with_copy_to("/data/fixture", host_dir.clone())
+            .with_cmd(["sleep", "30"])
+            .start()
+            .await;
+
+        match start {
+            Ok(container) => {
+                let root_ok = container
+                    .exec(ExecCommand::new([
+                        "sh",
+                        "-c",
+                        "[ \"$(cat /data/fixture/root.txt)\" = \"root from host\" ]",
+                    ]))
+                    .await
+                    .expect("root.txt 確認の exec に失敗した");
+                let child_ok = container
+                    .exec(ExecCommand::new([
+                        "sh",
+                        "-c",
+                        "[ \"$(cat /data/fixture/nested/child.txt)\" = \"child from host\" ]",
+                    ]))
+                    .await
+                    .expect("child.txt 確認の exec に失敗した");
+                assert_eq!(
+                    root_ok
+                        .exit_code()
+                        .await
+                        .expect("root exit code の取得に失敗した"),
+                    Some(0),
+                    "ディレクトリ投入後に root.txt が読めること"
+                );
+                assert_eq!(
+                    child_ok
+                        .exit_code()
+                        .await
+                        .expect("child exit code の取得に失敗した"),
+                    Some(0),
+                    "ディレクトリ投入後に nested/child.txt が読めること"
+                );
+                container.stop_with_timeout(Some(0)).await.ok();
+                container.rm().await.ok();
+            }
+            Err(e) => {
+                panic!(
+                    "macOS ディレクトリ投入が失敗した (Apple container 制約として文書化する根拠): {e}"
+                );
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&host_dir);
+    }
+
     /// `CopyDataSource::Data` の内容が一時ファイル経由でコンテナにコピーされること。
     #[tokio::test]
     async fn xpc_alpine_with_copy_to_data() {

@@ -2,8 +2,9 @@
 //!
 //! macOS (XPC) では `CopyToContainer` の tar 構築は未実装。`AsyncRunner::start` の
 //! `copy_to_sources` 処理で XPC の `containerCopyIn` を呼ぶが、tar 経由ではなく
-//! 単一ファイルコピーになるため、本家と完全同じ挙動にはならない点に注意。
+//! ホストパス直渡しになるため、本家と完全同じ挙動にはならない点に注意。
 //!
+//! Linux は自前 ustar で親ディレクトリ自動作成とディレクトリ一括投入に対応する。
 //! 投入タイミングは OS で異なる。Linux は create 後・start 前、macOS は
 //! start_process 後（起動前投入の公開契約は Linux のみ）。詳細は
 //! `ImageExt::with_copy_to` を参照すること。
@@ -91,8 +92,9 @@ impl From<&str> for CopyTargetOptions {
 ///
 /// macOS (XPC) では `AsyncRunner::start` の `copy_to_sources` 処理で
 /// XPC `containerCopyIn` ルートを使ってコピーされる（`start_process` 後）。
-/// Linux (Docker Engine API) では `copy_to_sources_linux` が `PUT /containers/{id}/archive` を
-/// 自前 POSIX ustar (`docker_tar`) で叩き、単一 regular file を投入する（create 後・start 前）。
+/// Linux (Docker Engine API) では `copy_to_sources_linux` が `PUT /containers/{id}/archive?path=/`
+/// を自前 POSIX ustar (`UstarBuilder`) で叩き、親ディレクトリ自動作成とディレクトリ一括投入に
+/// 対応する（create 後・start 前）。
 /// タイミング契約の詳細は `ImageExt::with_copy_to` を参照すること。
 #[derive(Debug, Clone)]
 pub struct CopyToContainer {
@@ -172,7 +174,7 @@ impl std::fmt::Display for CopyToContainerError {
         match self {
             CopyToContainerError::IoError(e) => write!(f, "I/O error: {e}"),
             CopyToContainerError::PathNameError(s) => {
-                write!(f, "source is not a regular file: {s}")
+                write!(f, "copy path error: {s}")
             }
         }
     }

@@ -45,6 +45,14 @@ pub trait ImageExt<I: Image> {
     ///   running でないと XPC が拒否するため、起動前投入の公開契約は無い。
     ///   初期プロセスが起動時に読むファイルには、利用側の起動待ち等が別途必要になり得る。
     ///
+    /// # 投入能力
+    ///
+    /// - **Linux**: 親ディレクトリの自動作成とホストディレクトリの再帰投入に対応する。
+    ///   配下の regular file には `CopyTargetOptions.mode` / `uid` / `gid` を適用する。
+    ///   中間 directory の mode は `0o755`。symlink / 特殊ファイルは拒否する。
+    /// - **macOS**: 親ディレクトリは `createParents` で自動作成される。ホストディレクトリの
+    ///   再帰投入も XPC が受理する（Apple container 1.1.0 で実測）。`uid` / `gid` は非反映。
+    ///
     /// 停止後の `ContainerAsync::start`（再起動）では再投入しない。
     fn with_copy_to(
         self,

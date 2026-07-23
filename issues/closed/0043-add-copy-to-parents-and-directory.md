@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-23
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-07-23
 - Model: Claude Fable 5
 - Branch: feature/add-copy-to-parents-and-directory
 - Polished: 2026-07-23
@@ -209,4 +209,6 @@ impl UstarBuilder {
 
 ## 解決方法
 
-設計方針どおり、`UstarBuilder` を追加して `copy_to_sources_linux` を path="/" + 相対パスに置き換え、macOS は実測のうえ文書化する。docs / SKILL / rustdoc / CHANGES（0041 括弧含む）をセット更新する。
+`docker_tar` に `UstarBuilder`（directory / 複数エントリ / `prefix[155]` 最長 name 分割）を追加し、`copy_to_sources_linux` を常に `PUT path="/"` + 相対パス archive に置き換えた。中間 directory の mode は `0o755`、配下 regular file には `CopyTargetOptions` を適用する。symlink 等は fail-fast。`PathNameError` Display を `copy path error:` に中立化した。
+
+macOS は Apple container 1.1.0 でホストディレクトリの再帰投入を実測し成功したため、docs / SKILL / rustdoc で対応済みと明記した（クライアント側の追加拒否は入れない）。Linux 統合テスト（親不在 Data / ディレクトリ / symlink 拒否）と `docker_tar` 単体テストを追加し、0041 CHANGE の「親 dir 不在は失敗」括弧を除去した。
