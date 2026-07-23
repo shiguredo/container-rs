@@ -24,7 +24,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 - **Linux**: Docker Engine API を利用します。
 
 > [!WARNING]
-> Linux ではライフサイクル (start / exec / stop / rm / Drop) に加えログ関連 (stdout / stderr / ログ待機 / LogConsumer) も動くが、ファイルコピー・bridge IP 取得などは未対応のままである。対応範囲は [testcontainers-rs / Apple Container / Docker Engine API の比較](docs/TESTCONTAINERS.md) を参照してください。
+> Linux ではライフサイクル (start / exec / stop / rm / Drop) に加えログ関連 (stdout / stderr / ログ待機 / LogConsumer) とファイルコピー (`copy_file_from` / `with_copy_to`) も動くが、bridge IP 取得・exec の stdout / stderr・ネットワーク系設定などは未対応のままである。対応範囲は [testcontainers-rs / Apple Container / Docker Engine API の比較](docs/TESTCONTAINERS.md) を参照してください。
 
 ## モチベーション
 

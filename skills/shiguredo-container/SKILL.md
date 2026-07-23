@@ -10,7 +10,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 ## 特徴
 
 - **macOS がメイン対象**: Apple container の XPC API を自前実装で直接叩く。Docker Desktop 不要
-- **Linux 対応**: Docker Engine API (`/var/run/docker.sock`) を利用。ライフサイクル (start / exec / stop / rm / Drop) は動くが、ログ待機・ファイルコピー・bridge IP 取得などは未対応
+- **Linux 対応**: Docker Engine API (`/var/run/docker.sock`) を利用。ライフサイクル (start / exec / stop / rm / Drop)、ログ関連 (stdout / stderr / ログ待機 / LogConsumer)、ホストポート公開、ファイルコピー (`copy_file_from` / `with_copy_to`) が動く。bridge IP 取得・exec の stdout / stderr・network 系設定などは未対応
 - **testcontainers-rs 互換 API**: 学習コスト削減のため公開 API を testcontainers-rs 0.27 に寄せている (完全互換は目指さない)
 - **依存最小**: `libc` / `nojson` / `shiguredo_http11` / `tokio` / `tracing` (+ optional `base64ct`)。bollard / reqwest / bytes 等は使わない
 - **黙って無視しない**: 未対応の設定はリクエストに保存だけして無視するのではなく、start / create 時に明示エラーを返す
@@ -18,7 +18,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 ## バージョン情報
 
 - crate 名: `shiguredo_container`
-- バージョン: 2026.1.0
+- バージョン: 2026.1.0-canary.1
 - Rust Edition: 2024
 - 最小 Rust バージョン: 1.88
 - ライセンス: Apache-2.0
@@ -66,8 +66,8 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `with_platform` | 対応 (`"linux/amd64"` で rosetta / pull / architecture に反映) | start 時に明示エラー |
 | `with_network` | 部分対応 (事前に `container network create` が必要。自動作成しない) | start 時に明示エラー |
 | `with_mount` | 対応 (Bind / Volume / Tmpfs) | Bind のみ (`ro`/`rw` 付き)。Volume / Tmpfs は明示エラー |
-| `with_copy_to` | 部分対応 (XPC `containerCopyIn`。`uid` / `gid` は非反映) | start 前に明示エラー |
-| `with_log_consumer` | 対応 (行単位で `LogFrame` を配信) | start 時に明示エラー (ログ FD なし) |
+| `with_copy_to` | 部分対応 (XPC `containerCopyIn`。`uid` / `gid` は非反映) | 部分対応 (start 後に `PUT /containers/{id}/archive`。単一 regular file のみ・親ディレクトリ自動作成なし。`mode` / `uid` / `gid` は反映) |
+| `with_log_consumer` | 対応 (行単位で `LogFrame` を配信) | 対応 (demux 済み共有バッファから行単位で配信。行末 `\n` / `\r` 剥がし、終端後の非改行残余は破棄) |
 | `with_privileged` | 部分対応 (`capAdd: ["ALL"]` 相当) | 対応 |
 | `with_cap_add`, `with_cap_drop`, `with_shm_size`, `with_readonly_rootfs`, `with_open_stdin`, `with_hostname` | 対応 | start 時に明示エラー |
 | `with_host` | 部分対応 (`ExtraHost::Addr` は exec で `/etc/hosts` 追記。`HostGateway` はエラー) | start 時に明示エラー |
@@ -89,22 +89,22 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `start()` (再起動), `stop()`, `stop_with_timeout(Option<i32>)`, `is_running()`, `rm()` | 対応 | 対応 |
 | `container_state()` | **shiguredo 拡張** | 対応 |
 | `exit_code()` | 部分対応 (バックグラウンド wait の観測済みキャッシュのみ) | 未実装エラー |
-| `copy_file_from(path, target)` | 対応 (`Vec<u8>` / `PathBuf` を target にできる) | 未実装エラー |
-| `stdout(follow)`, `stderr(follow)`, `stdout_to_vec()`, `stderr_to_vec()` | 対応 (`follow=true` は追記ポーリング) | 空リーダー |
+| `copy_file_from(path, target)` | 対応 (`Vec<u8>` / `PathBuf` を target にできる) | 対応 (`GET /containers/{id}/archive` + 自前 ustar パーサ。source は絶対パス必須・ファイル専用) |
+| `stdout(follow)`, `stderr(follow)`, `stdout_to_vec()`, `stderr_to_vec()` | 対応 (`follow=true` は追記ポーリング) | 対応 (demux 済み共有バッファ。ストリームあたり 8 MiB・drop-oldest。`follow=false` は呼び出しごとに新規 HTTP セッションで全ログ取得) |
 | `Drop` | 対応 (削除。Keep ゲートあり) | 対応 |
 
 `pause` / `unpause` は XPC に route が無いためシグネチャごと存在しない。
 
 `stop_with_timeout` の意味: macOS では `Some(0)` = 即時 SIGKILL、`None` = 30 秒 SIGTERM。Linux では `Some(t>=0)` = `t` 秒、`None`・負値 = 30 秒。
 
-注意: macOS の stderr 側ログは VM の bootlog を指す。アプリケーションの stderr は stdout 側ログに混流する。
+注意: macOS の stderr 側ログは VM の bootlog を指す。アプリケーションの stderr は stdout 側ログに混流する。Linux は Docker Engine API の STREAM_TYPE で stdout / stderr が正しく分離される。
 
 ### `WaitFor` (準備完了待機)
 
 | コンストラクタ | macOS (XPC) | Linux (Docker) |
 |:--|:--|:--|
 | `WaitFor::Nothing` (既定) | 対応 | 対応 |
-| `WaitFor::message_on_stdout(msg)` / `message_on_stderr(msg)` / `message_on_either_std(msg)` / `log(LogWaitStrategy)` | 対応 | start 時に明示エラー (ログ FD なし) |
+| `WaitFor::message_on_stdout(msg)` / `message_on_stderr(msg)` / `message_on_either_std(msg)` / `log(LogWaitStrategy)` | 対応 | 対応 (demux 済みログストリームに対して待機) |
 | `WaitFor::http(HttpWaitStrategy)` (feature = `http_wait_plain`) | 対応 | 対応 (host port 解決可) |
 | `WaitFor::exit(ExitWaitStrategy)` | 対応 | 未実装エラー |
 | `WaitFor::healthcheck()` | 未実装 (XPC 制約: Apple container は HEALTHCHECK を実行しない) | 未実装 |
@@ -119,7 +119,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 
 ### `ExecCommand` / `ExecResult` / `CmdWaitFor`
 
-- `ExecCommand::new(["cmd", "arg"])`, `with_container_ready_conditions(Vec<WaitFor>)`, `with_cmd_ready_condition(CmdWaitFor)`, `with_env_vars(iter)` (macOS のみ。コンテナ env にマージされ同名は ExecCommand 側優先)
+- `ExecCommand::new(["cmd", "arg"])`, `with_container_ready_conditions(Vec<WaitFor>)`, `with_cmd_ready_condition(CmdWaitFor)`, `with_env_vars(iter)` (macOS のみ。コンテナ env にマージされ同名は ExecCommand 側優先。Linux は非空だと明示エラー)
 - `ExecResult`: `exit_code()`, `stdout()`, `stderr()`, `stdout_to_vec()`, `stderr_to_vec()`。exec 完了時点の全出力を保持したバッファ上のリーダーを返す (消費型)
 - `CmdWaitFor`: `message_on_stdout(msg)` / `message_on_stderr(msg)` (macOS のみ), `exit()`, `exit_code(n)`, `seconds(n)`, `millis(n)`
 
@@ -205,7 +205,7 @@ assert_eq!(result.exit_code().await?, Some(0));
 let stdout = result.stdout_to_vec().await?; // Linux では常に空
 ```
 
-### ファイルコピー (macOS のみ)
+### ファイルコピー
 
 ```rust
 // コンテナ → ホスト (Vec<u8> または PathBuf に受ける)
@@ -217,7 +217,9 @@ let image = GenericImage::new("alpine", "latest")
     .with_copy_to("/etc/config.json", b"{}".to_vec());
 ```
 
-### LogConsumer (macOS のみ)
+Linux は単一 regular file のみ対応 (親ディレクトリの自動作成なし)。
+
+### LogConsumer
 
 ```rust
 use shiguredo_container::core::logs::LogFrame;
@@ -260,7 +262,7 @@ let container = GenericImage::new("nginx", "latest")
 
 - **macOS の Local Network Privacy (LNP)**: `HttpWaitStrategy` や published port への接続は macOS 15+ の LNP にブロックされ得る。LNP は TCC / MDM で事前付与できない。CI ではコンテナ IP 直結テストを基本とし、published port 依存テストは許可済み環境でのみ実行する
 - **blocking の再入 deadlock**: `LogConsumer` コールバック内や既存の tokio ランタイムコンテキストから `SyncRunner::start` 等の同期 API を呼ぶと共有 Runtime への再入で deadlock する。ライブラリは再入を検出して即エラーにするが、コールバック内での同期 API 呼び出しは避けること。共有 Runtime ワーカースレッド上で最後の同期 `Container` を drop するとハングし得る既知の限界もある
-- **Linux の残ギャップ**: ログ FD (stdout / stderr / Log 待機 / LogConsumer)、copy、`get_bridge_ip_address`、`exit_code`、`ExitWaitStrategy`、exec の stdout / stderr / env が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
+- **Linux の残ギャップ**: `get_bridge_ip_address`、`exit_code`、`ExitWaitStrategy`、exec の stdout / stderr / env、`with_platform` / `with_network` / `with_hostname` / `with_host` / `with_cap_add` / `with_cap_drop` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_ssh`、Volume / Tmpfs mount が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
 - **イメージビルド未対応**: `GenericBuildableImage` / `BuildableImage` 等の build 系 API は無い
 - **reuse 未対応**: `reusable-containers` 相当の feature・型は無い
 - **本家との型不整合**: `CopyFromContainerError::UnsupportedEntry` は `&'static str` (本家 `tokio_tar::EntryType`)、`WaitLogError::EndOfStream` は `Vec<Vec<u8>>` (本家 `Vec<Bytes>`)。いずれも依存最小方針による意図的差分

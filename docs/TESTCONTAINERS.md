@@ -6,7 +6,7 @@
 |:--|:--|
 | 本家 | testcontainers-rs 0.27.3 (bollard 経由の Docker Engine) |
 | Apple Container | 本クレートの macOS 実装 (XPC)。メイン対象 |
-| Docker Engine API | 本クレートの Linux 実装 (`DockerClient` + unix socket)。ライフサイクルとログ関連は配線済み、copy 等は未実装 |
+| Docker Engine API | 本クレートの Linux 実装 (`DockerClient` + unix socket)。ライフサイクル・ログ関連・copy は配線済み、bridge IP 取得等は未実装 |
 
 判定ルール (Apple Container / Docker Engine API 列):
 
@@ -44,7 +44,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 
 ## Docker Engine API (Linux) の現状
 
-`DockerClient` (`src/core/client/docker_client.rs`) は `/var/run/docker.sock` 向けに pull / create / start / stop / remove / exec / inspect / logs を実装済みである。`ContainerAsync` の Linux 分岐はライフサイクル系 (`ports` / `exec` / `stop` / `is_running` / `rm` / Drop / `start` 再起動 / `container_state`) とログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `with_log_consumer`) を配線済みである。
+`DockerClient` (`src/core/client/docker_client.rs`) は `/var/run/docker.sock` 向けに pull / create / start / stop / remove / exec / inspect / logs / archive (copy) を実装済みである。`ContainerAsync` の Linux 分岐はライフサイクル系 (`ports` / `exec` / `stop` / `is_running` / `rm` / Drop / `start` 再起動 / `container_state`)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `with_log_consumer`)、copy (`copy_file_from` / `with_copy_to`) を配線済みである。
 
 ログは `GET /containers/{id}/logs` を `spawn_blocking` 内の `UnixStream` で叩き、multiplex フレームを demux して stdout / stderr 別の共有バッファ (ストリームあたり 8 MiB、上限超過時は先頭から drop) へ書き込む。`stdout` / `stderr` のリーダーはこの共有バッファを独立オフセットで読む。
 
@@ -53,10 +53,11 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `AsyncRunner::pull_image` / `AsyncRunner::start` は動く (既定の空 ready 条件なら完結する)
 - `ports` / `exec` (exit code のみ) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
-- `get_bridge_ip_address` / `copy_file_from` / `exit_code` / `ExitWaitStrategy` は未実装エラーのまま
+- `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は start 後に `PUT /containers/{id}/archive` へ自前 ustar を投入する (単一 regular file のみ・親ディレクトリ自動作成なし。`mode` / `uid` / `gid` は反映)
+- `get_bridge_ip_address` / `exit_code` / `ExitWaitStrategy` は未実装エラーのまま
 - `ImageExt` の一部 (`with_network` / `with_platform` / `with_cap_add` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` 等) は start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み
 
-README の Linux 注意書きと合わせて読むこと。残ギャップは copy・ネットワーク詳細などである。
+README の Linux 注意書きと合わせて読むこと。残ギャップは bridge IP 取得・exec の stdout / stderr・ネットワーク詳細などである。
 
 ## サマリ (Apple Container)
 
@@ -85,8 +86,8 @@ README の Linux 注意書きと合わせて読むこと。残ギャップは co
 
 件数の厳密集計より、現状の読み方を優先する。
 
-- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
-- **未配線・未実装が残るもの**: `copy_file_from` / `copy_to`、`get_bridge_ip_address`、`exit_code`、`ExitWaitStrategy`、exec の stdout/stderr・Env 本対応
+- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。単一 regular file のみ)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
+- **未配線・未実装が残るもの**: `get_bridge_ip_address`、`exit_code`、`ExitWaitStrategy`、exec の stdout/stderr・Env 本対応
 - **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_cap_*` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
 
 Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差を同時に見せるためのものである。
@@ -771,9 +772,9 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `ring` (default) | あり | なし | なし | 該当なし (shiguredo では rustls を直接使用) |
 | `aws-lc-rs` | あり | なし | なし | 同上 |
 | `ssl` | あり | なし | なし | 同上 |
-| `blocking` | あり | あり | 対応 | 同期 API は ContainerAsync に委譲。Linux ライフサイクルは利用可。ログ/copy 等は未対応 |
+| `blocking` | あり | あり | 対応 | 同期 API は ContainerAsync に委譲。Linux はライフサイクル・ログ・copy とも利用可 |
 | `watchdog` | あり | あり (macOS のみ) | なし | 対応。本家 (シグナルハンドラ方式) と異なり外部 reaper プロセス方式 (下記) / Linux では未提供 |
-| `http_wait` / `http_wait_plain` | あり | あり (`http_wait_plain`) | 部分対応 | ports() 配線済み。HTTP wait は利用可。Log 待機は未対応 |
+| `http_wait` / `http_wait_plain` | あり | あり (`http_wait_plain`) | 部分対応 | ports() 配線済み。HTTP wait / Log 待機とも利用可 |
 | `properties-config` | あり | なし | なし | なし。macOS では外部プロパティファイルを読まない設計 |
 | `reusable-containers` | あり | なし | なし | なし。feature・型 (ReuseDirective) ともに未実装 (21 章参照) |
 | `device-requests` | あり | なし | なし | なし。GPU デバイスマッピング相当が Apple container に無い |
