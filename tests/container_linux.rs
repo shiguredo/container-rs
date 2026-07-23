@@ -538,15 +538,17 @@ fn last_restart_marker(stdout: &[u8]) -> Option<Vec<u8>> {
 /// 再 start (stop → start) 後にログストリームが再武装され、新実行のログが読めること。
 ///
 /// Docker Engine の `POST /containers/{id}/start` は create 時の cmd を再実行する。
-/// タイムスタンプ入り marker を使い、初回 start の marker A と再起動後の marker B が
+/// UUID marker を使い、初回 start の marker A と再起動後の marker B が
 /// 異なることを通じて、新規リーダーが新バッファに接続されることを検証する。
 #[tokio::test]
 async fn restart_rearms_log_stream() {
+    // marker は kernel の UUID で一意化する。BusyBox の date は %N (nanosecond) 非対応で
+    // 秒単位になり、同一秒内の再起動で marker が一致して flaky になるため。
     let container = GenericImage::new("alpine", "latest")
         .with_cmd([
             "sh",
             "-c",
-            "echo RESTART_MARKER-$(date +%s%N); tail -f /dev/null",
+            "echo RESTART_MARKER-$(cat /proc/sys/kernel/random/uuid); tail -f /dev/null",
         ])
         .with_startup_timeout(Duration::from_secs(15))
         .start()
