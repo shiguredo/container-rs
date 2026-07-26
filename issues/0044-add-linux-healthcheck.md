@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-23
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-07-27
 - Model: Claude Fable 5
 - Branch: feature/add-linux-healthcheck
 - Polished: 2026-07-24
@@ -309,4 +309,11 @@ Docker Engine が稼働している環境で `cargo test --all-features` を実�
 
 ## 解決方法
 
-未着手 (open)。
+`Healthcheck` 型を `src/core/healthcheck.rs` に追加し、`ImageExt::with_health_check` /
+`ContainerRequest::health_check` を公開した。Linux では create JSON の `Config.Healthcheck`
+に配線し、`HealthWaitStrategy` は inspect の `State.Health.Status` をポーリングして
+`healthy` / `unhealthy` / `starting` / Health 不在 (running 後は `HealthCheckNotConfigured`)
+の 4 分岐で判定する。macOS は `with_health_check` 指定時に start で明示エラーを返す。
+
+`WaitContainerError::Unhealthy` を `Unhealthy(String)` に変更した。統合テストは Linux 5 本
+(healthy async/sync・unhealthy・未設定・startup_timeout) と macOS fail-fast 2 本を追加した。
