@@ -3,7 +3,7 @@
 //! macOS では Apple Container、Linux では Docker Engine API を利用してコンテナを管理する。
 //!
 //! ユーザーは `use shiguredo_container::*` で両 OS 向けに同じ API を書ける。
-//! ただし Linux ではログ待機・一部 ImageExt・copy 等が未実装で、start 時に明示エラーになる。
+//! ただし Linux では一部 ImageExt・exec 出力等が未実装で、start 時に明示エラーになる。
 //! 対応範囲は `docs/TESTCONTAINERS.md` と README の WARNING を参照すること。
 
 pub mod core;
@@ -16,7 +16,9 @@ pub(crate) mod watchdog;
 mod xpc;
 
 pub use crate::core::error::Error;
-pub use crate::core::{ContainerAsync, ContainerRequest, ExecCommand, Image, ImageExt, WaitFor};
+pub use crate::core::{
+    ContainerAsync, ContainerRequest, ExecCommand, Healthcheck, Image, ImageExt, WaitFor,
+};
 pub use crate::images::GenericImage;
 pub use crate::runners::AsyncRunner;
 

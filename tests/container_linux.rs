@@ -993,3 +993,115 @@ async fn copy_file_from_nonexistent_container_is_not_found() {
         other => panic!("ContainerNotFound 以外のエラー: {other}"),
     }
 }
+
+/// `with_health_check` + `WaitFor::healthcheck` で healthy まで到達すること。
+#[tokio::test]
+async fn healthcheck_reaches_healthy() {
+    use shiguredo_container::Healthcheck;
+
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["sh", "-c", "touch /tmp/ok; while true; do sleep 60; done"])
+        .with_health_check(
+            Healthcheck::cmd_shell("test -f /tmp/ok")
+                .with_interval(Duration::from_millis(500))
+                .with_retries(3),
+        )
+        .with_ready_conditions(vec![WaitFor::healthcheck()])
+        .with_startup_timeout(Duration::from_secs(30))
+        .start()
+        .await
+        .expect("healthcheck 到達の起動に失敗した");
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// 同期 API でも healthcheck 到達が成立すること。
+#[cfg(feature = "blocking")]
+#[test]
+fn sync_healthcheck_reaches_healthy() {
+    use shiguredo_container::{Healthcheck, SyncRunner};
+
+    let request = GenericImage::new("alpine", "latest")
+        .with_cmd(["sh", "-c", "touch /tmp/ok; while true; do sleep 60; done"])
+        .with_health_check(
+            Healthcheck::cmd_shell("test -f /tmp/ok")
+                .with_interval(Duration::from_millis(500))
+                .with_retries(3),
+        )
+        .with_ready_conditions(vec![WaitFor::healthcheck()])
+        .with_startup_timeout(Duration::from_secs(30));
+    let container = SyncRunner::start(request).expect("同期 healthcheck 起動に失敗した");
+    container.rm().expect("rm に失敗した");
+}
+
+/// 常に失敗する healthcheck が `Unhealthy` になること。
+#[tokio::test]
+async fn healthcheck_unhealthy_returns_error() {
+    use shiguredo_container::Healthcheck;
+    use shiguredo_container::core::error::WaitContainerError;
+
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["sh", "-c", "while true; do sleep 60; done"])
+        .with_health_check(
+            Healthcheck::cmd_shell("false")
+                .with_interval(Duration::from_millis(500))
+                .with_timeout(Duration::from_secs(1))
+                .with_retries(1),
+        )
+        .with_ready_conditions(vec![WaitFor::healthcheck()])
+        .with_startup_timeout(Duration::from_secs(30))
+        .start()
+        .await
+        .expect_err("unhealthy はエラーになること");
+
+    match err {
+        Error::WaitContainer(WaitContainerError::Unhealthy(_)) => {}
+        other => panic!("Unhealthy 以外のエラー: {other}"),
+    }
+}
+
+/// healthcheck 未設定で `WaitFor::healthcheck` を指定すると `HealthCheckNotConfigured` になること。
+#[tokio::test]
+async fn healthcheck_not_configured_returns_error() {
+    use shiguredo_container::core::error::WaitContainerError;
+
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["sh", "-c", "while true; do sleep 60; done"])
+        .with_ready_conditions(vec![WaitFor::healthcheck()])
+        .with_startup_timeout(Duration::from_secs(30))
+        .start()
+        .await
+        .expect_err("healthcheck 未設定はエラーになること");
+
+    match err {
+        Error::WaitContainer(WaitContainerError::HealthCheckNotConfigured(_)) => {}
+        other => panic!("HealthCheckNotConfigured 以外のエラー: {other}"),
+    }
+}
+
+/// probe が長くかかる healthcheck で `startup_timeout` が発火すること。
+#[tokio::test]
+async fn healthcheck_startup_timeout() {
+    use shiguredo_container::Healthcheck;
+    use shiguredo_container::core::error::WaitContainerError;
+
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["sh", "-c", "while true; do sleep 60; done"])
+        .with_health_check(
+            Healthcheck::cmd_shell("sleep 120")
+                .with_interval(Duration::from_secs(1))
+                .with_timeout(Duration::from_secs(60))
+                .with_retries(10)
+                .with_start_period(Duration::from_secs(120)),
+        )
+        .with_ready_conditions(vec![WaitFor::healthcheck()])
+        .with_startup_timeout(Duration::from_secs(10))
+        .start()
+        .await
+        .expect_err("startup_timeout はエラーになること");
+
+    match err {
+        Error::WaitContainer(WaitContainerError::StartupTimeout { .. }) => {}
+        other => panic!("StartupTimeout 以外のエラー: {other}"),
+    }
+}

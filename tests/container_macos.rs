@@ -2137,6 +2137,29 @@ mod test_container_xpc {
             other => panic!("healthcheck 待機は未設定エラーになること: {other:?}"),
         }
     }
+
+    /// `with_health_check` は macOS で start 時に明示エラーになること。
+    #[tokio::test]
+    async fn xpc_with_health_check_is_rejected() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        use shiguredo_container::Healthcheck;
+
+        let err = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "30"])
+            .with_health_check(Healthcheck::cmd_shell("true"))
+            .start()
+            .await
+            .expect_err("with_health_check は macOS で拒否されること");
+
+        assert!(
+            err.to_string()
+                .contains("with_health_check() is not supported on macOS"),
+            "macOS fail-fast メッセージを含むこと: {err}"
+        );
+    }
 }
 
 #[cfg(all(target_os = "macos", feature = "blocking"))]
@@ -2145,8 +2168,32 @@ mod test_container_sync {
     use std::sync::{Arc, Mutex};
 
     use shiguredo_container::{
-        GenericImage, ImageExt, SyncRunner, core::ExecCommand, core::logs::LogFrame,
+        GenericImage, Healthcheck, ImageExt, SyncRunner, core::ExecCommand, core::logs::LogFrame,
     };
+
+    /// 同期経路でも `with_health_check` は macOS で明示エラーになること。
+    #[test]
+    fn sync_with_health_check_is_rejected() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        let result = SyncRunner::start(
+            GenericImage::new("alpine", "latest")
+                .with_cmd(["sleep", "30"])
+                .with_health_check(Healthcheck::cmd_shell("true")),
+        );
+        match result {
+            Err(err) => {
+                assert!(
+                    err.to_string()
+                        .contains("with_health_check() is not supported on macOS"),
+                    "macOS fail-fast メッセージを含むこと: {err}"
+                );
+            }
+            Ok(_) => panic!("with_health_check は macOS で拒否されること"),
+        }
+    }
 
     #[test]
     fn sync_alpine_log_consumer_runs_in_background() {

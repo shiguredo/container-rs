@@ -12,7 +12,7 @@ use std::{
 use crate::{
     Error, Image,
     core::{
-        ContainerState, copy::CopyToContainer, image::exec::ExecCommand,
+        ContainerState, copy::CopyToContainer, healthcheck::Healthcheck, image::exec::ExecCommand,
         logs::consumer::LogConsumer, mounts::Mount, ports::ContainerPort, wait::WaitFor,
     },
 };
@@ -31,6 +31,7 @@ pub struct ContainerRequest<I: Image> {
     pub(crate) env_vars: BTreeMap<String, String>,
     pub(crate) hosts: BTreeMap<String, ExtraHost>,
     pub(crate) mounts: Vec<Mount>,
+    pub(crate) health_check: Option<Healthcheck>,
     pub(crate) copy_to_sources: Vec<CopyToContainer>,
     pub(crate) ports: Option<Vec<PortMapping>>,
     pub(crate) privileged: bool,
@@ -118,6 +119,10 @@ impl<I: Image> ContainerRequest<I> {
 
     pub fn mounts(&self) -> impl Iterator<Item = &Mount> {
         self.image.mounts().into_iter().chain(self.mounts.iter())
+    }
+
+    pub fn health_check(&self) -> Option<&Healthcheck> {
+        self.health_check.as_ref()
     }
 
     pub fn copy_to_sources(&self) -> impl Iterator<Item = &CopyToContainer> {
@@ -243,6 +248,7 @@ impl<I: Image> From<I> for ContainerRequest<I> {
             env_vars: BTreeMap::default(),
             hosts: BTreeMap::default(),
             mounts: Vec::new(),
+            health_check: None,
             copy_to_sources: Vec::new(),
             ports: None,
             privileged: false,
@@ -294,6 +300,7 @@ impl<I: Image + Debug> Debug for ContainerRequest<I> {
             .field("env_vars", &self.env_vars)
             .field("hosts", &self.hosts)
             .field("mounts", &self.mounts)
+            .field("health_check", &self.health_check)
             .field("ports", &self.ports)
             .field("privileged", &self.privileged)
             .field("readonly_rootfs", &self.readonly_rootfs)

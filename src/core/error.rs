@@ -203,7 +203,7 @@ pub enum WaitContainerError {
     #[cfg(feature = "http_wait_plain")]
     HttpWait(crate::core::wait::http_strategy::HttpWaitError),
     HealthCheckNotConfigured(String),
-    Unhealthy,
+    Unhealthy(String),
     StartupTimeout {
         id: String,
         timeout: Duration,
@@ -224,7 +224,7 @@ impl fmt::Display for WaitContainerError {
             WaitContainerError::HealthCheckNotConfigured(s) => {
                 write!(f, "healthcheck is not configured for container: {s}")
             }
-            WaitContainerError::Unhealthy => write!(f, "container is unhealthy"),
+            WaitContainerError::Unhealthy(s) => write!(f, "container is unhealthy: {s}"),
             WaitContainerError::StartupTimeout { id, timeout } => write!(
                 f,
                 "container startup timeout: container {id} did not become ready within {timeout:?}"
@@ -245,7 +245,7 @@ impl StdError for WaitContainerError {
             #[cfg(feature = "http_wait_plain")]
             WaitContainerError::HttpWait(e) => Some(e),
             WaitContainerError::HealthCheckNotConfigured(_) => None,
-            WaitContainerError::Unhealthy => None,
+            WaitContainerError::Unhealthy(_) => None,
             WaitContainerError::StartupTimeout { .. } => None,
             WaitContainerError::UnexpectedExitCode { .. } => None,
         }

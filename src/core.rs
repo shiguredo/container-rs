@@ -5,6 +5,7 @@ pub mod containers;
 pub mod copy;
 pub mod env;
 pub mod error;
+pub mod healthcheck;
 pub mod host;
 pub mod image;
 pub mod logs;
@@ -26,6 +27,7 @@ pub use self::{
         CopyDataSource, CopyFileFromContainer, CopyFromContainerError, CopyTargetOptions,
         CopyToContainer, CopyToContainerError,
     },
+    healthcheck::Healthcheck,
     host::Host,
     image::{ContainerState, ExecCommand, Image, ImageExt},
     mounts::{AccessMode, Mount, MountTmpfsOptions, MountType},

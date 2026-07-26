@@ -55,7 +55,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
 - `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入する (親ディレクトリ自動作成・ディレクトリ一括投入対応。配下 regular file の `mode` / `uid` / `gid` は反映。中間 directory の mode は `0o755`。コピー後 mtime は epoch)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり。親作成は `createParents`）。起動前投入は Linux のみの公開契約
 - `get_bridge_ip_address` / `exit_code` / `ExitWaitStrategy` は未実装エラーのまま
-- `ImageExt` の一部 (`with_network` / `with_platform` / `with_cap_add` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` 等) は start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み
+- `ImageExt` の一部 (`with_network` / `with_platform` / `with_cap_add` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` 等) は start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
 
 README の Linux 注意書きと合わせて読むこと。残ギャップは bridge IP 取得・exec の stdout / stderr・ネットワーク詳細などである。
 
@@ -63,11 +63,11 @@ README の Linux 注意書きと合わせて読むこと。残ギャップは br
 
 | 状態 | 件数 |
 |:--|--:|
-| 対応 | 264 |
+| 対応 | 276 |
 | 部分対応 | 24 |
 | 未実装 (実装可能) | 0 |
-| 未実装 (XPC 制約) | 2 |
-| なし | 107 |
+| 未実装 (XPC 制約) | 3 |
+| なし | 94 |
 | shiguredo 拡張 (本家に無い追加 API) | 12 |
 | 内部型/内部関数 (対象外) | 4 |
 
@@ -75,18 +75,18 @@ README の Linux 注意書きと合わせて読むこと。残ギャップは br
 
 判定内訳の傾向 (Apple Container):
 
-- **対応** (264): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` はほぼ揃っている
+- **対応** (276): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` / `Healthcheck` 型はほぼ揃っている
 - **部分対応** (24): シグネチャあり + 動作するが XPC の情報不足 / 型不一致 / 挙動制約付き (例: `get_host` = `localhost` 固定、`exit_code` = 観測済みキャッシュのみ など)
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
-- **未実装 (XPC 制約)** (2): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` はシグネチャ自体を削除済みのため「なし」に分類
-- **なし** (107): 大半は build 系、feature 系、bollard 由来の詳細エラー型、`Healthcheck` 設定型、`pause` / `unpause` (XPC 制約により削除)、未配線の `CgroupnsMode` setter など
+- **未実装 (XPC 制約)** (3): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機) と `with_health_check` (start 時明示エラー)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` はシグネチャ自体を削除済みのため「なし」に分類
+- **なし** (94): 大半は build 系、feature 系、bollard 由来の詳細エラー型、未配線の `CgroupnsMode` setter など
 - **shiguredo 拡張** (12): `ImageExt::with_init` / `with_ssh`、`ContainerAsync::container_state`、`Container::container_state`、`ClientError::Xpc*` / `ImageNotFound` / `ContainerNotFound` / `Json` / `Other`、`ContainerRequest` の `init` / `ssh` accessor
 
 ## サマリ (Docker Engine API)
 
 件数の厳密集計より、現状の読み方を優先する。
 
-- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
+- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
 - **未配線・未実装が残るもの**: `get_bridge_ip_address`、`exit_code`、`ExitWaitStrategy`、exec の stdout/stderr・Env 本対応
 - **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_cap_*` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
 
@@ -144,7 +144,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_readonly_rootfs(self, readonly)` | あり | 対応 | 未実装 | XPC トップレベル `readOnly` に反映。個別マウントの AccessMode とは別 / Docker: start 時に明示エラー (設定構築に未配線) |
 | `with_security_opt(self, opt)` | あり | なし | なし | XPC には該当項目なし |
 | `with_ready_conditions(self, conds)` | あり | 対応 | 対応 | `ContainerRequest::ready_conditions` オーバーライドが有効 (8 章参照) |
-| `with_health_check(self, hc)` | あり | なし | なし | `Healthcheck` 型ごと存在しない (16 章参照)。XPC 側にはヘルスチェック情報の口も無い |
+| `with_health_check(self, hc)` | あり | 未実装 (XPC 制約) | 対応 | Linux は Config.Healthcheck に配線。macOS は start 時に `Err("with_health_check() is not supported on macOS")` |
 | `with_device_requests(self, reqs)` (feature) | あり | なし | なし | feature = `device-requests`。Apple container は GPU/デバイスマッピング未対応 |
 | `with_open_stdin(self, open)` | あり | 対応 | 未実装 | XPC `initProcess.terminal` に反映。Docker の OpenStdin と terminal は同義ではない / Docker: start 時に明示エラー (設定構築に未配線) |
 | `with_init(self)` | なし | shiguredo 拡張 | 対応 | XPC `useInit` に反映 / Docker: HostConfig.Init として create JSON に反映 |
@@ -277,7 +277,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `security_opts(&self) -> Option<&Vec<String>>` | あり | なし | なし |  |
 | `readonly_rootfs(&self) -> bool` | あり | 対応 | 対応 |  |
 | `hostname(&self) -> Option<&str>` | あり | 対応 | 対応 |  |
-| `health_check(&self) -> Option<&Healthcheck>` | あり | なし | なし | 16 章参照 |
+| `health_check(&self) -> Option<&Healthcheck>` | あり | 対応 | 対応 | 16 章参照 |
 | `host_config_modifier(&self) -> Option<&HostConfigModifier>` | あり | なし | なし | Docker Engine API の低レベル型に依存するため未対応 |
 | `device_requests(&self)` (feature) | あり | なし | なし | feature = `device-requests` |
 | `open_stdin(&self) -> Option<bool>` | あり | 対応 | 対応 |  |
@@ -298,14 +298,14 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `WaitFor::Nothing` | あり | 対応 | 対応 |  |
 | `WaitFor::Log(LogWaitStrategy)` | あり | 対応 | 対応 | 動作は 10.1 参照 / Docker: logs ストリーム (demux + 共有バッファ) で成立。EOF は demux 終端 (`logs_terminated`) で判定 |
 | `WaitFor::Duration { length }` | あり | 対応 | 対応 |  |
-| `WaitFor::Healthcheck(HealthWaitStrategy)` | あり | 未実装 (XPC 制約) | 未実装 | 動作は 10.2 参照 / 両 OS とも即 HealthCheckNotConfigured |
+| `WaitFor::Healthcheck(HealthWaitStrategy)` | あり | 未実装 (XPC 制約) | 対応 | 動作は 10.2 参照 / Linux は Healthy/Unhealthy/Starting/None (running 後) の 4 分岐 |
 | `WaitFor::Http(Box<HttpWaitStrategy>)` (feature) | あり | 対応 | 部分対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決は可能。Log 待機との併用は未対応 |
 | `WaitFor::Exit(ExitWaitStrategy)` | あり | 対応 | 未実装 | Docker: Linux では即時未実装エラー |
 | `pub fn message_on_stdout(msg)` | あり | 対応 | 対応 | Docker: demux が stdout を分離するため本当に stdout のみに反応 |
 | `pub fn message_on_stderr(msg)` | あり | 対応 | 対応 | Docker: demux が stderr を分離するため本当に stderr のみに反応 |
 | `pub fn message_on_either_std(msg)` | あり | 対応 | 対応 | Docker: stdout / stderr 両ストリームを並行照合 |
 | `pub fn log(strategy)` | あり | 対応 | 対応 | Docker: logs ストリームで成立 |
-| `pub fn healthcheck() -> WaitFor` | あり | 未実装 (XPC 制約) | 未実装 | Docker: 常に HealthCheckNotConfigured (OS 非依存) |
+| `pub fn healthcheck() -> WaitFor` | あり | 未実装 (XPC 制約) | 対応 | Docker: Linux は inspect ポーリング、macOS は with_health_check で即エラー |
 | `pub fn http(strategy)` (feature) | あり | 対応 | 部分対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決は可能 |
 | `pub fn exit(strategy)` | あり | 対応 | 未実装 | Docker: ExitWaitStrategy 自体が Linux 未実装のため、生成しても待機時にエラー |
 | `pub fn seconds(len)` | あり | 対応 | 対応 |  |
@@ -331,9 +331,9 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `pub fn new()` | あり | 対応 | 対応 |  |
-| `pub fn with_poll_interval(mut self, d)` | あり | 対応 | 対応 |  |
+| `pub fn with_poll_interval(mut self, d)` | あり | 対応 | 対応 | Linux では inspect のポーリング間隔として利用 |
 | `impl Default` | あり | 対応 | 対応 |  |
-| `wait_until_ready` impl | あり | 未実装 (XPC 制約) | 未実装 | Apple container は Docker HEALTHCHECK を実行しない。実装不可 / Docker: OS 非依存で常に HealthCheckNotConfigured |
+| `wait_until_ready` impl | あり | 未実装 (XPC 制約) | 対応 | Apple container は Docker HEALTHCHECK を実行しない。実装不可 / Docker: Linux は inspect ポーリング (`starting` / `healthy` / `unhealthy` / `Health` 不在は running 後 `HealthCheckNotConfigured`)、macOS は `HealthCheckNotConfigured` 維持 |
 
 ### 10.3 `HttpWaitStrategy` (feature = `http_wait_plain`)
 
@@ -623,18 +623,19 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `pub struct Healthcheck { test, interval, timeout, retries, start_period, start_interval }` | あり | なし | なし | Apple container はカスタム healthcheck 未対応 |
-| `pub fn none()` | あり | なし | なし |  |
-| `pub fn cmd_shell(cmd)` | あり | なし | なし |  |
-| `pub fn cmd<I,S>(cmd)` | あり | なし | なし |  |
-| `pub fn empty()` | あり | なし | なし |  |
-| `pub fn with_interval(mut, d)` | あり | なし | なし |  |
-| `pub fn with_timeout(mut, d)` | あり | なし | なし |  |
-| `pub fn with_retries(mut, n)` | あり | なし | なし |  |
-| `pub fn with_start_period(mut, d)` | あり | なし | なし |  |
-| `pub fn with_start_interval(mut, d)` | あり | なし | なし |  |
-| `pub fn test/interval/timeout/retries/start_period/start_interval` accessor | あり | なし | なし |  |
-| `pub(crate) fn into_health_config()` | あり | なし | なし | 元の crate が bollard の内部型に依存 |
+| `pub struct Healthcheck { test, interval, timeout, retries, start_period, start_interval }` | あり | 対応 | 対応 | Apple container はカスタム healthcheck 未対応 (`with_health_check` は macOS で start 時に明示エラー) |
+| `pub fn none()` | あり | 対応 | 対応 |  |
+| `pub fn cmd_shell(cmd)` | あり | 対応 | 対応 |  |
+| `pub fn cmd<I,S>(cmd)` | あり | 対応 | 対応 |  |
+| `pub fn empty()` | あり | 対応 | 対応 |  |
+| `pub fn with_interval(mut, d)` | あり | 対応 | 対応 |  |
+| `pub fn with_timeout(mut, d)` | あり | 対応 | 対応 |  |
+| `pub fn with_retries(mut, n)` | あり | 対応 | 対応 |  |
+| `pub fn with_start_period(mut, d)` | あり | 対応 | 対応 |  |
+| `pub fn with_start_interval(mut, d)` | あり | 対応 | 対応 |  |
+| `pub fn test/interval/timeout/retries/start_period/start_interval` accessor | あり | 対応 | 対応 |  |
+| `pub(crate) fn into_health_config()` | あり | なし | なし | shiguredo は `to_docker_json()` に置換 (bollard 非依存) |
+| `pub(crate) fn to_docker_json() -> Option<String>` | なし | なし | 対応 | shiguredo 拡張。Docker Config.Healthcheck JSON を生成 (Linux 専用) |
 
 ## 17. エラー型 `Error` と サブエラー
 
@@ -699,7 +700,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `StateUnavailable` | あり | 対応 | 対応 |  |
 | `HttpWait(#[from] HttpWaitError)` (feature) | あり | 対応 | 対応 | feature = `http_wait_plain`。non-feature ビルドではバリアント自体が無い (本家と同じ) |
 | `HealthCheckNotConfigured(String)` | あり | 対応 | 対応 |  |
-| `Unhealthy` | あり | 対応 | 対応 |  |
+| `Unhealthy(String)` | あり | 対応 | 対応 |  |
 | `StartupTimeout` | あり | 対応 | 対応 |  |
 | `UnexpectedExitCode { expected: i64, actual: Option<i64> }` | あり | 対応 | 対応 |  |
 
@@ -801,7 +802,7 @@ shiguredo には `compose` モジュールも `bollard` の再エクスポート
 |:--|:--|:--|:--|:--|
 | `pub use crate::core::Container` (feature=blocking) | あり | 対応 | 対応 |  |
 | `pub use crate::core::ReuseDirective` (feature=reusable-containers) | あり | なし | なし | 21 章参照 |
-| `pub use crate::core::{...}` (CopyDataSource, CopyTargetOptions, CopyToContainer, CopyToContainerError, Error, BuildableImage, ContainerAsync, ContainerRequest, Healthcheck, Image, ImageExt)` | あり | 部分対応 | 部分対応 | copy 系 4 型 (`CopyDataSource` / `CopyTargetOptions` / `CopyToContainer` / `CopyToContainerError`) は `core::` 経由で再エクスポート。crate root 直下には無い。`Healthcheck` / `BuildableImage` は shiguredo に無し。`ExecCommand` / `WaitFor` は shiguredo 独自に追加 (元の crate の lib.rs では pub use にない) |
+| `pub use crate::core::{...}` (CopyDataSource, CopyTargetOptions, CopyToContainer, CopyToContainerError, Error, BuildableImage, ContainerAsync, ContainerRequest, Healthcheck, Image, ImageExt)` | あり | 部分対応 | 部分対応 | copy 系 4 型 (`CopyDataSource` / `CopyTargetOptions` / `CopyToContainer` / `CopyToContainerError`) は `core::` 経由で再エクスポート。crate root 直下には無い。`BuildableImage` は shiguredo に無し。`Healthcheck` は 16.4 節参照 (Linux 対応、macOS は accessor 対応・`with_health_check` は明示エラー)。`ExecCommand` / `WaitFor` は shiguredo 独自に追加 (元の crate の lib.rs では pub use にない) |
 | `pub use buildables::generic::GenericBuildableImage;` | あり | なし | なし | 20 章参照 |
 | `pub use images::generic::GenericImage;` | あり | 対応 | 対応 |  |
 | `pub use bollard;` | あり | なし | なし | 23 章 |
@@ -818,7 +819,6 @@ Apple container / XPC に設定口や route が無く、本クレート単体で
 |:--|:--|
 | `ContainerAsync::pause` / `unpause`、`Container::pause` / `unpause` | XPCRoute に pause 系が無い。stub で常にエラーを返す方針は採らず、シグネチャ自体を削除済み |
 | `HealthWaitStrategy` | Apple container が Docker HEALTHCHECK 相当を実行・公開しない |
-| `Healthcheck` 型、`ImageExt::with_health_check` | 同上。設定口も結果の観測口も無い |
 | `ImageExt::with_ulimit` | コンテナ全体の ulimit に相当する XPC 項目が無い (プロセス rlimits とは別) |
 | `ImageExt::with_cgroupns_mode` | XPC に該当項目が無い |
 | `ImageExt::with_userns_mode` | XPC に該当項目が無い |
@@ -826,6 +826,14 @@ Apple container / XPC に設定口や route が無く、本クレート単体で
 | `ImageExt::with_host_config_modifier` | 本家は bollard HostConfig 前提。bollard 非依存かつ XPC に包括 modifier が無い |
 
 方針で未対応にしているもの (XPC 以前に導入しない決定) は上表に含めない。例: `host-port-exposure`、`device-requests`、`reusable-containers`、HttpWait の TLS / `with_client`。
+
+## シグネチャあり・macOS では明示エラー
+
+Apple container の XPC には対応 route が無いが、本家 API 互換のためシグネチャは公開し、start 時に明示エラーを返す項目。
+
+| 項目 | 理由 |
+|:--|:--|
+| `Healthcheck` 型、`ImageExt::with_health_check` | XPC にヘルスチェック設定口が無い。Linux では Config.Healthcheck に配線済み |
 
 ## 意図的に保持する shiguredo 拡張
 
