@@ -9,9 +9,10 @@ use std::os::unix::net::UnixStream;
 
 use shiguredo_http11::{Request, Response};
 
-use crate::core::client::{ContainerConfig, ContainerSnapshot};
+use crate::core::client::{ContainerConfig, ContainerSnapshot, HealthProbe, HealthStatus};
 use crate::core::containers::request::PortMapping;
 use crate::core::error::{ClientError, Result};
+use crate::core::healthcheck::Healthcheck;
 use crate::core::ports::{ContainerPort, Ports};
 
 const DEFAULT_DOCKER_SOCKET: &str = "/var/run/docker.sock";
@@ -360,6 +361,62 @@ impl DockerClient {
         Ok(ContainerSnapshot { running, ports })
     }
 
+    /// コンテナの running と `State.Health.Status` を取得する。
+    pub(crate) async fn container_health(&self, id: &str) -> Result<HealthProbe> {
+        let path = format!("/containers/{}/json", percent_encode_path_segment(id));
+        let response = self.request("GET", &path, None).await?;
+        if response.status_code() == 404 {
+            return Err(ClientError::ContainerNotFound(id.to_string()).into());
+        }
+        if response.status_code() >= 400 {
+            return Err(ClientError::Other(format!(
+                "failed to inspect container: {}",
+                response.status_code()
+            ))
+            .into());
+        }
+        let body = response
+            .body_bytes()
+            .ok_or_else(|| ClientError::Other("empty inspect body".into()))?;
+        let text = std::str::from_utf8(body).map_err(|e| ClientError::Json(e.to_string()))?;
+        let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
+
+        let state = parsed
+            .value()
+            .to_member("State")
+            .map_err(|e| ClientError::Json(e.to_string()))?
+            .required()
+            .map_err(|e| ClientError::Json(e.to_string()))?;
+        let running = state
+            .to_member("Running")
+            .ok()
+            .and_then(|m| m.optional())
+            .and_then(|v| bool::try_from(v).ok())
+            .unwrap_or(false);
+
+        // State.Health が無い / Status が none・空・未知なら health = None。
+        let health = state
+            .to_member("Health")
+            .ok()
+            .and_then(|m| m.optional())
+            .and_then(|health| {
+                health
+                    .to_member("Status")
+                    .ok()
+                    .and_then(|m| m.optional())
+                    .and_then(|v| String::try_from(v).ok())
+            })
+            .and_then(|status| match status.as_str() {
+                "starting" => Some(HealthStatus::Starting),
+                "healthy" => Some(HealthStatus::Healthy),
+                "unhealthy" => Some(HealthStatus::Unhealthy),
+                "none" | "" => None,
+                _ => None,
+            });
+
+        Ok(HealthProbe { running, health })
+    }
+
     /// コンテナのログストリーム (`?follow=true`) を起動し、ハンドルを返す。
     ///
     /// `docker_log_stream::spawn_log_session` をこのクライアントのソケットパスで呼ぶ。
@@ -553,6 +610,7 @@ struct CreateContainerBody {
     user: Option<String>,
     host_config: HostConfig,
     exposed_ports: Vec<String>,
+    healthcheck: Option<Healthcheck>,
 }
 
 impl CreateContainerBody {
@@ -601,6 +659,7 @@ impl CreateContainerBody {
                 init: config.init,
             },
             exposed_ports,
+            healthcheck: config.health_check,
         })
     }
 
@@ -646,6 +705,10 @@ impl CreateContainerBody {
                 json.push_str(":{}");
             }
             json.push('}');
+        }
+        if let Some(hc_json) = self.healthcheck.as_ref().and_then(|hc| hc.to_docker_json()) {
+            json.push_str(",\"Healthcheck\":");
+            json.push_str(&hc_json);
         }
         json.push_str(",\"HostConfig\":");
         json.push_str(&self.host_config.to_json_string()?);
@@ -918,7 +981,7 @@ fn parse_ports(parsed: &nojson::RawJson<'_>) -> Ports {
     ports
 }
 
-fn json_array(items: &[String]) -> String {
+pub(crate) fn json_array(items: &[String]) -> String {
     let mut json = String::from("[");
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
@@ -968,7 +1031,7 @@ fn json_port_bindings(map: &BTreeMap<String, Vec<PortBinding>>) -> String {
     json
 }
 
-fn escape_json(s: &str) -> String {
+pub(crate) fn escape_json(s: &str) -> String {
     let mut escaped = String::with_capacity(s.len() + 2);
     escaped.push('"');
     for c in s.chars() {
@@ -1148,6 +1211,7 @@ mod tests {
             working_dir: None,
             user: None,
             init: false,
+            health_check: None,
         }
     }
 

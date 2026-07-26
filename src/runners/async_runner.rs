@@ -65,6 +65,12 @@ where
                 Client::Linux(_) => unreachable!("macOS block is not compiled on Linux"),
             };
 
+            if container_req.health_check().is_some() {
+                return Err(crate::Error::other(
+                    "with_health_check() is not supported on macOS",
+                ));
+            }
+
             let descriptor = container_req.descriptor();
 
             // platform を正規化する。許可外文字列は resolve / pull / create に渡さない。
@@ -503,6 +509,7 @@ fn build_container_config<I: Image>(
         working_dir: req.working_dir().map(|d| d.to_string()),
         user: req.user().map(|u| u.to_string()),
         init: req.init(),
+        health_check: req.health_check().cloned(),
     }
 }
 

@@ -2,7 +2,9 @@
 //!
 //! `Log` はログ FD を読んで待機する。macOS では利用可能。Linux ではログ FD が無く、
 //! 非空メッセージ待ちは通常 startup timeout になる（空メッセージは即 Ok。詳細は docs 10.1）。
-//! `Healthcheck` は macOS / Linux とも未実装で、即座に `HealthCheckNotConfigured` を返す（実装および docs 10.2）。
+//! `Healthcheck` は Linux では inspect ポーリング (`starting` / `healthy` / `unhealthy` /
+//! `Health` 不在 = running 後は `HealthCheckNotConfigured`)。macOS は現行通り常に
+//! `HealthCheckNotConfigured` を返す（実装および docs 10.2）。
 //! `Exit` は macOS では exit_code_hint（containerWait）と container_state（list）で待ち、
 //! Linux では未実装エラーを返す（実装を正とする。docs 10.4 の Docker「対応」とは食い違う）。
 

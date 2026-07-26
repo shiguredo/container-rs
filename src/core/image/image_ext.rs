@@ -8,6 +8,7 @@ use crate::{
         PortMapping,
         containers::request::ExtraHost,
         copy::{CopyDataSource, CopyTargetOptions, CopyToContainer},
+        healthcheck::Healthcheck,
         logs::consumer::LogConsumer,
         mounts::Mount,
         ports::ContainerPort,
@@ -90,6 +91,11 @@ pub trait ImageExt<I: Image> {
         self,
         ready_conditions: Vec<crate::core::WaitFor>,
     ) -> ContainerRequest<I>;
+    /// ヘルスチェックを設定する。
+    ///
+    /// Linux (Docker Engine API) では create JSON の `Config.Healthcheck` に配線する。
+    /// macOS では start 時に明示エラーを返す。
+    fn with_health_check(self, healthcheck: Healthcheck) -> ContainerRequest<I>;
 
     /// コンテナを実行するプラットフォームを指定する。
     ///
@@ -307,6 +313,12 @@ impl<RI: Into<ContainerRequest<I>>, I: Image> ImageExt<I> for RI {
             ready_conditions: Some(ready_conditions),
             ..container_req
         }
+    }
+
+    fn with_health_check(self, healthcheck: Healthcheck) -> ContainerRequest<I> {
+        let mut container_req = self.into();
+        container_req.health_check = Some(healthcheck);
+        container_req
     }
 
     fn with_init(self) -> ContainerRequest<I> {

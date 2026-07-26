@@ -29,6 +29,8 @@ use std::collections::BTreeMap;
 
 use crate::core::error::Result;
 #[cfg(target_os = "linux")]
+use crate::core::healthcheck::Healthcheck;
+#[cfg(target_os = "linux")]
 use crate::core::mounts::Mount;
 use crate::core::ports::Ports;
 
@@ -37,6 +39,23 @@ use crate::core::ports::Ports;
 pub(crate) struct ContainerSnapshot {
     pub(crate) running: bool,
     pub(crate) ports: Ports,
+}
+
+/// Docker Engine の `State.Health.Status` を表す。
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HealthStatus {
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
+/// inspect から取り出した running と health 状態。
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone)]
+pub(crate) struct HealthProbe {
+    pub(crate) running: bool,
+    pub(crate) health: Option<HealthStatus>,
 }
 
 /// Docker API 用のコンテナ設定。
@@ -54,6 +73,7 @@ pub(crate) struct ContainerConfig {
     pub working_dir: Option<String>,
     pub user: Option<String>,
     pub init: bool,
+    pub health_check: Option<Healthcheck>,
 }
 
 /// macOS / Linux のコンテナクライアントを統合した内部型。
