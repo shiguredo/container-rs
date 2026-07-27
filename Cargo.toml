@@ -2,7 +2,7 @@
 name = "shiguredo_container"
 version = "2026.1.0-canary.2"
 edition = "2024"
-rust-version = "1.88.0"
+rust-version = "1.93.0"
 description = "Runtime-agnostic container library for Rust on macOS and Linux"
 repository = "https://github.com/shiguredo/container-rs"
 license = "Apache-2.0"

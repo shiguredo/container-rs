@@ -11,6 +11,8 @@
 
 ## develop
 
+- [CHANGE] MSRV (`rust-version`) を 1.88.0 から 1.93.0 に上げる
+  - @voluntas
 - [CHANGE] Linux の `with_copy_to` 投入を create 後・start 前完了の公開契約へ変更する（macOS は start 後のまま）
   - @voluntas
 - [CHANGE] `WaitContainerError::Unhealthy` を `Unhealthy(String)` 形式に変更する
