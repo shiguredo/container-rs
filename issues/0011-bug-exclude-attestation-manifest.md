@@ -5,7 +5,7 @@
 - Completed:
 - Model: Qwen Code
 - Branch: feature/fix-exclude-attestation-manifest
-- Polished:
+- Polished: 2026-07-29
 
 ## 目的
 
@@ -36,14 +36,15 @@ Docker buildx が生成する attestation manifest (provenance attestation) の 
 `soft 先頭` と `hard 先頭` のフォールバック経路で、architecture が `"unknown"` の manifest を候補から除外する。
 
 - 除外条件は `architecture == "unknown"` とする。Docker buildx の attestation manifest は `os: "unknown"` も持つが、os だけで除外すると将来 `os: "linux"` の attestation manifest が登場した際に対応できないため、architecture を判定基準にする。architecture フィールドの欠落は除外対象外とする (現状の soft 先頭経路の挙動を維持)
-- 実装は各フォールバック経路のループ内で条件を追加する形で行う。manifests リスト全体の事前フィルタは行わない (主経路・preferred フォールバックの動作を変えないため)
-- hard 先頭経路は `manifests.first()` から `manifests.iter().find(|m| architecture != "unknown")` に変更する
+- 実装は各フォールバック経路のループ内で条件を追加する形で行う。manifests リスト全体の事前フィルタは行わない (変更をフォールバック経路に局所化するため)
+- soft 先頭経路では既存の `manifest_platform_os()` を維持しつつ、architecture を別途 `Option<String>` で取得する。既存の `manifest_platform_os_arch()` は os / architecture の両方が揃わないと `None` を返すため、そのまま使うと architecture 欠落エントリがスキップされ「現状の挙動を維持」に反する。architecture 欠落時は `None` = 除外しない、`Some("unknown")` = 除外、`Some(その他)` = 候補、として判定する
+- hard 先頭経路は `manifests.first()` から `manifests.iter().find(|m| architecture.map_or(true, |a| a != "unknown"))` に変更する (architecture 欠落は候補に残す)
 - 除外した結果候補がゼロになった場合は、既存の hard 先頭経路のエラー (`ClientError::Json("index has no manifests")`) と整合させ、`ClientError::Json("index has no valid manifests")` を返す。エラーは hard 先頭 (最終段) で候補がゼロのときのみ発生し、soft 先頭で候補がゼロの場合は hard 先頭へフォールスルーする (既存のカスケード意味論を維持)
-- 主経路・preferred フォールバックは変更不要
 
 ## 完了条件
 
 - [ ] `soft 先頭` / `hard 先頭` のフォールバック経路で architecture が `"unknown"` の manifest が選択されないこと
-- [ ] 単体テストが追加されていること (最低限: attestation manifest (`os: "unknown", architecture: "unknown"`) が先頭にある index で正常な manifest が選ばれること、全 manifest が attestation の場合にエラーになること、soft 先頭経路で `os: "linux", architecture: "unknown"` のエントリがスキップされること、hard 先頭経路で attestation manifest がスキップされ別 os の非 attestation manifest が選ばれること)
+- [ ] 単体テストが追加されていること (最低限: attestation manifest (`os: "unknown", architecture: "unknown"`) が先頭にある index で正常な manifest が選ばれること、全 manifest が attestation の場合にエラーになること、soft 先頭経路で `os: "linux", architecture: "unknown"` のエントリがスキップされること、hard 先頭経路で attestation manifest がスキップされ別 os の非 attestation manifest が選ばれること、`platform.os` が `"linux"` で `platform.architecture` が欠落しているエントリが soft 先頭経路で引き続き選択されること)
+- [ ] `CHANGES.md` に `[FIX]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
