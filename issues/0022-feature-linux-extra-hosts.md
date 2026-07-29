@@ -4,34 +4,35 @@
 - Created: 2026-07-21
 - Completed:
 - Model: qwen3.8-max-preview
-- Branch: feature/linux-extra-hosts
-- Polished:
+- Branch: feature/add-linux-extra-hosts
+- Polished: 2026-07-29
 
 ## 目的
 
 Linux (Docker Engine API) バックエンドで `with_host` を Docker の HostConfig.ExtraHosts に反映する。
 
-## 優先度根拠
-
-`with_host` はコンテナ内の `/etc/hosts` にエントリを追加する機能で、特定のホスト名を特定の IP に解決させたいテストで使う。macOS では exec による `/etc/hosts` 追記で対応しているが、Linux では Docker の `ExtraHosts` が直接利用可能。ただしユースケースは限定的なため Low。
-
 ## 現状
 
-- `with_host`: `ContainerRequest` には保存されるが `build_container_config` で無視される
-- macOS では `ExtraHost::Addr` をコンテナ起動後に exec で `/etc/hosts` に追記している。`ExtraHost::HostGateway` は明示エラー
-- Docker Engine API では `HostConfig.ExtraHosts` に `["hostname:ip"]` 形式で設定する
+- `with_host`: `ContainerRequest` には保存されるが、`linux_unsupported_request_reason` (`src/runners/async_runner.rs`) が `build_container_config` の呼び出しより前に**明示エラーで拒否**している ("with_host() is not implemented on Linux")
+- Linux 用 `build_container_config` (`src/runners/async_runner.rs`) は `ContainerConfig` に extra_hosts をマッピングしていない
+- `HostConfig` (`src/core/client/docker_client.rs`) に `ExtraHosts` フィールドは存在しない
+- macOS では `ExtraHost::Addr` をコンテナ起動後に exec で `/etc/hosts` に追記している (`apply_extra_hosts`, `src/runners/async_runner.rs`)。`ExtraHost::HostGateway` は明示エラー
+- `ExtraHost` には `Display` 実装 (`src/core/containers/request.rs`) があり、`Addr` は IP アドレスを、`HostGateway` は `"host-gateway"` を出力する
 
 ## 設計方針
 
-- `ContainerConfig` に `extra_hosts: Vec<String>` を追加する
-- `build_container_config` で `ContainerRequest::hosts()` から `"hostname:ip"` 形式の文字列を生成する
-- `ExtraHost::HostGateway` は `"hostname:host-gateway"` として渡す (Docker は `host-gateway` を特殊値として扱う)
-- `CreateContainerBody` の `HostConfig` JSON に `ExtraHosts` を追加する
+- `linux_unsupported_request_reason` (`src/runners/async_runner.rs`) から `hosts` のガードを削除する
+- `ContainerConfig` (`src/core/client.rs`) に `extra_hosts: Vec<String>` を追加する
+- `build_container_config` (`src/runners/async_runner.rs`) で `ContainerRequest::hosts()` から `ExtraHost` の `Display` 実装を使い `"hostname:ip"` / `"hostname:host-gateway"` 形式の文字列を生成する
+- `HostConfig` (`src/core/client/docker_client.rs`) に `extra_hosts: Vec<String>` フィールドを追加し、`from_config` で `ContainerConfig` から値を受け渡し、`to_json_string` で `ExtraHosts` を JSON に出力する。空 Vec の場合は省略する
+- `ContainerConfig` のフィールド追加に伴い、テストヘルパー `config_with_mounts` (`src/core/client/docker_client.rs`) にも `extra_hosts` フィールドのデフォルト値を追加する
 
 ## 完了条件
 
-- [ ] Linux で `with_host("myhost", "1.2.3.4")` が Docker の HostConfig.ExtraHosts に反映されること
-- [ ] Linux で `with_host("myhost", HostGateway)` が `host-gateway` として反映されること
-- [ ] 統合テストが追加されていること
+- [ ] Linux で `with_host("myhost", ExtraHost::Addr(...))` が Docker の HostConfig.ExtraHosts に反映されること
+- [ ] Linux で `with_host("myhost", ExtraHost::HostGateway)` が `host-gateway` として反映されること
+- [ ] 統合テストが追加されていること (最低限: `build_container_config` の出力に extra_hosts が反映されることの検証)
+- [ ] `docs/TESTCONTAINERS.md` と `skills/shiguredo-container/SKILL.md` の関連箇所が実装済みに更新されること
+- [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
