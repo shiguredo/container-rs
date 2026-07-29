@@ -1,11 +1,11 @@
-# 調査: macOS で with_copy_to を初期プロセス起動前に投入する経路を実測する
+# 調査: macOS で初期プロセス起動前にファイルを可視化する経路を実測する
 
 - Priority: Medium
 - Created: 2026-07-23
 - Completed: {YYYY-MM-DD}
 - Model: Cursor Grok 4.5
-- Branch: feature/refactor-macos-prestart-file-visibility
-- Polished: 2026-07-23
+- Branch: feature/debug-macos-prestart-file-visibility
+- Polished: 2026-07-29
 - Reporter: @voluntas
 
 ## 目的
@@ -28,17 +28,17 @@ Medium (Linux は 0041 で解消済みのため High にはしない。ただし
 
 ### 0041 で確定した macOS 側の挙動
 
-- `AsyncRunner::start` の macOS 分岐は `start_process` 成功後に `copy_to_sources`（XPC `containerCopyIn`）を呼ぶ (`src/runners/async_runner.rs:160-175`)
-- `bootstrap_container` 後・`start_process` 前の `containerCopyIn` は Apple container 1.0.0 / 1.1.0 (release) で `XPC error invalidState: container ... is not running` として失敗する。エラーは現在時制（`is`）で、`XpcClient::container_state`（`src/core/client/xpc_client.rs:225`）も `running = state == "running"` の現在時制判定を採用している。実測ログ全文と build 番号は 0041 の `## macOS 実測結果` を参照
-- `XpcClient::copy_in` (`src/core/client/xpc_client.rs:102-131`) 自体には状態ゲートは無く、拒否は Apple 側 apiserver のハンドラで行われている
-- 現行文書は「Linux のみ起動前投入」を公開契約とし、macOS の start 後 copy は「レースあり」と明記済み (`README.md:26-29`、`docs/TESTCONTAINERS.md:56 / :104 / :127`、`src/core/image/image_ext.rs:38-47`)
+- `AsyncRunner::start` の macOS 分岐は `start_process` 成功後に `copy_to_sources`（XPC `containerCopyIn`）を呼ぶ (`src/runners/async_runner.rs` の `copy_to_sources` 呼び出し箇所)
+- `bootstrap_container` 後・`start_process` 前の `containerCopyIn` は Apple container 1.0.0 / 1.1.0 (release) で `XPC error invalidState: container ... is not running` として失敗する。エラーは現在時制（`is`）で、`XpcClient::container_state` 内の `running = state == "running"` 判定も現在時制を採用している。実測ログ全文と build 番号は 0041 の `## macOS 実測結果` を参照
+- `XpcClient::copy_in` 自体には状態ゲートは無く、拒否は Apple 側 apiserver のハンドラで行われている
+- 現行文書は「Linux のみ起動前投入」を公開契約とし、macOS の start 後 copy は「レースあり」と明記済み (`README.md`、`docs/TESTCONTAINERS.md`、`src/core/image/image_ext.rs` の `with_copy_to` rustdoc)
 
 ### 既存 `Mount::bind_mount` の技術特性と制約
 
 - `Mount::bind_mount(host_path, container_path)` は `MountType::Bind` として `mount_cfg`（`src/core/client/container_cfg.rs` の `mount_cfg`）で XPC の `virtiofs` にマップされ、`containerCreate` の段階で `ContainerCfg.mounts` に載る。したがって `bootstrap` / `start_process` より前に materialize される
 - `tests/container_macos.rs` の `xpc_alpine_with_bind_mount` は新規パス（`/data/mounted.txt`）への単一ファイル bind mount が成立することを実証済み。ただし `WaitFor` を使わず起動後の `exec` で `cat` 検証する型のため、**初期プロセス起動時のタイミング保証は未検証**
 - **virtiofs は既存 non-empty ディレクトリ配下の子だけを bind して差し替える形式ができない**。既存イメージが持つ `/etc/mosquitto/mosquitto.conf` を単一ファイル bind で差し替えると、`/etc/mosquitto` ディレクトリ全体が bind source で覆われる。新規パスへの単一ファイル bind は成立する
-- `Mount::bind_mount` は host_path の絶対性を検証していない (`src/core/mounts.rs:58-66`)。相対パスは apiserver 側の cwd で解決されるため、`copy_in` の `absolutize_host_path`（`src/core/client/xpc_client.rs:28-39`）のような呼び出し側 cwd 基準の解決は自動では入らない。利用者・内部実装のいずれも host_path は絶対パスで渡す
+- `Mount::bind_mount` は host_path の絶対性を検証していない (`Mount::bind_mount` 関数)。相対パスは apiserver 側の cwd で解決されるため、`copy_in` の `absolutize_host_path` のような呼び出し側 cwd 基準の解決は自動では入らない。利用者・内部実装のいずれも host_path は絶対パスで渡す
 - `AccessMode::ReadOnly` を指定すれば読み取り専用で mount できる（既定は ReadWrite）
 
 ### 本 issue で扱う残ケースと mqtt-rs 要件との対応
@@ -153,7 +153,7 @@ Medium (Linux は 0041 で解消済みのため High にはしない。ただし
 - 4 候補全てについて実測結果が `## macOS 実測結果` に追記されている（各候補について「実施日、macOS バージョン、Apple container CLI / apiserver のバージョンと build、試したシーケンス、成功/失敗、XPC エラー全文、判定」）。ただし上位案が成立した時点で以降の実測は不要（未実施として明示的に残す）
 - 選定候補（分岐 A / B）または「全案 NG」の判定が本文に記録されている
 - 判定に応じた実装 issue（分岐 A / B の場合は選定候補の実装 issue、全案 NG の場合は候補 4b + 文書化 issue）が `create-issue` スキル経由で起票され、番号が `## 調査結果` に記録されている
-- 本 issue のブランチ（`feature/refactor-macos-prestart-file-visibility`）で PoC 用の実測コードが変更されている場合、実測後に revert または別ブランチへ退避する（本 issue は調査 issue のためコード変更は成果物ではない）
+- 本 issue のブランチ（`feature/debug-macos-prestart-file-visibility`）で PoC 用の実測コードが変更されている場合、実測後に revert または別ブランチへ退避する（本 issue は調査 issue のためコード変更は成果物ではない。`feature/debug-` ブランチはマージしない）
 
 ## macOS 実測結果
 
