@@ -5,15 +5,11 @@
 - Completed: {YYYY-MM-DD}
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-macos-log-failure-keep-gate
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-07-29
 
 ## 目的
 
-macOS の `AsyncRunner::start` で `containerLogs` 取得が失敗し、かつ `WaitFor::Log` が登録されている経路のロールバックが、`TESTCONTAINERS_COMMAND=keep` ゲート無しで `remove` を呼んでいる。他のロールバック経路（create / bootstrap / start_process / copy 失敗時）や Linux の `start_linux_log_stream` はすべて `Config.command() == Command::Remove` でゲートしており、挙動が非対称である。この非対称を解消し、`keep` 指定時は失敗したコンテナを残して調査できるようにする。
-
-## 優先度根拠
-
-`keep` 指定時の調査性が損なわれるが、発生条件が「macOS かつ logs() 失敗かつ Log 待機使用」と限定的で、通常利用への影響は小さいため Low。
+macOS の `AsyncRunner::start` で `containerLogs` 取得が失敗し、かつ `WaitFor::Log` が登録されている経路のロールバックが、`TESTCONTAINERS_COMMAND=keep` ゲート無しで `remove` を呼んでいる。他のロールバック経路（create / bootstrap / start_process / copy 失敗時）や Linux の `start_linux_log_stream` はすべて `matches!(Config.command(), Command::Remove)` でゲートしており、挙動が非対称である。この非対称を解消し、`keep` 指定時は失敗したコンテナを残して調査できるようにする。
 
 ## 現状
 
@@ -36,13 +32,16 @@ Err(e) => {
 
 ## 設計方針
 
-当該 `remove` を他のロールバック経路と同じく `Config.command() == Command::Remove` でゲートする。`keep` 指定時は remove せず `Err` を返す（失敗したコンテナを残す）。
+当該 `remove` を他のロールバック経路と同じく `matches!(Config.command(), Command::Remove)` でゲートする。`keep` 指定時は remove せず `Err` を返す（失敗したコンテナを残す）。`keep` 指定時は watchdog も未登録のため、コンテナは確実に残留する。
 
 ## 完了条件
 
-- macOS の logs() 取得失敗 + Log 待機使用時のロールバックが Keep ゲート付きになる
-- `TESTCONTAINERS_COMMAND=keep` 指定時、当該経路でコンテナが削除されない
-- 既存の macOS 統合テストが pass する
+- [ ] macOS の logs() 取得失敗 + Log 待機使用時のロールバックが Keep ゲート付きになる
+- [ ] `TESTCONTAINERS_COMMAND=keep` 指定時、当該経路でコンテナが削除されない
+- [ ] `docs/TESTCONTAINERS.md` の当該経路の記述が実態に合わせて更新されること（0037 が先に実施された場合は表記統一後の行を更新する）
+- [ ] `CHANGES.md` に `[FIX]` エントリが記載されること
+- [ ] 既存の macOS 統合テストが pass する
+- [ ] `cargo fmt --all -- --check` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --all-features` が pass すること
 
 ## 解決方法
 
