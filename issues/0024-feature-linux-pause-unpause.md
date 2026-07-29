@@ -4,34 +4,33 @@
 - Created: 2026-07-21
 - Completed:
 - Model: qwen3.8-max-preview
-- Branch: feature/linux-pause-unpause
-- Polished:
+- Branch: feature/add-linux-pause-unpause
+- Polished: 2026-07-29
 
 ## 目的
 
-Linux (Docker Engine API) バックエンドで `pause` / `unpause` を実装する。Docker Engine API には `POST /containers/{id}/pause` / `POST /containers/{id}/unpause` が存在する。
-
-## 優先度根拠
-
-pause/unpause はコンテナのプロセスを一時停止・再開する機能で、テストでの需要は限定的。macOS (Apple Container) では XPC に pause 系 route が無いため実装不可であり、Linux 限定の機能になる。Low。
+Linux (Docker Engine API) バックエンドで `pause` / `unpause` を実装する。
 
 ## 現状
 
-- macOS では XPCRoute に pause 系が無いため、シグネチャ自体を削除済み
+- macOS では XPC の route に pause 系が無いため、`ContainerAsync` に pause/unpause のシグネチャ自体が存在しない
+- `DockerClient` (`src/core/client/docker_client.rs`) に pause/unpause メソッドは存在しない
 - Docker Engine API には `POST /containers/{id}/pause` / `POST /containers/{id}/unpause` がある
-- 本家 testcontainers-rs 0.27 には `ContainerAsync::pause` / `unpause` がある
+- 本家 testcontainers-rs 0.27 には `ContainerAsync::pause` / `unpause` がある (OS 共通シグネチャ: `pub async fn pause(&self) -> Result<()>`)
+- コードベースには OS 非対称メソッドの既存パターンがある (`rm` は `#[cfg]` で macOS 版と Linux 版を別定義)
 
 ## 設計方針
 
-- `DockerClient` に `pause(id)` / `unpause(id)` メソッドを追加する
-- `ContainerAsync` に Linux 限定 (`#[cfg(target_os = "linux")]`) で `pause` / `unpause` メソッドを追加する
-- macOS ではシグネチャ無しを維持する (XPC 制約)
-- 本家とシグネチャを揃えるかは要検討 (本家は OS 共通シグネチャ)
+- `DockerClient` (`src/core/client/docker_client.rs`) に `pause(&self, id: &str)` / `unpause(&self, id: &str)` メソッドを追加する。Docker Engine API の `POST /containers/{id}/pause` / `POST /containers/{id}/unpause` を呼ぶ。304 (already paused/unpaused) は冪等成功として扱う (既存の `stop` / `remove` の 404 冪等パターンに準拠)
+- `ContainerAsync` (`src/core/containers/async_container.rs`) に `#[cfg(target_os = "linux")]` で `pause` / `unpause` メソッドを追加する。macOS ではシグネチャ無しを維持する (XPC 制約。本家共通シグネチャへの統一は macOS 対応時に再検討する)
+- 本家のシグネチャ (`pub async fn pause(&self) -> Result<()>`) に合わせる
 
 ## 完了条件
 
 - [ ] Linux で `pause()` がコンテナを一時停止すること
 - [ ] Linux で `unpause()` がコンテナを再開すること
-- [ ] 統合テストが追加されていること
+- [ ] 単体テストが追加されていること (`tests/container_linux.rs` に追加。最低限: pause 後にコンテナが一時停止状態であること、unpause 後に再開することの検証)
+- [ ] `docs/TESTCONTAINERS.md` と `skills/shiguredo-container/SKILL.md` の関連箇所が実装済みに更新されること
+- [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
