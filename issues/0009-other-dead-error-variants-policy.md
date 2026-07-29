@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-12
-- Completed:
+- Completed: 2026-07-29
 - Model: Kimi
 - Branch: feature/update-dead-error-variants-policy
 - Polished: 2026-07-21
@@ -44,3 +44,15 @@
 - [ ] 対象の各型 / variant について「存置」「削除」「構築経路の追加」のいずれかの方針が決定され、その結果と理由が本 issue に記録されること
 - [ ] 方針に沿ってコードが整理されること (存置なら存置理由のコメント明記、削除なら型 / variant / Display / From impl / 関連テストの削除、構築経路の追加なら当該経路を検証するテストの追加)
 - [ ] `cargo test` (統合テストを追加した場合は `cargo test --all-features`) と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+陳腐化により closed とする。
+
+本 issue の対象 5 項目のうち 3 項目は、Linux (Docker) 経路の実装により既に構築経路が存在するようになった:
+
+- `CopyToContainerError` 全体: closed 0013 (Linux copy 実装、コミット `804910c`) により `async_runner.rs` / `docker_tar.rs` で構築されるようになった
+- `CopyFromContainerError::EmptyArchive` / `UnsupportedEntry`: closed 0013 により `docker_tar.rs` の `parse_first_regular_file_from_ustar` で構築されるようになった
+- `WaitContainerError::Unhealthy`: closed 0044 (Linux healthcheck 実装、コミット `674c7e1`) により `health_strategy.rs` の Linux 分岐で構築されるようになった
+
+残る `ClientError::XpcNullReply`、`WaitContainerError::StateUnavailable`、`ExecError::WaitLog` の 3 項目は依然として構築経路がないが、いずれも存置が自明（本家互換のため保持）であり、独立した issue として対応するほどの規模ではない。必要であれば 0028（公開 API 面の整理）や 0033（コード品質）のついでに対応可能。
