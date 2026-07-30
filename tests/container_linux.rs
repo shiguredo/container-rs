@@ -227,29 +227,111 @@ async fn unimplemented_boundaries_return_err() {
     container.rm().await.expect("rm に失敗した");
 }
 
-/// Linux では exec の stdout/stderr メッセージ待ちと with_env_vars が明示エラーになること。
+/// Linux では exec の with_env_vars が明示エラーになること。
 #[tokio::test]
 async fn exec_unsupported_options_return_err() {
     let container = start_alpine().await;
 
     container
-        .exec(
-            ExecCommand::new(["true"]).with_cmd_ready_condition(CmdWaitFor::message_on_stdout("x")),
-        )
-        .await
-        .expect_err("StdOutMessage は Linux で未対応であること");
-
-    container
-        .exec(
-            ExecCommand::new(["true"]).with_cmd_ready_condition(CmdWaitFor::message_on_stderr("x")),
-        )
-        .await
-        .expect_err("StdErrMessage は Linux で未対応であること");
-
-    container
         .exec(ExecCommand::new(["true"]).with_env_vars([("K", "V")]))
         .await
         .expect_err("with_env_vars は Linux で未対応であること");
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// Linux で exec の stdout が取得できること。
+#[tokio::test]
+async fn alpine_exec_captures_stdout() {
+    let container = start_alpine().await;
+
+    let mut result = container
+        .exec(ExecCommand::new(["echo", "hello_stdout"]))
+        .await
+        .expect("exec に失敗した");
+
+    let stdout = result
+        .stdout_to_vec()
+        .await
+        .expect("stdout_to_vec に失敗した");
+    assert!(
+        stdout.windows(12).any(|w| w == b"hello_stdout"),
+        "stdout に hello_stdout が含まれること: {:?}",
+        String::from_utf8_lossy(&stdout)
+    );
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// Linux で exec の stderr が取得できること。
+#[tokio::test]
+async fn alpine_exec_captures_stderr() {
+    let container = start_alpine().await;
+
+    let mut result = container
+        .exec(ExecCommand::new(["sh", "-c", "echo hello_stderr >&2"]))
+        .await
+        .expect("exec に失敗した");
+
+    let stderr = result
+        .stderr_to_vec()
+        .await
+        .expect("stderr_to_vec に失敗した");
+    assert!(
+        stderr.windows(12).any(|w| w == b"hello_stderr"),
+        "stderr に hello_stderr が含まれること: {:?}",
+        String::from_utf8_lossy(&stderr)
+    );
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// Linux で CmdWaitFor::StdOutMessage が動作すること。
+#[tokio::test]
+async fn alpine_exec_wait_for_stdout_message() {
+    let container = start_alpine().await;
+
+    let mut result = container
+        .exec(
+            ExecCommand::new(["echo", "READY_TOKEN"])
+                .with_cmd_ready_condition(CmdWaitFor::message_on_stdout("READY_TOKEN")),
+        )
+        .await
+        .expect("StdOutMessage 待ちが成功すること");
+
+    let stdout = result
+        .stdout_to_vec()
+        .await
+        .expect("stdout_to_vec に失敗した");
+    assert!(
+        stdout.windows(11).any(|w| w == b"READY_TOKEN"),
+        "stdout に READY_TOKEN が含まれること"
+    );
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// Linux で CmdWaitFor::StdErrMessage が動作すること。
+#[tokio::test]
+async fn alpine_exec_wait_for_stderr_message() {
+    let container = start_alpine().await;
+
+    let mut result = container
+        .exec(
+            ExecCommand::new(["sh", "-c", "echo ERR_TOKEN >&2"])
+                .with_cmd_ready_condition(CmdWaitFor::message_on_stderr("ERR_TOKEN")),
+        )
+        .await
+        .expect("StdErrMessage 待ちが成功すること");
+
+    let stderr = result
+        .stderr_to_vec()
+        .await
+        .expect("stderr_to_vec に失敗した");
+    assert!(
+        stderr.windows(9).any(|w| w == b"ERR_TOKEN"),
+        "stderr に ERR_TOKEN が含まれること"
+    );
 
     container.rm().await.expect("rm に失敗した");
 }

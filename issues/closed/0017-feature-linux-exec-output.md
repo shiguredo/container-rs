@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-exec-output
 - Polished: 2026-07-29
@@ -51,3 +51,16 @@ exec の出力取得はコンテナ内のコマンド結果を検証する基本
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+`DockerClient::exec` を `AttachStdout: true, AttachStderr: true, Detach: false` に変更し、`POST /exec/{id}/start` のレスポンスボディ (multiplexed stream) を全蓄積して demux する方式に書き換えた。
+
+1. `demux_exec_stream` 関数を新規実装し、8 バイトヘッダ (stream_type + payload_len) の multiplex フレームを stdout / stderr に分離する。単体テスト 5 件を追加した
+2. 旧 30 秒 inspect ポーリングループを削除し、ストリーム EOF 後に `Running == false` を確認する短期リトライ (最大 5 回、10ms 間隔) で exit code を取得する
+3. `CmdWaitFor::StdOutMessage` / `StdErrMessage` の Linux 分岐を macOS と同じ `contains_bytes` 部分一致ロジックに統一した。`contains_bytes` の `#[cfg(target_os = "macos")]` ゲートを削除した
+4. 統合テスト 4 件 (stdout 取得、stderr 取得、StdOutMessage 待ち、StdErrMessage 待ち) を追加し、`exec_unsupported_options_return_err` から StdOutMessage / StdErrMessage の Err 期待を削除した
+5. README / TESTCONTAINERS.md / SKILL.md の exec 出力関連箇所を実装済みに更新した
+6. CHANGES.md に `[ADD]` エントリを追加した
+
+変更ファイル: `src/core/client/docker_client.rs`、`src/core/containers/async_container.rs`、`tests/container_linux.rs`、`README.md`、`docs/TESTCONTAINERS.md`、`skills/shiguredo-container/SKILL.md`、`CHANGES.md`
