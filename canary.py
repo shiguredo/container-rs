@@ -100,7 +100,7 @@ def run_cargo_update(dry_run: bool) -> None:
         print("cargo update shiguredo_container executed")
 
 
-# git コミット、タグ、プッシュを実行
+# git add とコミットを実行
 def git_commit_version(new_version: str, dry_run: bool) -> None:
     if dry_run:
         print("Dry-run: Would run 'git add Cargo.toml Cargo.lock'")
@@ -114,8 +114,8 @@ def git_commit_version(new_version: str, dry_run: bool) -> None:
         print(f"Version bumped and committed: {new_version}")
 
 
-# git コミット、タグ、プッシュを実行
-def git_operations_after_build(new_version: str, dry_run: bool) -> None:
+# git タグ付けとプッシュを実行
+def git_tag_and_push(new_version: str, dry_run: bool) -> None:
     if dry_run:
         print(f"Dry-run: Would run 'git tag {new_version}'")
         print("Dry-run: Would run 'git push'")
@@ -153,7 +153,7 @@ def main() -> None:
     git_commit_version(new_version, args.dry_run)
 
     # git タグ付け、プッシュ
-    git_operations_after_build(new_version, args.dry_run)
+    git_tag_and_push(new_version, args.dry_run)
 
 
 if __name__ == "__main__":
