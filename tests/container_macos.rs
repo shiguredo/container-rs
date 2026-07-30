@@ -1675,6 +1675,42 @@ mod test_container_xpc {
         );
     }
 
+    /// Runtime 内の同期コンテキストから rm_blocking でコンテナが削除されること。
+    ///
+    /// `rm_blocking` は `block_on` を使わず `remove_blocking` (同期 XPC) を直接
+    /// 呼び出すため、tokio Runtime 内の `spawn_blocking` 内から呼んでも deadlock しない。
+    /// `Ok` を返した直後に 1 ショット `container ls` で不在を確認する。
+    #[tokio::test]
+    async fn xpc_alpine_rm_blocking_inside_runtime_removes_container() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        let container = GenericImage::new("alpine", "latest")
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .start()
+            .await
+            .expect("alpine コンテナの起動に失敗した");
+        let id = container.id().to_string();
+        // Runtime 内の同期コンテキスト (spawn_blocking) から rm_blocking を呼ぶ
+        tokio::task::spawn_blocking(move || {
+            container.rm_blocking().expect("rm_blocking に失敗した");
+        })
+        .await
+        .expect("spawn_blocking に失敗した");
+
+        // rm_blocking の Ok 復帰直後は削除完了済みなので、1 ショットで不在を確認できる。
+        let ls = std::process::Command::new("container")
+            .args(["ls", "-a"])
+            .output()
+            .expect("container ls の実行に失敗した");
+        let ls_text = String::from_utf8_lossy(&ls.stdout).to_string();
+        assert!(
+            !ls_text.contains(&id),
+            "rm_blocking 後にコンテナが削除されていること: {id}"
+        );
+    }
+
     #[tokio::test]
     async fn xpc_alpine_log_consumer_with_log_wait() {
         if super::helpers::skip_if_ci() {

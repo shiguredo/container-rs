@@ -146,6 +146,29 @@ impl<I: Image> Container<I> {
         Ok(())
     }
 
+    /// コンテナを同期的に削除する。tokio Runtime 内外のどちらから呼んでも安全。
+    ///
+    /// 内部の `ContainerAsync::rm_blocking` に委譲する。`block_on` を使わず
+    /// `remove_blocking` (同期 I/O) を直接呼び出すため、tokio Runtime 内の同期
+    /// コンテキスト (Drop ガードや `spawn_blocking` 内) から呼んでも deadlock しない。
+    ///
+    /// # `rm()` との使い分け
+    ///
+    /// - 共有ランタイム上で async 削除を待てるなら `rm()` を使う
+    /// - 同一共有 Runtime への再入で `rm()` が `Err` を返す場合や、Runtime 内の
+    ///   同期コンテキストから削除完了を待ちたい場合はこのメソッドを使う
+    ///
+    /// # `keep` ゲートとの非対称
+    ///
+    /// このメソッドは `TESTCONTAINERS_COMMAND=keep` でも削除する。`keep` ゲートは
+    /// `Drop` の削除のみを抑止する仕様であり、明示 `rm` / `rm_blocking` には効かない。
+    pub fn rm_blocking(mut self) -> Result<()> {
+        if let Some(inner) = self.inner.take() {
+            inner.rm_blocking()?;
+        }
+        Ok(())
+    }
+
     pub fn ports(&self) -> Result<crate::core::ports::Ports> {
         block_on_runtime(self.runtime(), self.inner().ports())?
     }
