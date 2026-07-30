@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-29
-- Completed:
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/refactor-canary-comments
 - Polished: 2026-07-30
@@ -29,3 +29,14 @@ canary.py のコメントと関数名が実態と一致しておらず、誤読�
 
 - [ ] `git_commit_version` 関数上方と `git_operations_after_build` 関数上方のコメントが関数の実態に合わせて修正されること
 - [ ] 関数名 `git_operations_after_build` が `git_tag_and_push` に変更され、`main()` 内の呼び出し側も更新されること
+
+## 解決方法
+
+`canary.py` のコメントと関数名を修正した。
+
+1. `git_commit_version` 関数上方のコメントを `# git コミット、タグ、プッシュを実行` から `# git add とコミットを実行` に修正した
+2. `git_operations_after_build` 関数上方のコメントを `# git コミット、タグ、プッシュを実行` から `# git タグ付けとプッシュを実行` に修正した
+3. 関数名 `git_operations_after_build` を `git_tag_and_push` にリネームし、`main()` 内の呼び出し側も更新した
+4. `main()` 内のインラインコメント `# git タグ付け、プッシュ` は既に正確なため変更していない
+
+変更ファイル: `canary.py`、`CHANGES.md`（misc に `[UPDATE]` エントリ追加）
