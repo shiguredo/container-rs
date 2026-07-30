@@ -811,8 +811,8 @@ pub(crate) fn percent_encode_path_segment(s: &str) -> String {
 /// Docker exec の multiplexed stream を demux して stdout / stderr に分離する。
 ///
 /// ヘッダ 8 バイト (`stream_type (1B) + reserved (3B) + payload_len (4B big-endian)`)
-/// + payload の繰り返し。stream_type 1 = stdout, 2 = stderr。
-/// exec の出力はプロセス終了で EOF する有界ストリームのため、全蓄積後に一括 demux する。
+/// と payload の繰り返し。stream_type 1 = stdout, 2 = stderr。
+/// exec の出力はプロセス終了で EOF するため、全蓄積後に一括 demux する。
 fn demux_exec_stream(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
     const FRAME_HEADER_LEN: usize = 8;
     let mut stdout = Vec::new();
