@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-23
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-07-31
 - Model: Claude Fable 5
 - Branch: feature/add-rm-blocking
 - Polished: 2026-07-29
@@ -40,4 +40,15 @@ testcontainers-rs 利用時の mqtt-rs は `ContainerAsync` を保持するだ�
 
 ## 解決方法
 
-`src/core/containers/async_container.rs` に `rm_blocking` を追加し、Drop が使っている `remove_blocking` クロージャと同じ分岐 (macOS: `XpcClient::remove_blocking` / Linux: `DockerClient::remove_blocking`) を呼ぶ。削除前に `stop_log_delivery()` を呼ぶ。`dropped` フラグと keep 非対称の扱いは `rm()` に揃える。sync 側は委譲のみ。統合テストで Runtime 内同期コンテキストからの削除完了を検証する。
+`ContainerAsync` に `pub fn rm_blocking(mut self) -> Result<()>` を追加した。
+
+1. `rm_blocking` は Drop が使っている `remove_blocking` と同じ分岐 (macOS: `XpcClient::remove_blocking` / Linux: `DockerClient::remove_blocking`) を直接呼び出す。`block_on` を使わないため tokio Runtime 内の同期コンテキストから呼んでも deadlock しない
+2. 削除前に `stop_log_delivery()` を呼び、成功後は `dropped = true` にして Drop の二重削除を防ぐ。`force=true`、404 冪等、`keep` 非対称は `rm()` に揃えた
+3. macOS 版 `rm()` にも `stop_log_delivery()` を追加して `rm_blocking` / Linux 版 `rm()` / Drop とセマンティクスを揃えた
+4. sync `Container` にも `rm_blocking()` を委譲で追加した
+5. rustdoc に `rm()` との使い分けと Runtime 内 Drop との関係を記載した
+6. README / `docs/TESTCONTAINERS.md` (6.1 API 表 + 7 章 API 表 + Drop 行) / `skills/shiguredo-container/SKILL.md` の掃除契約に `rm_blocking` を追記した
+7. Linux / macOS の両方に `spawn_blocking` 内から `rm_blocking` を呼ぶ統合テストを追加した
+8. `CHANGES.md` に `[ADD]` エントリを追加した
+
+変更ファイル: `src/core/containers/async_container.rs`、`src/core/containers/sync_container.rs`、`tests/container_linux.rs`、`tests/container_macos.rs`、`README.md`、`docs/TESTCONTAINERS.md`、`skills/shiguredo-container/SKILL.md`、`CHANGES.md`
