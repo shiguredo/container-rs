@@ -128,12 +128,12 @@ impl<I: Image> Container<I> {
     /// # 完了保証
     ///
     /// `Ok` を返した時点で削除処理は終わっており、成否は返り値の `Result` として
-    /// 呼び出し側に届く。`Drop` は復帰時点の削除完了を保証しないため、削除完了を
-    /// 待ちたい・成否を扱いたい場合はこのメソッドを使うこと。`Err` の場合は削除は
-    /// 完了しておらず (共有ランタイムへの再入検出では削除試行自体が未実行、
-    /// バックエンドからのエラーでは試行済み失敗)、いずれも `Drop` の削除経路
-    /// (Runtime 内なら fire-and-forget、Runtime 外なら同期試行) に委ねられ、
-    /// 最終的な完了時点は保証されない。
+    /// 呼び出し側に届く。`Drop` は `DROP_REMOVE_TIMEOUT` (5 秒) 内で完了を待つが、
+    /// 超過時は best-effort であり成否の `Result` も返さないため、確実な完了保証と
+    /// 成否が必要ならこのメソッドを使うこと。`Err` の場合は削除は完了しておらず
+    /// (共有ランタイムへの再入検出では削除試行自体が未実行、バックエンドからの
+    /// エラーでは試行済み失敗)、いずれも `Drop` の削除経路
+    /// (Runtime 内なら timeout 付き待機、Runtime 外なら同期試行) に委ねられる。
     ///
     /// # `keep` ゲートとの非対称
     ///
@@ -250,10 +250,10 @@ impl<I: Image> Container<I> {
 ///
 /// # 完了保証
 ///
-/// 委譲先の `ContainerAsync::drop` は削除完了を保証しない。素の `#[test]` からの
-/// 通常利用のように Runtime 外で drop されるときは呼び出しスレッドで削除試行が
-/// 終わるまで待つが成功は保証されず、ユーザーの tokio Runtime 内で drop される
-/// ときは削除が専用 std スレッドへ丸投げされ `drop` 復帰時点で完了しない場合がある。
+/// 委譲先の `ContainerAsync::drop` は Runtime 内 Drop で削除を専用 std スレッドで実行し、
+/// `DROP_REMOVE_TIMEOUT` (5 秒) を上限に完了を待つ。timeout 内に完了すれば `drop` 復帰
+/// 時点で削除は終わっている。超過時は best-effort。Runtime 外で drop されるときは
+/// 呼び出しスレッドで削除試行が終わるまで待つが成功は保証されない。
 /// 詳細な契約は `ContainerAsync` の `Drop` を参照すること。
 ///
 /// 削除の完了待ち、または成否の `Result` が必要なら明示 `rm()` を使うこと。
@@ -261,8 +261,9 @@ impl<I: Image> Container<I> {
 impl<I: Image> Drop for Container<I> {
     fn drop(&mut self) {
         // `ContainerAsync` の Drop に任せる。`rm` 呼出済みなら `inner` は None。
-        // `ContainerAsync` の Drop は ambient handle への spawn または同期削除で処理され、
-        // 共有ランタイムの生存に依存しないため、drop の順序に制約は無い。
+        // `ContainerAsync` の Drop は専用 std スレッド + mpsc::recv_timeout (Runtime 内)
+        // または同期削除 (Runtime 外) で処理され、共有ランタイムの生存に依存しないため、
+        // drop の順序に制約は無い。
         drop(self.inner.take());
 
         // 共有ランタイムへの最後の強参照になり得るため、async コンテキスト内での

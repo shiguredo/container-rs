@@ -2,7 +2,7 @@
 
 - Priority: High
 - Created: 2026-07-29
-- Completed:
+- Completed: 2026-07-31
 - Model: Composer
 - Branch: feature/fix-runtime-drop-await-remove
 - Polished: 2026-07-30
@@ -45,4 +45,14 @@ tokio Runtime 内で `ContainerAsync` / `Container` を Drop したとき、削�
 
 ## 解決方法
 
-`impl Drop for ContainerAsync` の Runtime 内分岐を、`std::thread::spawn` + `mpsc::channel` + `recv_timeout` で timeout 付き待機する形へ変更する。timeout 値は定数 `DROP_REMOVE_TIMEOUT`（初期値 5 秒）とする。契約文書 (README / TESTCONTAINERS / SKILL / rustdoc) と統合テスト（Runtime 内 Drop → 即不在 assert）を合わせて更新する。
+`impl Drop for ContainerAsync` の Runtime 内分岐を、`std::thread::spawn` + `mpsc::channel` + `recv_timeout` で timeout 付き待機する形へ変更した。
+
+1. `DROP_REMOVE_TIMEOUT` 定数（5 秒）を `async_container.rs` に追加し、Runtime 内 Drop で削除スレッドの完了を `mpsc::recv_timeout` で待機するように変更した。timeout 超過時は `tracing::error` で記録し、削除スレッドは裏で走り続ける（best-effort）
+2. 契約文書 4 箇所（README / `docs/TESTCONTAINERS.md` / `skills/shiguredo-container/SKILL.md` / rustdoc）を「timeout 内で完了を待つ。超過時は best-effort」に更新した。`rm()` の rustdoc（macOS 版・Linux 版・sync 版の 3 箇所）も新契約に揃えた
+3. `async_container.rs` の Linux ログタスク polling コメントを書き直した
+4. `sync_container.rs` の impl 内コメントを実装（専用 std スレッド + mpsc::recv_timeout）に揃えた
+5. Linux 統合テスト `alpine_drop_inside_runtime_removes_container` をポーリング (`wait_until_absent`) から 1 ショット不在確認 (`assert_absent_once`) に変更し、未使用の `wait_until_absent` ヘルパーを削除した
+6. macOS 統合テスト `xpc_alpine_drop_inside_runtime_removes_container` を新規追加した
+7. `CHANGES.md` に `[CHANGE]` エントリを追加した
+
+変更ファイル: `src/core/containers/async_container.rs`、`src/core/containers/sync_container.rs`、`tests/container_linux.rs`、`tests/container_macos.rs`、`README.md`、`docs/TESTCONTAINERS.md`、`skills/shiguredo-container/SKILL.md`、`CHANGES.md`

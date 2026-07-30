@@ -17,6 +17,8 @@
   - @voluntas
 - [CHANGE] `WaitContainerError::Unhealthy` を `Unhealthy(String)` 形式に変更する
   - @voluntas
+- [CHANGE] Runtime 内 Drop でコンテナ削除の完了を `DROP_REMOVE_TIMEOUT` (5 秒) 内で待つように変更する
+  - @voluntas
 - [ADD] Linux で `Healthcheck` / `ImageExt::with_health_check` / `HealthWaitStrategy` の Linux 分岐に対応する
   - @voluntas
 - [ADD] `with_copy_to` で親ディレクトリ自動作成とディレクトリ一括投入に対応する

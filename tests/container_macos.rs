@@ -1644,6 +1644,37 @@ mod test_container_xpc {
         );
     }
 
+    /// Runtime 内 Drop でコンテナが削除されること。
+    ///
+    /// Runtime 内 Drop は削除を専用 std スレッドで実行し、`DROP_REMOVE_TIMEOUT` (5 秒)
+    /// を上限に完了を待つ。timeout 内に完了すれば `drop` 復帰時点で削除は終わっているため、
+    /// 1 ショット `container ls` で不在を確認する。
+    #[tokio::test]
+    async fn xpc_alpine_drop_inside_runtime_removes_container() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        let container = GenericImage::new("alpine", "latest")
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .start()
+            .await
+            .expect("alpine コンテナの起動に失敗した");
+        let id = container.id().to_string();
+        drop(container);
+
+        // DROP_REMOVE_TIMEOUT 内に削除が完了しているため、1 ショットで不在を確認できる。
+        let ls = std::process::Command::new("container")
+            .args(["ls", "-a"])
+            .output()
+            .expect("container ls の実行に失敗した");
+        let ls_text = String::from_utf8_lossy(&ls.stdout).to_string();
+        assert!(
+            !ls_text.contains(&id),
+            "Runtime 内 Drop 後にコンテナが削除されていること: {id}"
+        );
+    }
+
     #[tokio::test]
     async fn xpc_alpine_log_consumer_with_log_wait() {
         if super::helpers::skip_if_ci() {

@@ -5,7 +5,13 @@
 
 pub mod exec;
 
-use std::{fmt, net::IpAddr, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    net::IpAddr,
+    pin::Pin,
+    sync::{Arc, mpsc},
+    time::Duration,
+};
 
 #[cfg(target_os = "macos")]
 use std::{
@@ -748,8 +754,9 @@ impl<I: Image> ContainerAsync<I> {
     /// # 完了保証
     ///
     /// `rm().await` の復帰時点で削除処理は終わっており、成否は返り値の `Result` として
-    /// 呼び出し側に届く。`Drop` は復帰時点の削除完了を保証しないため、削除完了を待ちたい
-    /// または成否を扱いたい場合はこのメソッドを使うこと。
+    /// 呼び出し側に届く。`Drop` は `DROP_REMOVE_TIMEOUT` (5 秒) 内で完了を待つが、
+    /// 超過時は best-effort であり成否の `Result` も返さないため、確実な完了保証と
+    /// 成否が必要ならこのメソッドを使うこと。
     ///
     /// # `keep` ゲートとの非対称
     ///
@@ -772,8 +779,9 @@ impl<I: Image> ContainerAsync<I> {
     /// # 完了保証
     ///
     /// `rm().await` の復帰時点で削除処理は終わっており、成否は返り値の `Result` として
-    /// 呼び出し側に届く。`Drop` は復帰時点の削除完了を保証しないため、削除完了を待ちたい
-    /// または成否を扱いたい場合はこのメソッドを使うこと。
+    /// 呼び出し側に届く。`Drop` は `DROP_REMOVE_TIMEOUT` (5 秒) 内で完了を待つが、
+    /// 超過時は best-effort であり成否の `Result` も返さないため、確実な完了保証と
+    /// 成否が必要ならこのメソッドを使うこと。
     ///
     /// # `keep` ゲートとの非対称
     ///
@@ -1274,13 +1282,23 @@ async fn remove_copy_out_temp(path: &std::path::Path) {
     }
 }
 
+/// Runtime 内 Drop で削除スレッドの完了を待つ上限時間。
+/// コンテナ削除は Docker Desktop 負荷時や XPC 混雑時に 1 秒を超え得るため、
+/// 既存のログタスク polling (最大 1 秒) より余裕を持たせた 5 秒を初期値とする。
+const DROP_REMOVE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Drop 時のコンテナ削除の契約。
 ///
 /// # 完了保証
 ///
 /// - Runtime 内 Drop (`Handle::try_current()` が `Ok`): 削除を専用 std スレッドで
-///   `remove_blocking` として実行するが join しない。`drop` からの復帰時点で削除完了は
-///   保証されず、`drop` 直後にプロセスが終了すると削除が中断され得る
+///   `remove_blocking` として実行し、`DROP_REMOVE_TIMEOUT` (5 秒) を上限に完了を待つ。
+///   timeout 内に完了すれば `drop` 復帰時点で削除は終わっている。超過時は best-effort
+///   (削除スレッドは裏で走り続けるが、`drop` 直後にプロセスが終了すると中断され得る)。
+///   待機には `mpsc::recv_timeout` を使うため、呼び出しスレッド (tokio ワーカー) を
+///   最大 timeout 値ブロックする。multi-threaded Runtime では他のワーカーが肩代わり
+///   するが、current-thread Runtime では Runtime 全体が停止する。テストライブラリの
+///   Drop 場面 (テスト末尾) では実害が小さい
 /// - Runtime 外 Drop: 呼び出しスレッドで `remove_blocking` を同期実行し、試行の
 ///   終了までは待つ。成功は保証しない
 ///
@@ -1309,7 +1327,7 @@ impl<I: Image> Drop for ContainerAsync<I> {
         }
 
         // Linux: Runtime 外ならログタスク (demux / consumer) の完了を最大 1 秒 polling する。
-        // Runtime 内では削除完了を保証しないのと同型で、ログタスク完了も保証しない。
+        // Runtime 内では削除を DROP_REMOVE_TIMEOUT 付きで待つが、ログタスク完了は待たない。
         #[cfg(target_os = "linux")]
         {
             let handle = {
@@ -1362,12 +1380,30 @@ impl<I: Image> Drop for ContainerAsync<I> {
             Ok(_) => {
                 // Runtime 内ではユーザー Runtime に依存しない専用スレッドで削除する。
                 // async spawn だと Runtime 終了でタスクが破棄されコンテナが孤立し得る。
-                // join しない (async Drop からの join は deadlock し得る)。
+                // mpsc::channel + recv_timeout で完了を DROP_REMOVE_TIMEOUT まで待つ。
+                // remove_blocking は Runtime 非依存のため deadlock にはならない。
+                // recv_timeout は呼び出しスレッド (tokio ワーカー) をブロックするが、
+                // テストライブラリの Drop 場面 (テスト末尾) では実害が小さい。
+                let (tx, rx) = mpsc::channel();
                 std::thread::spawn(move || {
-                    if let Err(e) = remove() {
+                    let result = remove();
+                    let _ = tx.send(result);
+                });
+                match rx.recv_timeout(DROP_REMOVE_TIMEOUT) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
                         tracing::error!("failed to remove container on drop: {e}");
                     }
-                });
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        tracing::error!(
+                            "timed out waiting for container removal on drop ({}s)",
+                            DROP_REMOVE_TIMEOUT.as_secs()
+                        );
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        tracing::error!("container removal thread disconnected unexpectedly");
+                    }
+                }
             }
             Err(_) => {
                 // Runtime 外 (sync Container の drop や Runtime 破棄後)。
