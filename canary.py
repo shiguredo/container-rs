@@ -65,22 +65,26 @@ def update_version(file_path: str, dry_run: bool) -> Optional[str]:
 
     print(f"Current version: {current_version}")
     print(f"New version: {new_version}")
+
+    # dry-run は非対話モードのため、確認プロンプトを挟まず早期 return する
+    if dry_run:
+        print("Dry-run: Version would be updated to:")
+        print(new_content)
+        return new_version
+
     confirmation: str = (
         input("Do you want to update the version? (Y/n): ").strip().lower()
     )
 
-    if confirmation != "y":
+    # (Y/n) 慣例に従い、空入力 / y / yes を Yes として扱い、それ以外はキャンセルとする
+    # (.lower() により大文字入力も受理される)
+    if confirmation not in ("", "y", "yes"):
         print("Version update canceled.")
         return None
 
-    # Dry-run 時の動作
-    if dry_run:
-        print("Dry-run: Version would be updated to:")
-        print(new_content)
-    else:
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(new_content)
-        print(f"Version updated in Cargo.toml to {new_version}")
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    print(f"Version updated in Cargo.toml to {new_version}")
 
     return new_version
 
