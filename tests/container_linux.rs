@@ -165,6 +165,24 @@ fn alpine_drop_outside_runtime_does_not_panic() {
     assert_absent_once_blocking(&id);
 }
 
+/// Runtime 内の同期コンテキストから rm_blocking でコンテナが削除されること。
+///
+/// `rm_blocking` は `block_on` を使わず `remove_blocking` (同期 I/O) を直接
+/// 呼び出すため、tokio Runtime 内の `spawn_blocking` 内から呼んでも deadlock しない。
+/// `Ok` を返した直後に 1 ショット inspect で不在を確認する。
+#[tokio::test]
+async fn alpine_rm_blocking_inside_runtime_removes_container() {
+    let container = start_alpine().await;
+    let id = container.id().to_string();
+    // Runtime 内の同期コンテキスト (spawn_blocking) から rm_blocking を呼ぶ
+    tokio::task::spawn_blocking(move || {
+        container.rm_blocking().expect("rm_blocking に失敗した");
+    })
+    .await
+    .expect("spawn_blocking に失敗した");
+    assert_absent_once(&id).await;
+}
+
 /// 外部で削除したあと、公開 API が ContainerNotFound を返すこと。
 #[tokio::test]
 async fn inspect_after_external_rm_returns_container_not_found() {

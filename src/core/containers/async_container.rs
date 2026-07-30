@@ -767,6 +767,8 @@ impl<I: Image> ContainerAsync<I> {
     /// 404 を返した場合 (既に削除済み) は冪等成功として扱う。
     #[cfg(target_os = "macos")]
     pub async fn rm(mut self) -> Result<()> {
+        // 共通の前置き: remove より前にログ配信を止める。
+        self.stop_log_delivery();
         match &self.client {
             Client::MacOs(c) => c.remove(&self.id, true).await?,
         }
@@ -797,6 +799,46 @@ impl<I: Image> ContainerAsync<I> {
         self.stop_log_delivery();
         match &self.client {
             Client::Linux(c) => c.remove(&self.id, true).await?,
+        }
+        self.dropped = true;
+        Ok(())
+    }
+
+    /// コンテナを同期的に削除する。tokio Runtime 内外のどちらから呼んでも安全。
+    ///
+    /// # 完了保証
+    ///
+    /// `Ok` を返した時点で削除処理は終わっており、成否は返り値の `Result` として
+    /// 呼び出し側に届く。`block_on` を使わず `remove_blocking` (同期 I/O) を直接
+    /// 呼び出すため、tokio Runtime 内の同期コンテキスト (Drop ガードや
+    /// `spawn_blocking` 内) から呼んでも deadlock しない。
+    ///
+    /// # `rm()` との使い分け
+    ///
+    /// - async コンテキストから呼べるなら `rm().await` を使う (非同期 I/O で待つ)
+    /// - 同期コンテキスト (Runtime 内の Drop ガード、`spawn_blocking` 内、Runtime 外)
+    ///   から削除完了を待ちたい場合はこのメソッドを使う
+    /// - `Drop` は `DROP_REMOVE_TIMEOUT` (5 秒) 内で完了を待つが、超過時は best-effort
+    ///   であり成否の `Result` も返さない。確実な完了保証と成否が必要ならこのメソッド
+    ///   または `rm()` を使うこと
+    ///
+    /// # `keep` ゲートとの非対称
+    ///
+    /// このメソッドは `TESTCONTAINERS_COMMAND=keep` でも削除する。`keep` ゲートは
+    /// `Drop` の削除のみを抑止する仕様であり、明示 `rm` / `rm_blocking` には効かない。
+    ///
+    /// 削除は常に `force=true` で行われるため実行中でもそのまま削除でき、バックエンドが
+    /// 404 を返した場合 (既に削除済み) は冪等成功として扱う。
+    pub fn rm_blocking(mut self) -> Result<()> {
+        // 共通の前置き: remove より前にログストリームを止める。
+        self.stop_log_delivery();
+        match &self.client {
+            #[cfg(target_os = "macos")]
+            Client::MacOs(_) => {
+                crate::core::client::xpc_client::XpcClient::remove_blocking(&self.id, true)?
+            }
+            #[cfg(target_os = "linux")]
+            Client::Linux(c) => c.remove_blocking(&self.id, true)?,
         }
         self.dropped = true;
         Ok(())

@@ -195,6 +195,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `async fn exit_code(&self) -> Result<Option<i64>>` | あり | 部分対応 | 未実装 | バックグラウンド wait の観測済みキャッシュのみ。未観測のときは停止後も `None` (都度 `containerWait` はしない) / Docker: 公開 API は未実装エラー (バックグラウンド wait 無し) |
 | `async fn copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 対応 | XPC `containerCopyOut` でホスト上の一時ファイルに書き出し、`CopyFileFromContainer` に流し込む / Docker: `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開し先頭 regular file を渡す。ディレクトリは `IsDirectory`、source は絶対パス必須 |
 | `async fn rm(mut self) -> Result<()>` | あり | 対応 | 対応 | XPC `containerDelete` / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
+| `fn rm_blocking(mut self) -> Result<()>` | なし | shiguredo 拡張 | shiguredo 拡張 | `block_on` を使わず `remove_blocking` (同期 I/O) を直接呼び出す。tokio Runtime 内の同期コンテキスト (Drop ガードや `spawn_blocking` 内) から呼んでも deadlock しない。`force=true`、404 は冪等成功、`keep` でも削除する |
 
 ### 6.2 RawContainer のメソッド (本家では Deref 経由、shiguredo では ContainerAsync に直接)
 
@@ -214,7 +215,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `fn stderr(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 対応 | `containerLogs` から取得した stderr FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF)。Apple の 2 本目 FD は bootlog / Docker: demux が STREAM_TYPE で分離するため本当に stderr のみ。8 MiB リング (上限超過で先頭 drop) |
 | `async fn stdout_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stdout` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る |
 | `async fn stderr_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stderr` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る |
-| `Drop` impl | あり | 部分対応 | 対応 | Runtime 内は専用 std スレッドで `remove_blocking` を実行し `DROP_REMOVE_TIMEOUT` (5 秒) を上限に完了を待つ (timeout 超過時は best-effort、削除スレッドは裏で継続)、Runtime 外は呼び出しスレッドで `remove_blocking` を同期実行 (試行終了まで待つが成功は非保証)。いずれも失敗は `tracing::error` のみで呼び出し側には届かない。常に `force=true`、404 は冪等成功。Keep ゲートは Drop のみで、明示 `rm` は Keep でも削除する |
+| `Drop` impl | あり | 部分対応 | 対応 | Runtime 内は専用 std スレッドで `remove_blocking` を実行し `DROP_REMOVE_TIMEOUT` (5 秒) を上限に完了を待つ (timeout 超過時は best-effort、削除スレッドは裏で継続)、Runtime 外は呼び出しスレッドで `remove_blocking` を同期実行 (試行終了まで待つが成功は非保証)。いずれも失敗は `tracing::error` のみで呼び出し側には届かない。常に `force=true`、404 は冪等成功。Keep ゲートは Drop のみで、明示 `rm` / `rm_blocking` は Keep でも削除する |
 
 ## 7. `Container<I>` (sync 版, feature = `blocking`)
 
@@ -235,6 +236,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `pause(&self) -> Result<()>` (async 宣言だが sync impl) | あり | なし | なし | XPCRoute に pause 系が無いためシグネチャ自体を削除済み / Docker: Docker Engine には pause API はあるが未導入 |
 | `unpause(&self) -> Result<()>` | あり | なし | なし | 同上 / Docker: 同上 |
 | `rm(mut self) -> Result<()>` | あり | 対応 | 対応 | Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
+| `rm_blocking(mut self) -> Result<()>` | なし | shiguredo 拡張 | shiguredo 拡張 | `ContainerAsync::rm_blocking` に委譲。`block_on` を使わないため Runtime 内の同期コンテキストから呼んでも deadlock しない |
 | `stdout(&self, follow) -> Box<dyn BufRead + Send>` | あり | 対応 | 対応 | ContainerAsync の同期リーダーへ委譲。`follow=true` は追記ポーリング (呼び出しスレッドをブロック) / Docker: 共有バッファを `park_timeout(50ms)` 周期起床で読む。`follow=false` は 1-shot 取得 |
 | `stderr(&self, follow) -> Box<dyn BufRead + Send>` | あり | 対応 | 対応 | ContainerAsync の同期リーダーへ委譲。`follow=true` は追記ポーリング (呼び出しスレッドをブロック) / Docker: 共有バッファを `park_timeout(50ms)` 周期起床で読む。`follow=false` は 1-shot 取得 |
 | `stdout_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `ContainerAsync::stdout_to_vec` に委譲 / Docker: 1-shot 取得 |

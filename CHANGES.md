@@ -27,6 +27,8 @@
   - @voluntas
 - [ADD] Linux で Docker Engine API の archive エンドポイント経由の `copy_file_from` / `with_copy_to` を実装する
   - @voluntas
+- [ADD] tokio Runtime 内から削除完了を待てる同期 `rm_blocking` を追加する
+  - @voluntas
 - [FIX] Linux で `with_exposed_port` / `Image::expose_ports` がホストポート公開に反映されないのを修正する
   - @voluntas
 
