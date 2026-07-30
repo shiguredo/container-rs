@@ -214,7 +214,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `fn stderr(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 対応 | `containerLogs` から取得した stderr FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF)。Apple の 2 本目 FD は bootlog / Docker: demux が STREAM_TYPE で分離するため本当に stderr のみ。8 MiB リング (上限超過で先頭 drop) |
 | `async fn stdout_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stdout` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る |
 | `async fn stderr_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stderr` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る |
-| `Drop` impl | あり | 部分対応 | 対応 | Runtime 内は専用 std スレッドで `remove_blocking` を非 join で実行 (drop 復帰時点の削除完了は非保証)、Runtime 外は呼び出しスレッドで `remove_blocking` を同期実行 (試行終了まで待つが成功は非保証)。いずれも失敗は `tracing::error` のみで呼び出し側には届かない。常に `force=true`、404 は冪等成功。Keep ゲートは Drop のみで、明示 `rm` は Keep でも削除する |
+| `Drop` impl | あり | 部分対応 | 対応 | Runtime 内は専用 std スレッドで `remove_blocking` を実行し `DROP_REMOVE_TIMEOUT` (5 秒) を上限に完了を待つ (timeout 超過時は best-effort、削除スレッドは裏で継続)、Runtime 外は呼び出しスレッドで `remove_blocking` を同期実行 (試行終了まで待つが成功は非保証)。いずれも失敗は `tracing::error` のみで呼び出し側には届かない。常に `force=true`、404 は冪等成功。Keep ゲートは Drop のみで、明示 `rm` は Keep でも削除する |
 
 ## 7. `Container<I>` (sync 版, feature = `blocking`)
 
