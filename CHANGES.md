@@ -29,3 +29,6 @@
   - @voluntas
 
 ### misc
+
+- [FIX] canary.py の確認プロンプトで空入力がキャンセル扱いになるのと dry-run が非対話で実行できないのを修正する
+  - @voluntas
