@@ -1,5 +1,8 @@
 target/
 
+# Python
+__pycache__/
+
 # Agents
 .claude/
 .codex/

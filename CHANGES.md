@@ -30,5 +30,7 @@
 
 ### misc
 
+- [UPDATE] canary.py のバージョン変換ロジックを純粋関数 `next_canary_version` として抽出し unittest テストを追加する
+  - @voluntas
 - [FIX] canary.py の確認プロンプトで空入力がキャンセル扱いになるのと dry-run が非対話で実行できないのを修正する
   - @voluntas

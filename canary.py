@@ -4,6 +4,22 @@ import subprocess
 from typing import Optional
 
 
+# バージョン文字列を受け取り、次の canary バージョンを返す純粋関数。
+# ファイル I/O や input() を含まないため、単体テストで直接検証できる。
+def next_canary_version(version: str) -> str:
+    # -canary.N が含まれる場合は N をインクリメントする
+    canary_match = re.fullmatch(r"(\d+\.\d+\.\d+-canary\.)(\d+)", version)
+    if canary_match:
+        return f"{canary_match.group(1)}{int(canary_match.group(2)) + 1}"
+
+    # -canary.X がない場合、次のマイナーバージョンにして -canary.0 を追加する
+    plain_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
+    if plain_match:
+        return f"{plain_match.group(1)}.{int(plain_match.group(2)) + 1}.0-canary.0"
+
+    raise ValueError(f"Invalid version format: {version}")
+
+
 # ファイルを読み込み、バージョンを更新
 def update_version(file_path: str, dry_run: bool) -> Optional[str]:
     with open(file_path, "r", encoding="utf-8") as f:
@@ -17,6 +33,7 @@ def update_version(file_path: str, dry_run: bool) -> Optional[str]:
         raise ValueError("Version not found in [package] section of Cargo.toml")
 
     current_version: str = package_section_match.group(1)
+    new_version: str = next_canary_version(current_version)
 
     # [package] セクションの開始位置を見つける
     package_start = content.find("[package]")
@@ -28,40 +45,25 @@ def update_version(file_path: str, dry_run: bool) -> Optional[str]:
     else:
         package_content = content[package_start:]
 
-    # [package] セクション内のバージョンを更新
-    if "-canary." in current_version:
-        updated_package, count = re.subn(
-            r'(version\s*=\s*")(\d+\.\d+\.\d+-canary\.)(\d+)',
-            lambda m: f"{m.group(1)}{m.group(2)}{int(m.group(3)) + 1}",
-            package_content,
-            count=1,  # 最初の1つだけを更新
+    # [package] セクション内の旧バージョン文字列を新バージョン文字列に置換する。
+    # 抽出正規表現は version\s*=\s*"..." と空白に寛容だが、置換はリテラル一致のため、
+    # 置換後に実際に変更が起きたかを検証する
+    old_version_literal: str = f'version = "{current_version}"'
+    new_version_literal: str = f'version = "{new_version}"'
+    updated_package: str = package_content.replace(
+        old_version_literal, new_version_literal, 1
+    )
+    if updated_package == package_content:
+        raise ValueError(
+            f"Failed to replace version in [package] section: "
+            f"expected '{old_version_literal}' not found"
         )
-    else:
-        # -canary.X がない場合、次のマイナーバージョンにして -canary.0 を追加
-        updated_package, count = re.subn(
-            r'(version\s*=\s*")(\d+)\.(\d+)\.(\d+)',
-            lambda m: f"{m.group(1)}{m.group(2)}.{int(m.group(3)) + 1}.0-canary.0",
-            package_content,
-            count=1,  # 最初の1つだけを更新
-        )
-
-    if count == 0:
-        raise ValueError("Version not found or incorrect format in [package] section")
 
     # 元のコンテンツの [package] セクション部分を更新後の内容に置き換える
     if next_section:
         new_content = content[:package_start] + updated_package + content[package_end:]
     else:
         new_content = content[:package_start] + updated_package
-
-    # 新しいバージョンを確認 ([package] セクションから)
-    new_package_version_match = re.search(
-        r'\[package\].*?version\s*=\s*"([\d\.\w-]+)"', new_content, re.DOTALL
-    )
-    if not new_package_version_match:
-        raise ValueError("Failed to extract the new version after the update.")
-
-    new_version: str = new_package_version_match.group(1)
 
     print(f"Current version: {current_version}")
     print(f"New version: {new_version}")

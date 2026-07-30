@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-29
-- Completed:
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/add-canary-version-test
 - Polished: 2026-07-30
@@ -28,3 +28,14 @@ canary.py のバージョン変換ロジックにテストが無い。正規表�
 
 - [ ] バージョン変換ロジックが純粋関数 `next_canary_version` として抽出され、ファイル I/O や `input()` を含まないこと
 - [ ] 上記のテストケースを含む `unittest` テストが追加され、`python3 -m unittest test_canary` で pass すること
+
+## 解決方法
+
+`canary.py` のバージョン変換ロジックを純粋関数 `next_canary_version(version: str) -> str` として抽出した。
+
+1. `next_canary_version` は `re.fullmatch` で canary 形式 (`X.Y.Z-canary.N`) と通常形式 (`X.Y.Z`) の 2 経路を判定し、それぞれインクリメント / 次マイナー + `-canary.0` 付与を返す。不正形式は `ValueError` を投げる
+2. `update_version` 側は `next_canary_version` の返却値で TOML 内の旧バージョン文字列をリテラル置換し、置換前後比較で置換失敗を検知して `ValueError` を投げる（旧コードの `count == 0` チェックに相当）
+3. `test_canary.py` をリポジトリ直下に新規作成し、`unittest` で 8 ケース（canary インクリメント 3 件、通常変換 2 件、不正形式 ValueError 3 件）をテストする。`python3 -m unittest test_canary` で pass 確認済み
+4. `.gitignore` に `__pycache__/` を追加した
+
+変更ファイル: `canary.py`、`test_canary.py`（新規）、`CHANGES.md`（misc に `[UPDATE]` エントリ追加）、`.gitignore`
