@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-29
-- Completed:
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-canary-prompt-confirm
 - Polished: 2026-07-30
@@ -28,3 +28,13 @@ canary.py の確認プロンプトの表記と挙動を一致させ、dry-run �
 - [ ] `n` / `no` / 上記以外の入力でキャンセルされること
 - [ ] `--dry-run` 実行時に対話確認なしでファイル全体出力と新バージョン文字列が表示されること
 - [ ] `python3 canary.py --dry-run < /dev/null` で確認プロンプトが出ずに完了することを確認できること (`input()` が残っていれば `EOFError` で失敗するため、非対話性を機械的に検証できる)
+
+## 解決方法
+
+`canary.py` の `update_version` 関数を修正した。
+
+1. dry-run 分岐を確認プロンプトより前に移動し、dry-run 時は `input()` を呼ばずにファイル全体出力と `new_version` の返却まで進めるよう変更した。これにより `python3 canary.py --dry-run < /dev/null` で非対話に実行できる
+2. 確認判定を `if confirmation != "y"` から `if confirmation not in ("", "y", "yes")` に変更し、`(Y/n)` 慣例どおり空入力 / y / yes を Yes として扱うよう修正した。既存の `.strip().lower()` による入力正規化は維持している
+3. dry-run 時も `new_version` を返すため、`main()` の後続処理 (`run_cargo_update` / `git_commit_version` / `git_operations_after_build`) が dry-run ガード付きで正しく連鎖する
+
+変更ファイル: `canary.py`、`CHANGES.md`（misc に `[FIX]` エントリ追加）
