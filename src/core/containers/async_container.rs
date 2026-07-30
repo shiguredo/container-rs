@@ -324,8 +324,10 @@ impl<I: Image> ContainerAsync<I> {
     ///
     /// # Linux
     ///
-    /// Docker Engine API の exec は Env を送らず、stdout / stderr も取得しない。
-    /// `CmdWaitFor::StdOutMessage` / `StdErrMessage` は明示エラーになる。
+    /// Docker Engine API の exec は `AttachStdout` / `AttachStderr` で stdout / stderr を
+    /// 取得する。`CmdWaitFor::StdOutMessage` / `StdErrMessage` は取得済みバッファに
+    /// 対する部分一致で判定する。`ExecCommand::with_env_vars` は未実装のため非空なら
+    /// 明示エラーになる。
     pub async fn exec(&self, cmd: ExecCommand) -> Result<exec::ExecResult> {
         let ExecCommand {
             cmd,
@@ -356,7 +358,7 @@ impl<I: Image> ContainerAsync<I> {
             }
             #[cfg(target_os = "linux")]
             Client::Linux(c) => {
-                // Docker は Env 省略時にコンテナ env を継承する。stdout / stderr は取得しない。
+                // Docker は Env 省略時にコンテナ env を継承する。
                 // with_env_vars の Linux 本対応は未実装のため、非空なら明示エラーにする。
                 if !_env_vars.is_empty() {
                     return Err(Error::other(
@@ -373,41 +375,21 @@ impl<I: Image> ContainerAsync<I> {
         // cmd_ready_condition の処理。
         match cmd_ready_condition {
             crate::core::CmdWaitFor::StdOutMessage { message } => {
-                #[cfg(target_os = "macos")]
-                {
-                    // XPC の exec はコマンド完走後に stdout / stderr 全体を取得済みなので、
-                    // メッセージ待ちは取得済みバッファに対する部分一致で判定する。
-                    if !contains_bytes(&raw.stdout, &message) {
-                        return Err(crate::core::error::Error::other(format!(
-                            "expected message not found in stdout: {}",
-                            String::from_utf8_lossy(&message)
-                        )));
-                    }
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    let _ = message;
-                    return Err(crate::core::error::Error::other(
-                        "CmdWaitFor::StdOutMessage is not supported on Linux (stdout is not captured)",
-                    ));
+                // exec はコマンド完走後に stdout / stderr 全体を取得済みなので、
+                // メッセージ待ちは取得済みバッファに対する部分一致で判定する。
+                if !contains_bytes(&raw.stdout, &message) {
+                    return Err(crate::core::error::Error::other(format!(
+                        "expected message not found in stdout: {}",
+                        String::from_utf8_lossy(&message)
+                    )));
                 }
             }
             crate::core::CmdWaitFor::StdErrMessage { message } => {
-                #[cfg(target_os = "macos")]
-                {
-                    if !contains_bytes(&raw.stderr, &message) {
-                        return Err(crate::core::error::Error::other(format!(
-                            "expected message not found in stderr: {}",
-                            String::from_utf8_lossy(&message)
-                        )));
-                    }
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    let _ = message;
-                    return Err(crate::core::error::Error::other(
-                        "CmdWaitFor::StdErrMessage is not supported on Linux (stderr is not captured)",
-                    ));
+                if !contains_bytes(&raw.stderr, &message) {
+                    return Err(crate::core::error::Error::other(format!(
+                        "expected message not found in stderr: {}",
+                        String::from_utf8_lossy(&message)
+                    )));
                 }
             }
             crate::core::CmdWaitFor::Exit { code: None } => {
@@ -1042,7 +1024,6 @@ impl<I: Image> ContainerAsync<I> {
 }
 
 /// `haystack` に `needle` が部分一致で含まれるか。空の `needle` は常に true。
-#[cfg(target_os = "macos")]
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
         return true;

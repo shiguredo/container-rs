@@ -17,7 +17,7 @@ use crate::core::ports::{ContainerPort, Ports};
 
 const DEFAULT_DOCKER_SOCKET: &str = "/var/run/docker.sock";
 
-/// Docker exec の生結果。stdout / stderr は取得しないため常に空。
+/// Docker exec の生結果。
 pub(crate) struct DockerExecResult {
     pub(crate) exit_code: Option<i64>,
     pub(crate) stdout: Vec<u8>,
@@ -216,15 +216,17 @@ impl DockerClient {
         Ok(())
     }
 
-    /// コンテナ内でコマンドを実行し、終了コードを取得する。
-    /// stdout / stderr は取得しない。
+    /// コンテナ内でコマンドを実行し、終了コードと stdout / stderr を取得する。
+    ///
+    /// `AttachStdout: true, AttachStderr: true, Detach: false` で exec を作成・起動し、
+    /// `POST /exec/{id}/start` のレスポンスボディ (multiplexed stream) を全蓄積して
+    /// demux する。ストリーム EOF 後に inspect で exit code を取得する。
     pub(crate) async fn exec(&self, id: &str, cmd: &[String]) -> Result<DockerExecResult> {
         let exec_path = format!("/containers/{}/exec", percent_encode_path_segment(id));
         let exec_config = ExecConfig {
             cmd: cmd.to_vec(),
-            // stdout / stderr は読まない。完了待ちは inspect の Running ポーリングで行う。
-            attach_stdout: false,
-            attach_stderr: false,
+            attach_stdout: true,
+            attach_stderr: true,
         };
         let exec_json = exec_config.to_json_string()?;
         let response = self
@@ -251,12 +253,12 @@ impl DockerClient {
             .try_into()
             .map_err(|e: nojson::JsonParseError| ClientError::Json(e.to_string()))?;
 
-        // Detach=true で即時復帰し、完了は inspect で待つ。
-        // Detach=false でも attach 無しだと Engine はプロセス完了を待たず、
-        // 直後の inspect で ExitCode がまだ null になり得る。
+        // Detach=false で起動し、レスポンスボディの multiplexed stream を全蓄積する。
+        // exec の出力はプロセス終了で EOF する。テスト用途では出力は小さい前提のため
+        // 全蓄積で十分 (ログの FrameDemuxer と異なり OOM 回避の增量処理はしない)。
         let start_path = format!("/exec/{}/start", percent_encode_path_segment(&exec_id));
         let start_config = ExecStartConfig {
-            detach: true,
+            detach: false,
             tty: false,
         };
         let start_json = start_config.to_json_string()?;
@@ -271,9 +273,19 @@ impl DockerClient {
             .into());
         }
 
+        // multiplexed stream を demux して stdout / stderr に分離する。
+        // ボディ無しは Docker daemon 側の異常のため明示エラーにする。
+        let stream_body = response
+            .body_bytes()
+            .ok_or_else(|| ClientError::Other("empty exec start response body".into()))?;
+        let (stdout, stderr) = demux_exec_stream(stream_body);
+
+        // ストリーム EOF 後に inspect で exit code を取得する。
+        // Docker daemon はストリーム閉塞直後に ExitCode をまだ記録していない場合があるため、
+        // Running == false になるまで短期リトライする (最大 5 回、10ms 間隔)。
         let inspect_path = format!("/exec/{}/json", percent_encode_path_segment(&exec_id));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
+        let mut exit_code: Option<i64> = None;
+        for _ in 0..5 {
             let response = self.request("GET", &inspect_path, None).await?;
             if response.status_code() >= 400 {
                 return Err(ClientError::Other(format!(
@@ -296,26 +308,25 @@ impl DockerClient {
                 .and_then(|v| bool::try_from(v).ok())
                 .unwrap_or(false);
             if !running {
-                let exit_code = parsed
+                exit_code = parsed
                     .value()
                     .to_member("ExitCode")
                     .ok()
                     .and_then(|m| m.optional())
                     .and_then(|v| i64::try_from(v).ok());
-                return Ok(DockerExecResult {
-                    exit_code,
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                });
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(ClientError::Other(format!(
-                    "exec {exec_id} did not finish within 30s"
-                ))
-                .into());
+                break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        if exit_code.is_none() {
+            tracing::warn!("exec {exec_id} still running after stream EOF, exit code unavailable");
+        }
+
+        Ok(DockerExecResult {
+            exit_code,
+            stdout,
+            stderr,
+        })
     }
 
     /// コンテナのポートマッピングを取得する。
@@ -795,6 +806,35 @@ impl ExecStartConfig {
 /// ログストリーム (`docker_log_stream`) でも再利用するため `pub(crate)` で公開する。
 pub(crate) fn percent_encode_path_segment(s: &str) -> String {
     percent_encode(s)
+}
+
+/// Docker exec の multiplexed stream を demux して stdout / stderr に分離する。
+///
+/// ヘッダ 8 バイト (`stream_type (1B) + reserved (3B) + payload_len (4B big-endian)`)
+/// + payload の繰り返し。stream_type 1 = stdout, 2 = stderr。
+/// exec の出力はプロセス終了で EOF する有界ストリームのため、全蓄積後に一括 demux する。
+fn demux_exec_stream(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    const FRAME_HEADER_LEN: usize = 8;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut pos = 0;
+    while pos + FRAME_HEADER_LEN <= data.len() {
+        let stream_type = data[pos];
+        let payload_len =
+            u32::from_be_bytes([data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]])
+                as usize;
+        pos += FRAME_HEADER_LEN;
+        let end = (pos + payload_len).min(data.len());
+        let chunk = &data[pos..end];
+        match stream_type {
+            // 1 = stdout, 2 = stderr。0 (stdin) と未知の種別は捨てる。
+            1 => stdout.extend_from_slice(chunk),
+            2 => stderr.extend_from_slice(chunk),
+            _ => {}
+        }
+        pos = end;
+    }
+    (stdout, stderr)
 }
 
 /// Docker Engine API の query 値用 percent-encode。
@@ -1469,5 +1509,66 @@ mod tests {
         );
         // writer をここで明示的に保持し終える
         drop(writer);
+    }
+
+    /// multiplex フレームのヘルパー: stream_type + payload から 8 バイトヘッダ付きフレームを構築する
+    fn make_frame(stream_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut frame = vec![stream_type, 0, 0, 0];
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    #[test]
+    fn demux_exec_stream_separates_stdout_and_stderr() {
+        // stdout と stderr が正しく分離されること
+        let mut data = make_frame(1, b"hello ");
+        data.extend(make_frame(2, b"err "));
+        data.extend(make_frame(1, b"world"));
+        data.extend(make_frame(2, b"msg"));
+        let (stdout, stderr) = demux_exec_stream(&data);
+        assert_eq!(stdout, b"hello world", "stdout が正しく結合されること");
+        assert_eq!(stderr, b"err msg", "stderr が正しく結合されること");
+    }
+
+    #[test]
+    fn demux_exec_stream_handles_empty_input() {
+        // 空入力は空の stdout / stderr を返すこと
+        let (stdout, stderr) = demux_exec_stream(b"");
+        assert!(stdout.is_empty(), "空入力では stdout が空であること");
+        assert!(stderr.is_empty(), "空入力では stderr が空であること");
+    }
+
+    #[test]
+    fn demux_exec_stream_ignores_stdin_and_unknown_types() {
+        // stdin (0) と未知の種別 (3) は無視されること
+        let mut data = make_frame(0, b"stdin");
+        data.extend(make_frame(3, b"unknown"));
+        data.extend(make_frame(1, b"out"));
+        let (stdout, stderr) = demux_exec_stream(&data);
+        assert_eq!(stdout, b"out", "stdout のみ取得されること");
+        assert!(stderr.is_empty(), "stderr は空であること");
+    }
+
+    #[test]
+    fn demux_exec_stream_handles_zero_length_payload() {
+        // payload_len=0 のフレームはヘッダだけ消費して進むこと
+        let mut data = make_frame(1, b"");
+        data.extend(make_frame(1, b"data"));
+        let (stdout, stderr) = demux_exec_stream(&data);
+        assert_eq!(stdout, b"data", "payload_len=0 の後も正しく処理されること");
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn demux_exec_stream_handles_truncated_frame() {
+        // 末尾フレームが切れていても部分出力を返すこと (寛容動作)
+        let mut data = make_frame(1, b"hello");
+        // 2 フレーム目のヘッダだけ書いて payload を切る
+        data.extend_from_slice(&[2, 0, 0, 0, 0, 0, 0, 10]);
+        data.extend_from_slice(b"par");
+        let (stdout, stderr) = demux_exec_stream(&data);
+        assert_eq!(stdout, b"hello", "完全なフレームは正しく処理されること");
+        assert_eq!(stderr, b"par", "切断フレームは部分出力を返すこと");
     }
 }

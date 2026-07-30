@@ -57,7 +57,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `get_bridge_ip_address` / `exit_code` / `ExitWaitStrategy` は未実装エラーのまま
 - `ImageExt` の一部 (`with_network` / `with_platform` / `with_cap_add` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` 等) は start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
 
-README の Linux 注意書きと合わせて読むこと。残ギャップは bridge IP 取得・exec の stdout / stderr・ネットワーク詳細などである。
+README の Linux 注意書きと合わせて読むこと。残ギャップは bridge IP 取得・ネットワーク詳細などである。
 
 ## サマリ (Apple Container)
 
@@ -86,8 +86,8 @@ README の Linux 注意書きと合わせて読むこと。残ギャップは br
 
 件数の厳密集計より、現状の読み方を優先する。
 
-- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
-- **未配線・未実装が残るもの**: `get_bridge_ip_address`、`exit_code`、`ExitWaitStrategy`、exec の stdout/stderr・Env 本対応
+- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code + stdout / stderr)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
+- **未配線・未実装が残るもの**: `get_bridge_ip_address`、`exit_code`、`ExitWaitStrategy`、exec の Env 本対応
 - **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_cap_*` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
 
 Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差を同時に見せるためのものである。
@@ -207,7 +207,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `async fn get_host_port_ipv6(&self, port) -> Result<u16>` | あり | 対応 | 対応 | 同上（IPv6 マッピング側） / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn get_bridge_ip_address(&self) -> Result<IpAddr>` | あり | 対応 | 未実装 | `containerList` の `networks[0].ipv4Address` (CIDRv4) から抽出 / Docker: DockerClient に bridge IP 取得は無く、公開 API は未実装エラー |
 | `async fn get_host(&self) -> Result<Host>` | あり | 部分対応 | 部分対応 | macOS の Apple container は基本的にホスト側からの接続で `127.0.0.1` (`localhost`) が正しい。`Host` は `shiguredo_container::core::host::Host` / Docker: localhost 固定 |
-| `async fn exec(&self, cmd: ExecCommand) -> Result<ExecResult>` | あり | 部分対応 | 部分対応 | XPC は stdout/stderr/Env 付き。Docker は exit code のみ。`StdOutMessage`/`StdErrMessage` は Linux で明示エラー |
+| `async fn exec(&self, cmd: ExecCommand) -> Result<ExecResult>` | あり | 部分対応 | 部分対応 | XPC は stdout/stderr/Env 付き。Docker は stdout/stderr 付き (AttachStdout/AttachStderr + multiplexed stream demux)。Env は未実装で非空なら明示エラー |
 | `async fn start(&self) -> Result<()>` | あり | 対応 | 対応 | 停止済みなら Docker `start`。macOS は bootstrap + start_process。`exec_after_start` を実行 / Docker: start_container 配線済み |
 | `async fn stop(&self) -> Result<()>` | あり | 対応 | 対応 | `stop_with_timeout(None)` のエイリアス。timeout 30 秒固定 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | macOS: `Some(0)` は即時 SIGKILL、`Some(t)` (`t < 0`) は長時間 SIGTERM、`None` は 30 秒 SIGTERM / Docker: `None`・負値は `t=30`、`Some(t>=0)` は `t={t}`。404 は冪等成功 |
@@ -421,11 +421,11 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `pub async fn exit_code(&self) -> Result<Option<i64>>` | あり | 対応 | 部分対応 | `XpcClient::exec` が `containerWait` の `exitCode` を取得済み / Docker: exec は ExitCode を返す。stdout/stderr は空 |
-| `pub fn stdout<'b>(&'b mut self) -> Pin<Box<dyn AsyncBufRead + Send + 'b>>` | あり | 対応 | 部分対応 | `XpcClient::exec` で pipe FD から取得した stdout のバッファ済みリーダー / Docker: exec は AttachStdout=false のため常に空 |
-| `pub fn stderr<'b>(&'b mut self) -> Pin<Box<dyn AsyncBufRead + Send + 'b>>` | あり | 対応 | 部分対応 | 同上 (stderr) / Docker: exec は AttachStderr=false のため常に空 |
-| `pub async fn stdout_to_vec(&mut self) -> Result<Vec<u8>>` | あり | 対応 | 部分対応 | Docker: exec stdout 未取得のため常に空 |
-| `pub async fn stderr_to_vec(&mut self) -> Result<Vec<u8>>` | あり | 対応 | 部分対応 | Docker: exec stderr 未取得のため常に空 |
+| `pub async fn exit_code(&self) -> Result<Option<i64>>` | あり | 対応 | 対応 | `XpcClient::exec` が `containerWait` の `exitCode` を取得済み / Docker: ストリーム EOF 後の inspect で ExitCode を取得 |
+| `pub fn stdout<'b>(&'b mut self) -> Pin<Box<dyn AsyncBufRead + Send + 'b>>` | あり | 対応 | 対応 | `XpcClient::exec` で pipe FD から取得した stdout のバッファ済みリーダー / Docker: multiplexed stream を demux した stdout バッファのリーダー |
+| `pub fn stderr<'b>(&'b mut self) -> Pin<Box<dyn AsyncBufRead + Send + 'b>>` | あり | 対応 | 対応 | 同上 (stderr) / Docker: multiplexed stream を demux した stderr バッファのリーダー |
+| `pub async fn stdout_to_vec(&mut self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | Docker: demux 済み stdout バッファを返す |
+| `pub async fn stderr_to_vec(&mut self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | Docker: demux 済み stderr バッファを返す |
 | `impl Debug` | あり | 対応 | 対応 |  |
 
 ### 12.3 `CmdWaitFor` (`core::wait::cmd_wait`)
@@ -433,12 +433,12 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `CmdWaitFor::Nothing` | あり | 対応 | 対応 |  |
-| `CmdWaitFor::StdOutMessage { message: Bytes }` | あり | 対応 | 未実装 | exec が取得した stdout への部分一致で判定 / Docker: Linux は明示エラー (exec stdout 未取得) |
-| `CmdWaitFor::StdErrMessage { message: Bytes }` | あり | 対応 | 未実装 | exec が取得した stderr への部分一致で判定 / Docker: Linux は明示エラー (exec stderr 未取得) |
+| `CmdWaitFor::StdOutMessage { message: Bytes }` | あり | 対応 | 対応 | exec が取得した stdout への部分一致で判定 |
+| `CmdWaitFor::StdErrMessage { message: Bytes }` | あり | 対応 | 対応 | exec が取得した stderr への部分一致で判定 |
 | `CmdWaitFor::Duration { length }` | あり | 対応 | 対応 |  |
 | `CmdWaitFor::Exit { code: Option<i64> }` | あり | 対応 | 対応 | `code: None` なら終了だけ待ち、`Some(N)` なら終了コードの一致も検証 |
-| `pub fn message_on_stdout(msg)` | あり | 対応 | 未実装 | Docker: Linux は明示エラー (exec stdout 未取得) |
-| `pub fn message_on_stderr(msg)` | あり | 対応 | 未実装 | Docker: Linux は明示エラー (exec stderr 未取得) |
+| `pub fn message_on_stdout(msg)` | あり | 対応 | 対応 | exec が取得した stdout への部分一致で判定 |
+| `pub fn message_on_stderr(msg)` | あり | 対応 | 対応 | exec が取得した stderr への部分一致で判定 |
 | `pub fn exit() -> Self` | あり | 対応 | 対応 |  |
 | `pub fn exit_code(code: i64) -> Self` | あり | 対応 | 対応 | Docker: `CmdWaitFor::Exit` として Linux exec でも利用可 |
 | `pub fn duration(d)` | あり | なし | なし | seconds / millis しかない |

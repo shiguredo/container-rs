@@ -29,6 +29,8 @@
   - @voluntas
 - [ADD] tokio Runtime 内から削除完了を待てる同期 `rm_blocking` を追加する
   - @voluntas
+- [ADD] Linux で exec の stdout / stderr 取得と `CmdWaitFor::StdOutMessage` / `StdErrMessage` を実装する
+  - @voluntas
 - [FIX] Linux で `with_exposed_port` / `Image::expose_ports` がホストポート公開に反映されないのを修正する
   - @voluntas
 
