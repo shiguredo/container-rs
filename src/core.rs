@@ -20,9 +20,7 @@ pub mod wait;
 #[cfg(feature = "blocking")]
 pub use self::containers::{Container, SyncExecResult};
 pub use self::{
-    containers::{
-        CgroupnsMode, ContainerAsync, ContainerRequest, ExecResult, ExtraHost, PortMapping,
-    },
+    containers::{ContainerAsync, ContainerRequest, ExecResult, ExtraHost, PortMapping},
     copy::{
         CopyDataSource, CopyFileFromContainer, CopyFromContainerError, CopyTargetOptions,
         CopyToContainer, CopyToContainerError,

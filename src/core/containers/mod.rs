@@ -4,7 +4,7 @@ pub(crate) mod async_container;
 pub(crate) mod request;
 
 pub use async_container::{ContainerAsync, exec::ExecResult};
-pub use request::{CgroupnsMode, ContainerRequest, ExtraHost, PortMapping};
+pub use request::{ContainerRequest, ExtraHost, PortMapping};
 
 #[cfg(feature = "blocking")]
 pub(crate) mod sync_container;
