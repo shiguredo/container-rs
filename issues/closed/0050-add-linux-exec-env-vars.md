@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-29
-- Completed:
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-exec-env-vars
 - Polished: 2026-07-30
@@ -37,3 +37,16 @@ Linux (Docker Engine API) バックエンドで `ExecCommand::with_env_vars` を
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+`DockerClient::exec` に `env: Vec<String>` 引数を追加し、`ExecConfig` に `Env` フィールドを追加した。
+
+1. `DockerClient::container_env` メソッドを新規追加し、inspect (`GET /containers/{id}/json`) の `Config.Env` からコンテナの環境変数を `["KEY=VALUE", ...]` 形式で取得する
+2. `async_container.rs` の Linux exec 分岐で、`env_vars` が非空ならコンテナ env を inspect で取得し、`BTreeMap` で exec 分を上書きマージして `DockerClient::exec` に渡す。空の場合は `Env` を送信せず Docker の継承に任せる
+3. `exec.rs` の `with_env_vars` rustdoc を Linux 対応の記述に更新した
+4. 統合テスト `alpine_exec_with_env_vars` でコンテナ env 保持・exec env 追加・同名キー上書きの 3 点を検証する
+5. TESTCONTAINERS.md / SKILL.md の env_vars 関連箇所を実装済みに更新した
+6. CHANGES.md に `[ADD]` エントリを追加した
+
+変更ファイル: `src/core/client/docker_client.rs`、`src/core/containers/async_container.rs`、`src/core/image/exec.rs`、`tests/container_linux.rs`、`docs/TESTCONTAINERS.md`、`skills/shiguredo-container/SKILL.md`、`CHANGES.md`

@@ -36,7 +36,9 @@ impl ExecCommand {
     ///
     /// macOS (Apple container) ではコンテナ作成時の env に重ねて送り、
     /// 同名キーはこのメソッドの値が優先される。
-    /// Linux では非空のとき明示エラーになる (Env 送信未対応)。
+    /// Linux ではコンテナの実際の env (inspect の `Config.Env`) を基底にし、
+    /// このメソッドの値で上書きマージして `ExecConfig.Env` に設定する。
+    /// 空の場合はコンテナ env を継承する (Docker の既定動作)。
     pub fn with_env_vars(
         mut self,
         env_vars: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,

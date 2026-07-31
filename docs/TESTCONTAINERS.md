@@ -51,7 +51,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 その結果:
 
 - `AsyncRunner::pull_image` / `AsyncRunner::start` は動く (既定の空 ready 条件なら完結する)
-- `ports` / `exec` (exit code + stdout / stderr。Env は未実装) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
+- `ports` / `exec` (exit code + stdout / stderr + Env) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
 - `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入する (親ディレクトリ自動作成・ディレクトリ一括投入対応。配下 regular file の `mode` / `uid` / `gid` は反映。中間 directory の mode は `0o755`。コピー後 mtime は epoch)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり。親作成は `createParents`）。起動前投入は Linux のみの公開契約
 - `get_bridge_ip_address` / `exit_code` / `ExitWaitStrategy` は未実装エラーのまま
@@ -207,7 +207,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `async fn get_host_port_ipv6(&self, port) -> Result<u16>` | あり | 対応 | 対応 | 同上（IPv6 マッピング側） / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn get_bridge_ip_address(&self) -> Result<IpAddr>` | あり | 対応 | 未実装 | `containerList` の `networks[0].ipv4Address` (CIDRv4) から抽出 / Docker: DockerClient に bridge IP 取得は無く、公開 API は未実装エラー |
 | `async fn get_host(&self) -> Result<Host>` | あり | 部分対応 | 部分対応 | macOS の Apple container は基本的にホスト側からの接続で `127.0.0.1` (`localhost`) が正しい。`Host` は `shiguredo_container::core::host::Host` / Docker: localhost 固定 |
-| `async fn exec(&self, cmd: ExecCommand) -> Result<ExecResult>` | あり | 部分対応 | 部分対応 | XPC は stdout/stderr/Env 付き。Docker は stdout/stderr 付き (AttachStdout/AttachStderr + multiplexed stream demux)。Env は未実装で非空なら明示エラー |
+| `async fn exec(&self, cmd: ExecCommand) -> Result<ExecResult>` | あり | 部分対応 | 対応 | XPC は stdout/stderr/Env 付き。Docker は stdout/stderr/Env 付き (AttachStdout/AttachStderr + multiplexed stream demux。Env はコンテナ env を inspect で取得し exec 分で上書きマージ) |
 | `async fn start(&self) -> Result<()>` | あり | 対応 | 対応 | 停止済みなら Docker `start`。macOS は bootstrap + start_process。`exec_after_start` を実行 / Docker: start_container 配線済み |
 | `async fn stop(&self) -> Result<()>` | あり | 対応 | 対応 | `stop_with_timeout(None)` のエイリアス。timeout 30 秒固定 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | macOS: `Some(0)` は即時 SIGKILL、`Some(t)` (`t < 0`) は長時間 SIGTERM、`None` は 30 秒 SIGTERM / Docker: `None`・負値は `t=30`、`Some(t>=0)` は `t={t}`。404 は冪等成功 |
@@ -228,7 +228,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `get_host_port_ipv6(&self, port) -> Result<u16>` | あり | 対応 | 対応 | 同上 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `get_bridge_ip_address(&self) -> Result<IpAddr>` | あり | 対応 | 未実装 | `ContainerAsync::get_bridge_ip_address` に委譲 / Docker: DockerClient に bridge IP 取得は無く、公開 API は未実装エラー |
 | `get_host(&self) -> Result<Host>` | あり | 対応 | 部分対応 | `ContainerAsync::get_host` に委譲 (macOS では `localhost` 固定) / Docker: localhost 固定 |
-| `exec(&self, cmd: ExecCommand) -> Result<SyncExecResult>` | あり | 部分対応 | 部分対応 | `ContainerAsync::exec` に委譲。XPC は stdout/stderr/Env 付き。Docker は stdout/stderr 付き (Env は未実装で非空なら明示エラー) |
+| `exec(&self, cmd: ExecCommand) -> Result<SyncExecResult>` | あり | 部分対応 | 対応 | `ContainerAsync::exec` に委譲。XPC は stdout/stderr/Env 付き。Docker は stdout/stderr/Env 付き |
 | `copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 対応 | `ContainerAsync::copy_file_from` に委譲 / Docker: `ContainerAsync` 経由で Docker archive API を利用 |
 | `stop(&self) -> Result<()>` | あり | 対応 | 対応 | `stop_with_timeout(None)` のエイリアス / Docker: stop_with_timeout 対応に依存 |
 | `stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | `ContainerAsync::stop_with_timeout` に委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
@@ -412,7 +412,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `pub fn new(cmd: impl IntoIterator<Item = impl Into<String>>) -> Self` | あり | 対応 | 対応 |  |
 | `pub fn with_container_ready_conditions(mut, Vec<WaitFor>)` | あり | 対応 | 対応 |  |
 | `pub fn with_cmd_ready_condition(mut, impl Into<CmdWaitFor>)` | あり | 対応 | 対応 |  |
-| `pub fn with_env_vars(mut, iter)` | あり | 対応 | 未実装 | コンテナ env にマージして XPC `ProcessConfiguration.environment` へ送る。同名キーは ExecCommand 側が優先 / Docker: 非空なら明示エラー。空ならコンテナ env を継承 |
+| `pub fn with_env_vars(mut, iter)` | あり | 対応 | 対応 | コンテナ env にマージして XPC `ProcessConfiguration.environment` へ送る。同名キーは ExecCommand 側が優先 / Docker: コンテナ env を inspect で取得し exec 分で上書きマージして `ExecConfig.Env` に設定。空ならコンテナ env を継承 |
 | `impl Default` | あり | 対応 | 対応 |  |
 
 ### 12.2 `ExecResult`
