@@ -43,6 +43,8 @@
   - @voluntas
 - [FIX] FD リーク・タイムアウト欠如・無限ループ・OOM リスク・バリデーション不足のランタイム安全性を修正する
   - @voluntas
+- [FIX] macOS の logs() 取得失敗時ロールバックが Keep ゲート無しで remove するのを修正する
+  - @voluntas
 
 ### misc
 

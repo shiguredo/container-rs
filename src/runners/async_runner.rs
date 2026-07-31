@@ -223,7 +223,12 @@ where
                 },
                 Err(e) => {
                     if ready_conditions_require_log_fds(&ready_conditions) {
-                        if let Err(rm_err) = client.remove(&id, true).await {
+                        // Keep 指定時は削除しない (失敗したコンテナを残して調査する)。
+                        if matches!(
+                            crate::core::env::Config.command(),
+                            crate::core::env::Command::Remove
+                        ) && let Err(rm_err) = client.remove(&id, true).await
+                        {
                             tracing::warn!(
                                 "failed to remove container {id} during rollback: {rm_err}"
                             );
