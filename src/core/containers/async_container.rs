@@ -683,6 +683,22 @@ impl<I: Image> ContainerAsync<I> {
         }
     }
 
+    /// コンテナを一時停止する。Linux (Docker) のみ対応。
+    #[cfg(target_os = "linux")]
+    pub async fn pause(&self) -> Result<()> {
+        match &self.client {
+            Client::Linux(c) => c.pause(&self.id).await,
+        }
+    }
+
+    /// コンテナの一時停止を解除する。Linux (Docker) のみ対応。
+    #[cfg(target_os = "linux")]
+    pub async fn unpause(&self) -> Result<()> {
+        match &self.client {
+            Client::Linux(c) => c.unpause(&self.id).await,
+        }
+    }
+
     /// ログ配信を停止する。macOS は停止フラグ、Linux はログストリームの `shutdown`。
     ///
     /// `stop` / `rm` / `Drop` の共通前置きとして呼ぶ。

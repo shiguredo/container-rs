@@ -188,8 +188,8 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `image(&self) -> &I` | あり | 対応 | 対応 |  |
 | `async fn start(&self) -> Result<()>` | あり | 対応 | 対応 | 停止済みなら Docker `start`。macOS は bootstrap + start_process。`exec_after_start` を実行 / Docker: start_container 配線済み |
 | `async fn stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | macOS: `Some(0)` は即時 SIGKILL、`Some(t)` (`t < 0`) は長時間 SIGTERM、`None` は 30 秒 SIGTERM / Docker: `None`・負値は `t=30`、`Some(t>=0)` は `t={t}`。404 は冪等成功 |
-| `async fn pause(&self) -> Result<()>` | あり | なし | なし | XPCRoute に `containerPause` なし。stub で常にエラーを返す方針は採らず、シグネチャ自体を削除済み / Docker: Docker Engine には pause API はあるが未導入 |
-| `async fn unpause(&self) -> Result<()>` | あり | なし | なし | 同上 / Docker: 同上 |
+| `async fn pause(&self) -> Result<()>` | あり | なし | 対応 | macOS: XPCRoute に `containerPause` なし。シグネチャ自体を削除済み / Docker: `POST /containers/{id}/pause` (304 冪等) |
+| `async fn unpause(&self) -> Result<()>` | あり | なし | 対応 | 同上 / Docker: `POST /containers/{id}/unpause` (304 冪等) |
 | `async fn is_running(&self) -> Result<bool>` | あり | 対応 | 対応 | `XpcClient::container_state` の `running` を返す / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn container_state(&self) -> Result<ContainerState>` | なし | shiguredo 拡張 | 対応 | XPC `containerState`。本家 0.27 に無し。`ContainerState::from_container` は本メソッドへ委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn exit_code(&self) -> Result<Option<i64>>` | あり | 部分対応 | 部分対応 | バックグラウンド wait の観測済みキャッシュのみ。未観測のときは停止後も `None` (都度 `containerWait` はしない) / Docker: バックグラウンド wait スレッド (`POST /containers/{id}/wait?condition=not-running`) の観測済みキャッシュのみ。未観測のときは停止後も `None` |
@@ -233,8 +233,8 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `stop(&self) -> Result<()>` | あり | 対応 | 対応 | `stop_with_timeout(None)` のエイリアス / Docker: stop_with_timeout 対応に依存 |
 | `stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | `ContainerAsync::stop_with_timeout` に委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `start(&self) -> Result<()>` | あり | 対応 | 対応 | `ContainerAsync::start` に委譲 / Docker: container_state 対応に依存 |
-| `pause(&self) -> Result<()>` (async 宣言だが sync impl) | あり | なし | なし | XPCRoute に pause 系が無いためシグネチャ自体を削除済み / Docker: Docker Engine には pause API はあるが未導入 |
-| `unpause(&self) -> Result<()>` | あり | なし | なし | 同上 / Docker: 同上 |
+| `pause(&self) -> Result<()>` (async 宣言だが sync impl) | あり | なし | 対応 | macOS: XPCRoute に pause 系が無いためシグネチャ自体を削除済み / Docker: `POST /containers/{id}/pause` |
+| `unpause(&self) -> Result<()>` | あり | なし | 対応 | 同上 / Docker: `POST /containers/{id}/unpause` |
 | `rm(mut self) -> Result<()>` | あり | 対応 | 対応 | Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `rm_blocking(mut self) -> Result<()>` | なし | shiguredo 拡張 | shiguredo 拡張 | `ContainerAsync::rm_blocking` に委譲。`block_on` を使わないため Runtime 内の同期コンテキストから呼んでも deadlock しない |
 | `stdout(&self, follow) -> Box<dyn BufRead + Send>` | あり | 対応 | 対応 | ContainerAsync の同期リーダーへ委譲。`follow=true` は追記ポーリング (呼び出しスレッドをブロック) / Docker: 共有バッファを `park_timeout(50ms)` 周期起床で読む。`follow=false` は 1-shot 取得 |

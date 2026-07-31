@@ -186,6 +186,44 @@ impl DockerClient {
         Ok(())
     }
 
+    /// コンテナを一時停止する。
+    ///
+    /// 既に一時停止済み (304) は冪等に成功とする。
+    pub(crate) async fn pause(&self, id: &str) -> Result<()> {
+        let path = format!("/containers/{}/pause", percent_encode_path_segment(id));
+        let response = self.request("POST", &path, None).await?;
+        if response.status_code() == 304 || response.status_code() == 404 {
+            return Ok(());
+        }
+        if response.status_code() >= 400 {
+            return Err(ClientError::Other(format!(
+                "failed to pause container: {}",
+                response.status_code()
+            ))
+            .into());
+        }
+        Ok(())
+    }
+
+    /// コンテナの一時停止を解除する。
+    ///
+    /// 既に実行中 (304) は冪等に成功とする。
+    pub(crate) async fn unpause(&self, id: &str) -> Result<()> {
+        let path = format!("/containers/{}/unpause", percent_encode_path_segment(id));
+        let response = self.request("POST", &path, None).await?;
+        if response.status_code() == 304 || response.status_code() == 404 {
+            return Ok(());
+        }
+        if response.status_code() >= 400 {
+            return Err(ClientError::Other(format!(
+                "failed to unpause container: {}",
+                response.status_code()
+            ))
+            .into());
+        }
+        Ok(())
+    }
+
     /// コンテナを削除する。
     ///
     /// コンテナが存在しない (404) ときは冪等に成功とする。
