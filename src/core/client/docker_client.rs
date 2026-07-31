@@ -821,6 +821,10 @@ impl CreateContainerBody {
                 binds,
                 privileged: config.privileged,
                 init: config.init,
+                cap_add: config.cap_add,
+                cap_drop: config.cap_drop,
+                shm_size: config.shm_size,
+                readonly_rootfs: config.readonly_rootfs,
             },
             exposed_ports,
             healthcheck: config.health_check,
@@ -886,6 +890,10 @@ struct HostConfig {
     binds: Vec<String>,
     privileged: bool,
     init: bool,
+    cap_add: Vec<String>,
+    cap_drop: Vec<String>,
+    shm_size: Option<u64>,
+    readonly_rootfs: bool,
 }
 
 impl HostConfig {
@@ -895,6 +903,12 @@ impl HostConfig {
         json.push_str(if self.privileged { "true" } else { "false" });
         json.push_str(",\"Init\":");
         json.push_str(if self.init { "true" } else { "false" });
+        json.push_str(",\"ReadonlyRootfs\":");
+        json.push_str(if self.readonly_rootfs {
+            "true"
+        } else {
+            "false"
+        });
         if !self.binds.is_empty() {
             json.push_str(",\"Binds\":");
             json.push_str(&json_array(&self.binds));
@@ -902,6 +916,18 @@ impl HostConfig {
         if !self.port_bindings.is_empty() {
             json.push_str(",\"PortBindings\":");
             json.push_str(&json_port_bindings(&self.port_bindings));
+        }
+        if !self.cap_add.is_empty() {
+            json.push_str(",\"CapAdd\":");
+            json.push_str(&json_array(&self.cap_add));
+        }
+        if !self.cap_drop.is_empty() {
+            json.push_str(",\"CapDrop\":");
+            json.push_str(&json_array(&self.cap_drop));
+        }
+        if let Some(shm_size) = self.shm_size {
+            json.push_str(",\"ShmSize\":");
+            json.push_str(&shm_size.to_string());
         }
         json.push('}');
         Ok(json)
@@ -1411,6 +1437,10 @@ mod tests {
             user: None,
             init: false,
             health_check: None,
+            cap_add: vec![],
+            cap_drop: vec![],
+            shm_size: None,
+            readonly_rootfs: false,
         }
     }
 

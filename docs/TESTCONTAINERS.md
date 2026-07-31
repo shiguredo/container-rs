@@ -88,7 +88,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップは ex
 
 - **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code + stdout / stderr)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
 - **未配線・未実装が残るもの**: exec の Env 本対応
-- **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_cap_*` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
+- **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
 
 Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差を同時に見せるためのものである。
 
@@ -130,18 +130,18 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_exposed_host_ports(self, ports)` (feature) | あり | なし | なし | 同上 |
 | `with_ulimit(self, name, soft, hard)` | あり | なし | なし | XPC `ContainerCfg` には rlimits はある (プロセスごと) が ulimit 全体は無い |
 | `with_privileged(self, privileged)` | あり | 部分対応 | 対応 | `true` の場合、XPC `ContainerCfg.capAdd` に `["ALL"]` を設定。Docker の privileged と完全には等価でない（デバイスアクセス等は未対応） |
-| `with_cap_add(self, capability)` | あり | 対応 | 未実装 | XPC `capAdd` に反映 / Docker: start 時に明示エラー (設定構築に未配線) |
-| `with_cap_drop(self, capability)` | あり | 対応 | 未実装 | XPC `capDrop` に反映 / Docker: start 時に明示エラー (設定構築に未配線) |
+| `with_cap_add(self, capability)` | あり | 対応 | 対応 | XPC `capAdd` に反映 / Docker: HostConfig.CapAdd に反映 |
+| `with_cap_drop(self, capability)` | あり | 対応 | 対応 | XPC `capDrop` に反映 / Docker: HostConfig.CapDrop に反映 |
 | `with_cgroupns_mode(self, mode)` | あり | なし | なし | XPC には該当項目なし |
 | `with_userns_mode(self, mode)` | あり | なし | なし | XPC には該当項目なし |
-| `with_shm_size(self, bytes)` | あり | 対応 | 未実装 | XPC `ContainerCfg.shmSize` に反映 / Docker: start 時に明示エラー (設定構築に未配線) |
+| `with_shm_size(self, bytes)` | あり | 対応 | 対応 | XPC `ContainerCfg.shmSize` に反映 / Docker: HostConfig.ShmSize に反映 |
 | `with_startup_timeout(self, timeout)` | あり | 対応 | 対応 | `container_req.startup_timeout()` を `AsyncRunner::start` で参照し、`None` の場合は `DEFAULT_STARTUP_TIMEOUT` (60 秒) を使用 |
 | `with_working_dir(self, dir)` | あり | 対応 | 対応 | XPC `initProcess.workingDirectory` に反映 |
 | `with_log_consumer(self, consumer)` | あり | 対応 | 対応 | macOS: `containerLogs` の FD から行単位で `LogFrame` を配信。Linux: demux 済み共有バッファから行単位で `LogFrame` を配信 (行末 `\n` / `\r` 剥がし、終端後の非改行残余は破棄) |
 | `with_host_config_modifier(self, modifier)` | あり | なし | なし | 元の crate が bollard の型を引数に取る API のため、shiguredo では未対応 |
 | `with_reuse(self, reuse)` (feature) | あり | なし | なし | feature = `reusable-containers`。shiguredo には型も feature も無し (21 章参照) |
 | `with_user(self, user)` | あり | 部分対応 | 対応 | 数値 `uid` / `uid:gid` は XPC `initProcess.user.id` に、名前形式は `user.raw.userString` として渡される。Apple container 実行環境によっては非 root UID が機能しない |
-| `with_readonly_rootfs(self, readonly)` | あり | 対応 | 未実装 | XPC トップレベル `readOnly` に反映。個別マウントの AccessMode とは別 / Docker: start 時に明示エラー (設定構築に未配線) |
+| `with_readonly_rootfs(self, readonly)` | あり | 対応 | 対応 | XPC トップレベル `readOnly` に反映 / Docker: HostConfig.ReadonlyRootfs に反映 |
 | `with_security_opt(self, opt)` | あり | なし | なし | XPC には該当項目なし |
 | `with_ready_conditions(self, conds)` | あり | 対応 | 対応 | `ContainerRequest::ready_conditions` オーバーライドが有効 (8 章参照) |
 | `with_health_check(self, hc)` | あり | 未実装 (XPC 制約) | 対応 | Linux は Config.Healthcheck に配線。macOS は start 時に `Err("with_health_check() is not supported on macOS")` |
