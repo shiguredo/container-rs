@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-23
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-fallback-fd-race
 - Polished: 2026-07-29
@@ -38,11 +38,11 @@ Linux ログストリームの `DockerLogsHandle::stop` は、`try_clone` 失敗
 
 ## 完了条件
 
-- [ ] fallback fd の use-after-close 競合が解消される（またはフォールバック廃止で競合自体が無くなる）
-- [ ] `try_clone` 失敗時でもログストリームが停止できる（廃止案の場合は log_stop + remove で停止すること）
-- [ ] `CHANGES.md` に `[FIX]` エントリが記載されること
-- [ ] `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること（Linux 統合テストは Linux CI (`test-linux-docker`) で実行される。ローカルは macOS のためクロスコンパイル検証のみ）
+- [x] fallback fd の use-after-close 競合が解消される（フォールバック廃止で競合自体が無くなった）
+- [x] `try_clone` 失敗時でもログストリームが停止できる（log_stop + remove で停止する）
+- [x] `CHANGES.md` に `[FIX]` エントリが記載されること
+- [x] `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
 
 ## 解決方法
 
-`src/core/client/docker_log_stream.rs` の `fallback_fd` 周辺を、採用した方針に従って再設計する。`stop()` の doc コメントの残差窓の注記を実態に合わせて更新する。
+設計方針案 2（フォールバック廃止）を採用した。`src/core/client/docker_log_stream.rs` から `fallback_fd` フィールド・初期化・`stop()` 内の fallback 分岐（`demux_done` ガード + `libc::shutdown`）・`terminate_all()` 内のクリア処理・`start_and_demux()` 内の `Err` 分岐をすべて除去した。`try_clone` 失敗時は `log_stop` フラグと後続の remove（デーモン側が接続を閉じる）による停止に頼る。`RawFd` import も除去し、ファイルから `unsafe` が完全に消滅した。モジュール doc コメントと `stop()` の doc コメントを実態に合わせて更新した。
