@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-08-01
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-host-config-fields
 - Polished: 2026-07-29
@@ -42,3 +42,12 @@ Linux (Docker Engine API) バックエンドで `ContainerRequest` に保存さ�
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `linux_unsupported_request_reason` から cap_add / cap_drop / shm_size / readonly_rootfs の 4 ガードを削除した
+- `ContainerConfig` に 4 フィールドを追加し `build_container_config` で映射した
+- `HostConfig` に 4 フィールドを追加し `from_config` で受け渡し、`to_json_string` で CapAdd / CapDrop / ShmSize / ReadonlyRootfs を JSON 出力した
+- テストヘルパー `config_with_mounts` にデフォルト値を追加した
+- docs/TESTCONTAINERS.md と skills/shiguredo-container/SKILL.md を更新した
+- CHANGES.md に [ADD] エントリを追加した
