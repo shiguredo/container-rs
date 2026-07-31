@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-08-01
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-extra-hosts
 - Polished: 2026-07-29
@@ -36,3 +36,11 @@ Linux (Docker Engine API) バックエンドで `with_host` を Docker の HostC
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `linux_unsupported_request_reason` から hosts のガードを削除した
+- `ContainerConfig` に `extra_hosts: Vec<String>` を追加し `build_container_config` で ExtraHost の Display 実装を使い映射した
+- `HostConfig` に `extra_hosts` フィールドを追加し `to_json_string` で ExtraHosts を JSON 出力した
+- docs/TESTCONTAINERS.md と skills/shiguredo-container/SKILL.md を更新した
+- CHANGES.md に [ADD] エントリを追加した
