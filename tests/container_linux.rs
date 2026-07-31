@@ -258,10 +258,11 @@ async fn alpine_exit_code_running_returns_none() {
 ///
 /// 再 start 時に世代管理 (bump + 再武装) が正しく動作し、
 /// 旧世代の exit code が新世代に漏れないことを検証する。
+/// `sleep 2; exit 42` を使い、再 start 後に exit code を確認する猶予を確保する。
 #[tokio::test]
 async fn alpine_exit_code_after_restart_returns_none() {
     let container = GenericImage::new("alpine", "latest")
-        .with_cmd(["sh", "-c", "exit 42"])
+        .with_cmd(["sh", "-c", "sleep 2; exit 42"])
         .start()
         .await
         .expect("alpine コンテナの起動に失敗した");
@@ -288,6 +289,7 @@ async fn alpine_exit_code_after_restart_returns_none() {
 
     // 再 start 直後の running 中は exit code が None であること。
     // 旧世代の exit code (42) が漏れていないことを検証する。
+    // sleep 2 により再 start 直後はコンテナが生存している。
     let code = container
         .exit_code()
         .await
