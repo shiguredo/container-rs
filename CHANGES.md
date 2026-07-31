@@ -45,6 +45,8 @@
   - @voluntas
 - [FIX] macOS の logs() 取得失敗時ロールバックが Keep ゲート無しで remove するのを修正する
   - @voluntas
+- [FIX] Linux ログストリームの fallback fd の use-after-close 競合をフォールバック廃止で解消する
+  - @voluntas
 
 ### misc
 
