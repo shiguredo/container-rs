@@ -212,7 +212,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `async fn stop(&self) -> Result<()>` | あり | 対応 | 対応 | `stop_with_timeout(None)` のエイリアス。timeout 30 秒固定 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | macOS: `Some(0)` は即時 SIGKILL、`Some(t)` (`t < 0`) は長時間 SIGTERM、`None` は 30 秒 SIGTERM / Docker: `None`・負値は `t=30`、`Some(t>=0)` は `t={t}`。404 は冪等成功 |
 | `fn stdout(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 対応 | `containerLogs` から取得した stdout FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF) / Docker: demux 済み共有バッファを独立オフセットで読む。`follow=true` は 8 MiB リング (上限超過で先頭 drop、`warn` ログのみ)、`follow=false` は呼び出しごとに新規 HTTP セッション |
-| `fn stderr(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 対応 | `containerLogs` から取得した stderr FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF)。Apple の 2 本目 FD は bootlog / Docker: demux が STREAM_TYPE で分離するため本当に stderr のみ。8 MiB リング (上限超過で先頭 drop) |
+| `fn stderr(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 対応 | `containerLogs` から取得した stderr FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF)。Apple の 2 本目 FD は bootlog であり、アプリの stderr は stdout 側に混流する。このため macOS で stderr メッセージ待機 (`WaitFor::message_on_stderr` 等) を使うと起動待ちがタイムアウトする / Docker: demux が STREAM_TYPE で分離するため本当に stderr のみ。8 MiB リング (上限超過で先頭 drop) |
 | `async fn stdout_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stdout` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る |
 | `async fn stderr_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stderr` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る |
 | `Drop` impl | あり | 部分対応 | 対応 | Runtime 内は専用 std スレッドで `remove_blocking` を実行し `DROP_REMOVE_TIMEOUT` (5 秒) を上限に完了を待つ (timeout 超過時は best-effort、削除スレッドは裏で継続)、Runtime 外は呼び出しスレッドで `remove_blocking` を同期実行 (試行終了まで待つが成功は非保証)。いずれも失敗は `tracing::error` のみで呼び出し側には届かない。常に `force=true`、404 は冪等成功。Keep ゲートは Drop のみで、明示 `rm` / `rm_blocking` は Keep でも削除する |
@@ -304,7 +304,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `WaitFor::Http(Box<HttpWaitStrategy>)` (feature) | あり | 対応 | 部分対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決は可能。Log 待機との併用は未対応 |
 | `WaitFor::Exit(ExitWaitStrategy)` | あり | 対応 | 未実装 | Docker: Linux では即時未実装エラー |
 | `pub fn message_on_stdout(msg)` | あり | 対応 | 対応 | Docker: demux が stdout を分離するため本当に stdout のみに反応 |
-| `pub fn message_on_stderr(msg)` | あり | 対応 | 対応 | Docker: demux が stderr を分離するため本当に stderr のみに反応 |
+| `pub fn message_on_stderr(msg)` | あり | 対応 | 対応 | macOS: stderr FD は VM の bootlog を指すためアプリの stderr メッセージは成立せず、`startup_timeout` でタイムアウトする。代わりに `message_on_stdout` / `message_on_either_std` を使うこと (アプリの stderr は stdout 側ログに混流する) / Docker: demux が stderr を分離するため本当に stderr のみに反応 |
 | `pub fn message_on_either_std(msg)` | あり | 対応 | 対応 | Docker: stdout / stderr 両ストリームを並行照合 |
 | `pub fn log(strategy)` | あり | 対応 | 対応 | Docker: logs ストリームで成立 |
 | `pub fn healthcheck() -> WaitFor` | あり | 未実装 (XPC 制約) | 対応 | Docker: Linux は inspect ポーリング、macOS は with_health_check で即エラー |
@@ -322,11 +322,11 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `pub fn stdout(msg)` | あり | 対応 | 対応 | Docker: demux 済み stdout 共有バッファを照合 |
-| `pub fn stderr(msg)` | あり | 対応 | 対応 | Docker: demux 済み stderr 共有バッファを照合 |
+| `pub fn stderr(msg)` | あり | 対応 | 対応 | macOS: 待機対象は VM bootlog のため成立せず起動待ちがタイムアウトする (stdout 側に混流。10.1 参照) / Docker: demux 済み stderr 共有バッファを照合 |
 | `pub fn stdout_or_stderr(msg)` | あり | 対応 | 対応 | Docker: stdout / stderr 両共有バッファを並行照合 |
 | `pub fn new(source, msg)` | あり | 対応 | 対応 |  |
 | `pub fn with_times(mut self, n)` | あり | 対応 | 対応 |  |
-| `wait_until_ready` impl | あり | 部分対応 | 対応 | チャンク境界・非 UTF-8 対応。stderr 側は VM bootlog を指す点に注意 (アプリの stderr は stdout 側ログに混流する) / Docker: demux が STREAM_TYPE で分離するため stderr は本当に stderr のみ。EOF は demux 終端 (`logs_terminated`) → DRAIN_GRACE → `EndOfStream` で判定 |
+| `wait_until_ready` impl | あり | 部分対応 | 対応 | チャンク境界・非 UTF-8 対応。macOS の stderr 側は VM bootlog を指すため、`LogSource::StdErr` 待機 (アプリの stderr は stdout 側ログに混流する) は成立せず `startup_timeout` でタイムアウトする。`StdOut` / `BothStd` を使うこと / Docker: demux が STREAM_TYPE で分離するため stderr は本当に stderr のみ。EOF は demux 終端 (`logs_terminated`) → DRAIN_GRACE → `EndOfStream` で判定 |
 
 ### 10.2 `HealthWaitStrategy`
 
