@@ -9,11 +9,12 @@
 //! が `UnixStream::shutdown(Shutdown::Both)` を明示発行する経路の 2 本で行う。
 //! demux タスクは `spawn_blocking` 内で `UnixStream` を所有し続けるため、外部から同じ
 //! ソケットを閉じられるよう `try_clone()` した複製をハンドルに保持する。
+//! `try_clone` 失敗時は複製が無いため、`log_stop` フラグと後続の remove
+//! (デーモン側が接続を閉じる) による停止に頼る。
 
 use std::collections::VecDeque;
 use std::future::Future;
 use std::io::{Read, Write};
-use std::os::fd::RawFd;
 use std::os::unix::net::UnixStream;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -250,8 +251,6 @@ pub(crate) struct DockerLogsHandle {
     log_stop: Arc<AtomicBool>,
     /// 外部から `shutdown(Shutdown::Both)` を発行するための複製ソケット。
     shutdown_socket: std::sync::Mutex<Option<UnixStream>>,
-    /// `try_clone` 失敗時に demux 側ソケットを直接 shutdown するための生 fd。
-    fallback_fd: std::sync::Mutex<Option<RawFd>>,
     /// demux タスク完了フラグ。
     demux_done: Arc<AtomicBool>,
     /// 生存中の consumer 配信タスク数。`all_done` はこの値が 0 かどうかで判定する。
@@ -267,7 +266,6 @@ impl DockerLogsHandle {
             stderr: LogStream::new(DEFAULT_BUFFER_LIMIT),
             log_stop: Arc::new(AtomicBool::new(false)),
             shutdown_socket: std::sync::Mutex::new(None),
-            fallback_fd: std::sync::Mutex::new(None),
             demux_done: Arc::new(AtomicBool::new(false)),
             active_consumers: Arc::new(AtomicUsize::new(0)),
         })
@@ -276,13 +274,7 @@ impl DockerLogsHandle {
     /// demux / consumer タスクを停止する。`log_stop` を立て、ソケットを `shutdown` する。
     ///
     /// 通常は `try_clone` した複製ソケットを `shutdown` する。`try_clone` に失敗して複製が
-    /// 無い場合は、demux 側ソケットの生 fd を `libc::shutdown` で直接 shutdown する。
-    ///
-    /// 生 fd フォールバックの注意: 生 fd は demux タスク所有の `UnixStream` から借用しており、
-    /// demux 終了後は close (再利用され得る) ため、`demux_done` でガードし生存中のみ shutdown
-    /// する。ただし `stop()` が fd を取得した直後に demux が終了 + fd 再利用される微小な競合窓
-    /// は残る。`try_clone` (=dup) 失敗時のみ発火する稀な経路であり、影響は無関係接続の一時的な
-    /// shutdown に留まる (データ破壊にはならない)。
+    /// 無い場合は `log_stop` フラグと後続の remove (デーモン側が接続を閉じる) による停止に頼る。
     pub(crate) fn stop(&self) {
         self.log_stop.store(true, Ordering::SeqCst);
         // 複製ソケットがあればそれを shutdown して読み込み中の demux を起こす。
@@ -294,21 +286,6 @@ impl DockerLogsHandle {
         if let Some(socket) = socket {
             // 失敗しても log_stop と後続の remove (デーモン側が接続を閉じる) で止まる。
             let _ = socket.shutdown(std::net::Shutdown::Both);
-            return;
-        }
-        // try_clone 失敗時: demux 側ソケットの生 fd を直接 shutdown する。
-        // demux 終了後はソケット fd が close (再利用され得る) ため、生存中 (demux 未完了)
-        // のみ shutdown する (stale fd の use-after-close 防止)。
-        if self.demux_done.load(Ordering::SeqCst) {
-            return;
-        }
-        let fd = self
-            .fallback_fd
-            .lock()
-            .expect("fallback fd mutex must not be poisoned while stopping log stream")
-            .take();
-        if let Some(fd) = fd {
-            unsafe { libc::shutdown(fd, libc::SHUT_RDWR) };
         }
     }
 
@@ -317,12 +294,6 @@ impl DockerLogsHandle {
         self.stdout.terminate();
         self.stderr.terminate();
         self.demux_done.store(true, Ordering::SeqCst);
-        // demux 終了でソケット fd は close されるため、fallback fd を無効化する
-        // (stop() が stale fd を shutdown しないようにする)。
-        *self
-            .fallback_fd
-            .lock()
-            .expect("fallback fd mutex must not be poisoned while terminating log stream") = None;
     }
 
     /// demux ストリームが終端したか。`LogWaitStrategy` の EOF 判定に使う。
@@ -470,24 +441,14 @@ fn start_and_demux(
     started: &mut Option<tokio::sync::oneshot::Sender<crate::core::error::Result<()>>>,
 ) -> crate::core::error::Result<()> {
     let mut stream = UnixStream::connect(socket_path)?;
-    // 外部から閉じられるよう複製をハンドルに保持する。try_clone 失敗時は demux 側
-    // ソケットの生 fd を保持し、stop() が libc::shutdown で直接閉じられるようにする。
-    match stream.try_clone() {
-        Ok(clone) => {
-            *handle
-                .shutdown_socket
-                .lock()
-                .expect("shutdown socket mutex must not be poisoned while starting log stream") =
-                Some(clone);
-        }
-        Err(_) => {
-            use std::os::fd::AsRawFd;
-            *handle
-                .fallback_fd
-                .lock()
-                .expect("fallback fd mutex must not be poisoned while starting log stream") =
-                Some(stream.as_raw_fd());
-        }
+    // 外部から閉じられるよう複製をハンドルに保持する。try_clone 失敗時は
+    // log_stop フラグと後続の remove (デーモン側が接続を閉じる) による停止に頼る。
+    if let Ok(clone) = stream.try_clone() {
+        *handle
+            .shutdown_socket
+            .lock()
+            .expect("shutdown socket mutex must not be poisoned while starting log stream") =
+            Some(clone);
     }
 
     let path = format!(
