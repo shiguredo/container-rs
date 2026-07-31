@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-08-01
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-config-fields
 - Polished: 2026-07-29
@@ -37,3 +37,12 @@ Linux (Docker Engine API) バックエンドで `ContainerRequest` に保存さ�
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `linux_unsupported_request_reason` から hostname / open_stdin の 2 ガードを削除した
+- `ContainerConfig` に `hostname: Option<String>` / `open_stdin: Option<bool>` を追加し `build_container_config` で映射した
+- `CreateContainerBody` に 2 フィールドを追加し `to_json_string` で Hostname / OpenStdin を JSON 出力した
+- `unsupported_image_ext_fails_fast_on_start` テストを削除した（hostname のみ検証のため）
+- docs/TESTCONTAINERS.md と skills/shiguredo-container/SKILL.md を更新した
+- CHANGES.md に [ADD] エントリを追加した
