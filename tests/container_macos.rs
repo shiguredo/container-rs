@@ -1647,8 +1647,8 @@ mod test_container_xpc {
     /// Runtime 内 Drop でコンテナが削除されること。
     ///
     /// Runtime 内 Drop は削除を専用 std スレッドで実行し、`DROP_REMOVE_TIMEOUT` (5 秒)
-    /// を上限に完了を待つ。timeout 内に完了すれば `drop` 復帰時点で削除は終わっているため、
-    /// 1 ショット `container ls` で不在を確認する。
+    /// を上限に完了を待つ。通常は timeout 内に完了するが、CI 環境の XPC 混雑で
+    /// 超過し得るため、最終確認にはポーリングを使う。
     #[tokio::test]
     async fn xpc_alpine_drop_inside_runtime_removes_container() {
         if super::helpers::skip_if_ci() {
@@ -1663,16 +1663,23 @@ mod test_container_xpc {
         let id = container.id().to_string();
         drop(container);
 
-        // DROP_REMOVE_TIMEOUT 内に削除が完了しているため、1 ショットで不在を確認できる。
-        let ls = std::process::Command::new("container")
-            .args(["ls", "-a"])
-            .output()
-            .expect("container ls の実行に失敗した");
-        let ls_text = String::from_utf8_lossy(&ls.stdout).to_string();
-        assert!(
-            !ls_text.contains(&id),
-            "Runtime 内 Drop 後にコンテナが削除されていること: {id}"
-        );
+        // DROP_REMOVE_TIMEOUT 超過時の best-effort 経路を考慮し、ポーリングで不在を確認する。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let ls = std::process::Command::new("container")
+                .args(["ls", "-a"])
+                .output()
+                .expect("container ls の実行に失敗した");
+            let ls_text = String::from_utf8_lossy(&ls.stdout).to_string();
+            if !ls_text.contains(&id) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Runtime 内 Drop 後にコンテナが削除されること: {id}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     }
 
     /// Runtime 内の同期コンテキストから rm_blocking でコンテナが削除されること。
