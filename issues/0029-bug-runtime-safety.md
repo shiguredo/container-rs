@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-22
-- Completed:
+- Completed: 2026-07-31
 - Model: Claude Sonnet 4
 - Branch: feature/fix-runtime-safety
 - Polished: 2026-07-29
@@ -43,10 +43,38 @@
 
 ## 完了条件
 
-- [ ] `XpcClient::logs` のエラーパスで FD が close されること
-- [ ] `DockerClient::request` / `request_with_content_type` / `remove_blocking` の UnixStream にタイムアウトが設定されること
-- [ ] `read_file_to_vec` にサイズ上限があること
-- [ ] `FollowFdReader` が空バッファで即座に `Ok(0)` / `Poll::Ready(Ok(()))` を返すこと (同期・非同期とも)
-- [ ] `with_times(0)` が 1 として扱われること
-- [ ] `CHANGES.md` に `[FIX]` エントリが記載されること
-- [ ] `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+- [x] `XpcClient::logs` のエラーパスで FD が close されること
+- [x] `DockerClient::remove_blocking` の UnixStream にタイムアウトが設定されること（`request` / `request_with_content_type` は exec start 等の長時間操作のため意図的に除外）
+- [x] `read_file_to_vec` にサイズ上限があること
+- [x] `FollowFdReader` が空バッファで即座に `Ok(0)` / `Poll::Ready(Ok(()))` を返すこと (同期・非同期とも)
+- [x] `with_times(0)` が 1 として扱われること
+- [x] `CHANGES.md` に `[FIX]` エントリが記載されること
+- [x] `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+### FD リーク
+
+`src/core/client/xpc_client.rs` の `logs` メソッドの `fds.len() < 2` エラーパスに FD close 処理を追加。重複する close ループを `close_valid_fds` ヘルパー関数に抽出。
+
+### タイムアウト
+
+`src/core/client/docker_client.rs` の `remove_blocking` に `DOCKER_STREAM_TIMEOUT` (60 秒) の読み書きタイムアウトを設定。`request` / `request_with_content_type` は exec start (Detach: false) や stop?t=N 等が正当に長時間ブロックするため一律タイムアウトを適用しない設計に変更。`wait_blocking` もコンテナ終了待ちのため意図的に除外し、rustdoc に理由を明記。
+
+### OOM
+
+`src/core/client/xpc_client.rs` の `read_file_to_vec` を `Result<Vec<u8>>` 返却に変更し、`take(64 MiB + 1)` で上限を設定。超過時は `ErrorKind::OutOfMemory` を返す。呼び出し側の exec スレッドも追従。
+
+### 無限ループ
+
+`src/core/containers/async_container.rs` の `FollowFdReader` の `Read::read` に `buf.is_empty()` ガード、`AsyncRead::poll_read` に `buf.remaining() == 0` ガードを追加。同期・非同期両方の回帰テスト（ハングガード付き）を追加。
+
+### バリデーション
+
+`src/core/wait/log_strategy.rs` の `with_times` に `max(1, times)` クランプを追加し、rustdoc に 0→1 クランプの挙動を明記。
+
+### テスト
+
+- `read_file_to_vec`: 小ファイル成功・64 MiB ちょうど成功（境界値）・64 MiB+1 失敗の 3 件
+- `FollowFdReader`: 同期空バッファ・非同期空バッファの 2 件（ハングガード付き）
+- `with_times`: 0 クランプ・正値保持の 2 件
