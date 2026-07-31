@@ -73,12 +73,16 @@ impl crate::core::logs::consumer::LogConsumer for LoggingConsumer {
             let source = match record.source() {
                 crate::core::logs::LogSource::StdOut => "stdout",
                 crate::core::logs::LogSource::StdErr => "stderr",
-                crate::core::logs::LogSource::BothStd => "both",
+                crate::core::logs::LogSource::BothStd => {
+                    unreachable!("LogFrame::source() never returns BothStd")
+                }
             };
             let level = match record.source() {
                 crate::core::logs::LogSource::StdOut => self.stdout_level,
                 crate::core::logs::LogSource::StdErr => self.stderr_level,
-                crate::core::logs::LogSource::BothStd => self.stdout_level.or(self.stderr_level),
+                crate::core::logs::LogSource::BothStd => {
+                    unreachable!("LogFrame::source() never returns BothStd")
+                }
             };
             match level {
                 Some(level) => match level {

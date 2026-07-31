@@ -21,7 +21,8 @@ use crate::core::{
 use crate::xpc::{self, IMAGE_SERVICE, KeyValue, SERVICE_NAME, XpcConn, id_key, j, k, s};
 
 /// XPC クライアント。毎回 `connect()` で新規接続を張る（本家の `Client` と違い接続プール無し）。
-pub struct XpcClient;
+#[derive(Clone)]
+pub(crate) struct XpcClient;
 
 /// ホスト側パスを絶対パス化する。
 ///
@@ -281,7 +282,7 @@ impl XpcClient {
         id: &str,
         cmd: &[String],
         environment: Vec<String>,
-    ) -> Result<ExecResult> {
+    ) -> Result<XpcExecResult> {
         if cmd.is_empty() {
             return Err(ClientError::Other("exec requires at least one argument".into()).into());
         }
@@ -356,7 +357,7 @@ impl XpcClient {
                 .map_err(|_| ClientError::Other("stderr reader thread panicked".into()))??;
 
             let exit_code = reply.try_int64(&k("exitCode"))?;
-            Ok(ExecResult {
+            Ok(XpcExecResult {
                 exit_code: Some(exit_code),
                 stdout,
                 stderr,
@@ -668,7 +669,7 @@ fn read_file_to_vec(mut f: std::fs::File) -> std::io::Result<Vec<u8>> {
 }
 
 /// `exec` の結果。
-pub(crate) struct ExecResult {
+pub(crate) struct XpcExecResult {
     pub(crate) exit_code: Option<i64>,
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,

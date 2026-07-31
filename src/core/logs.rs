@@ -8,14 +8,14 @@ pub(crate) mod consumer;
 pub use consumer::{LogConsumer, LoggingConsumer};
 
 /// ログの 1 フレーム。stdout または stderr。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogFrame {
     StdOut(Vec<u8>),
     StdErr(Vec<u8>),
 }
 
 /// ログの出力元。
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LogSource {
     StdOut,
     StdErr,

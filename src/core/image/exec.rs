@@ -1,6 +1,6 @@
 //! `ExecCommand`。元の testcontainers 0.27 のサブセット（差分の正は `docs/TESTCONTAINERS.md` の該当節 12.1）。
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::core::{WaitFor, wait::CmdWaitFor};
 
@@ -9,7 +9,7 @@ pub struct ExecCommand {
     pub(crate) cmd: Vec<String>,
     pub(crate) cmd_ready_condition: CmdWaitFor,
     pub(crate) container_ready_conditions: Vec<WaitFor>,
-    pub(crate) env_vars: HashMap<String, String>,
+    pub(crate) env_vars: BTreeMap<String, String>,
 }
 
 impl ExecCommand {
@@ -18,7 +18,7 @@ impl ExecCommand {
             cmd: cmd.into_iter().map(Into::into).collect(),
             cmd_ready_condition: CmdWaitFor::Nothing,
             container_ready_conditions: vec![],
-            env_vars: HashMap::new(),
+            env_vars: BTreeMap::new(),
         }
     }
 
@@ -27,8 +27,8 @@ impl ExecCommand {
         self
     }
 
-    pub fn with_cmd_ready_condition(mut self, ready_conditions: impl Into<CmdWaitFor>) -> Self {
-        self.cmd_ready_condition = ready_conditions.into();
+    pub fn with_cmd_ready_condition(mut self, ready_condition: impl Into<CmdWaitFor>) -> Self {
+        self.cmd_ready_condition = ready_condition.into();
         self
     }
 
