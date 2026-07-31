@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-07-31
 - Model: Qwen Code
 - Branch: feature/fix-exclude-attestation-manifest
 - Polished: 2026-07-29
@@ -48,3 +48,16 @@ Docker buildx が生成する attestation manifest (provenance attestation) の 
 - [ ] `CHANGES.md` に `[FIX]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+`select_manifest_digest` の soft 先頭・hard 先頭フォールバック経路で attestation manifest を除外した。
+
+1. `is_attestation_manifest` ヘルパー関数を追加し、`platform.architecture == "unknown"` で attestation manifest を判定する。architecture 欠落は attestation とみなさない
+2. `manifest_platform_architecture` ヘルパー関数を追加し、`platform.architecture` を単独で取得する
+3. soft 先頭経路で `!is_attestation_manifest(item)` 条件を追加し、attestation manifest をスキップする
+4. hard 先頭経路を `manifests.first()` から `manifests.iter().find(|m| !is_attestation_manifest(m))` に変更し、attestation manifest をスキップする。候補ゼロ時は `"index has no valid manifests"` エラーを返す
+5. 単体テスト 5 件を追加した（attestation 先頭スキップ、全 attestation エラー、soft 先頭 unknown arch スキップ、hard 先頭 attestation スキップ、architecture 欠落の選択維持）
+6. CHANGES.md に `[FIX]` エントリを追加した
+
+変更ファイル: `src/core/client/image_config.rs`、`CHANGES.md`

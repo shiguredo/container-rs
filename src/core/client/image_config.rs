@@ -134,8 +134,11 @@ struct Descriptor {
 /// 選定順:
 /// 1. 主経路: `os` と `architecture` がともに一致
 /// 2. preferred フォールバック: 同じ `os` で arm64 → amd64
-/// 3. soft 先頭: `os` だけ一致する先頭 (architecture 欠落も可)
-/// 4. hard 先頭: `manifests[0]` (os 不問の最後の手段)
+/// 3. soft 先頭: `os` だけ一致する先頭 (architecture 欠落も可、attestation 除外)
+/// 4. hard 先頭: 先頭の非 attestation manifest (os 不問の最後の手段)
+///
+/// attestation manifest (`architecture == "unknown"`) は 3・4 のフォールバック経路で
+/// 候補から除外する。architecture 欠落は attestation とみなさない。
 fn select_manifest_digest(index_bytes: &[u8], platform: Option<&str>) -> Result<String> {
     let text = std::str::from_utf8(index_bytes)
         .map_err(|e| ClientError::Json(format!("index is not UTF-8: {e}")))?;
@@ -174,19 +177,21 @@ fn select_manifest_digest(index_bytes: &[u8], platform: Option<&str>) -> Result<
     }
 
     // soft 先頭: os が一致する先頭 (architecture 欠落でも候補にする)。
+    // attestation manifest (architecture == "unknown") は除外する。
     for item in &manifests {
         let Some(os) = manifest_platform_os(item) else {
             continue;
         };
-        if os == target_os {
+        if os == target_os && !is_attestation_manifest(item) {
             return manifest_digest(item);
         }
     }
 
-    // hard 先頭: os 不問の最後の手段。
+    // hard 先頭: os 不問の最後の手段。attestation manifest は除外する。
     let first = manifests
-        .first()
-        .ok_or_else(|| ClientError::Json("index has no manifests".into()))?;
+        .iter()
+        .find(|m| !is_attestation_manifest(m))
+        .ok_or_else(|| ClientError::Json("index has no valid manifests".into()))?;
     manifest_digest(first)
 }
 
@@ -223,6 +228,26 @@ fn manifest_platform_os(item: &nojson::RawJsonValue<'_, '_>) -> Option<String> {
     let platform = item.to_member("platform").ok()?.optional()?;
     platform
         .to_member("os")
+        .ok()?
+        .required()
+        .ok()
+        .and_then(|v| TryInto::<String>::try_into(v).ok())
+}
+
+/// attestation manifest (architecture == "unknown") かどうかを判定する。
+///
+/// Docker buildx が生成する provenance attestation manifest の platform は
+/// `{ "architecture": "unknown", "os": "unknown" }` である。architecture フィールドの
+/// 欠落は attestation とみなさない (通常の manifest として候補に残す)。
+fn is_attestation_manifest(item: &nojson::RawJsonValue<'_, '_>) -> bool {
+    manifest_platform_architecture(item).as_deref() == Some("unknown")
+}
+
+/// `platform.architecture` だけを取り出す。欠落なら `None`。
+fn manifest_platform_architecture(item: &nojson::RawJsonValue<'_, '_>) -> Option<String> {
+    let platform = item.to_member("platform").ok()?.optional()?;
+    platform
+        .to_member("architecture")
         .ok()?
         .required()
         .ok()
@@ -554,5 +579,74 @@ mod tests {
         let cfg = parse_image_config(config.as_bytes()).expect("処理に失敗しないこと");
         assert_eq!(cfg.entrypoint, None);
         assert_eq!(cfg.cmd, None);
+    }
+
+    #[test]
+    fn select_manifest_digest_skips_attestation_at_head() {
+        // attestation manifest (os/arch ともに unknown) が先頭にあっても、
+        // 正常な linux/amd64 manifest が選ばれること
+        let index = r#"{"manifests":[
+            {"digest":"sha256:attestation","platform":{"architecture":"unknown","os":"unknown"}},
+            {"digest":"sha256:linux-amd64","platform":{"architecture":"amd64","os":"linux"}}
+        ]}"#;
+        let digest = select_manifest_digest(index.as_bytes(), Some("linux/amd64"))
+            .expect("処理に失敗しないこと");
+        assert_eq!(digest, "sha256:linux-amd64");
+    }
+
+    #[test]
+    fn select_manifest_digest_errors_when_all_attestation() {
+        // 全 manifest が attestation の場合はエラーになること
+        let index = r#"{"manifests":[
+            {"digest":"sha256:att1","platform":{"architecture":"unknown","os":"unknown"}},
+            {"digest":"sha256:att2","platform":{"architecture":"unknown","os":"unknown"}}
+        ]}"#;
+        let err = select_manifest_digest(index.as_bytes(), Some("linux/amd64"))
+            .expect_err("全 attestation はエラーであること");
+        assert!(
+            err.to_string().contains("no valid manifests"),
+            "エラーメッセージに no valid manifests が含まれること: {err}"
+        );
+    }
+
+    #[test]
+    fn select_manifest_digest_soft_first_skips_unknown_arch() {
+        // soft 先頭経路で os: "linux", architecture: "unknown" のエントリがスキップされ、
+        // 正常な linux/s390x が選ばれること
+        let index = r#"{"manifests":[
+            {"digest":"sha256:linux-unknown","platform":{"architecture":"unknown","os":"linux"}},
+            {"digest":"sha256:linux-s390x","platform":{"architecture":"s390x","os":"linux"}}
+        ]}"#;
+        let digest = select_manifest_digest(index.as_bytes(), Some("linux/arm64"))
+            .expect("処理に失敗しないこと");
+        assert_eq!(digest, "sha256:linux-s390x");
+    }
+
+    #[test]
+    fn select_manifest_digest_hard_first_skips_attestation() {
+        // hard 先頭経路で attestation manifest がスキップされ、
+        // 別 os の非 attestation manifest が選ばれること
+        let index = r#"{"manifests":[
+            {"digest":"sha256:attestation","platform":{"architecture":"unknown","os":"unknown"}},
+            {"digest":"sha256:win-amd64","platform":{"architecture":"amd64","os":"windows"}}
+        ]}"#;
+        let digest = select_manifest_digest(index.as_bytes(), Some("linux/amd64"))
+            .expect("処理に失敗しないこと");
+        assert_eq!(digest, "sha256:win-amd64");
+    }
+
+    #[test]
+    fn select_manifest_digest_soft_first_keeps_missing_arch() {
+        // soft 先頭経路で platform.architecture が欠落しているエントリは
+        // attestation とみなされず、引き続き選択されること。
+        // preferred フォールバック (arm64/amd64) に一致するエントリを置かず、
+        // soft 先頭経路に到達させる。
+        let index = r#"{"manifests":[
+            {"digest":"sha256:linux-no-arch","platform":{"os":"linux"}},
+            {"digest":"sha256:linux-s390x","platform":{"architecture":"s390x","os":"linux"}}
+        ]}"#;
+        let digest = select_manifest_digest(index.as_bytes(), Some("linux/arm64"))
+            .expect("処理に失敗しないこと");
+        assert_eq!(digest, "sha256:linux-no-arch");
     }
 }
