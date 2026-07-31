@@ -83,6 +83,7 @@ pub(crate) struct ContainerConfig {
     pub open_stdin: Option<bool>,
     pub network: Option<String>,
     pub platform: Option<String>,
+    pub extra_hosts: Vec<String>,
 }
 
 /// macOS / Linux のコンテナクライアントを統合した内部型。
