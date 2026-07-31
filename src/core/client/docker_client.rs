@@ -407,18 +407,15 @@ impl DockerClient {
         let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
 
         let mut env = Vec::new();
-        if let Ok(config) = parsed.value().to_member("Config") {
-            if let Some(config) = config.optional() {
-                if let Ok(env_member) = config.to_member("Env") {
-                    if let Some(env_arr) = env_member.optional() {
-                        if let Ok(arr) = env_arr.to_array() {
-                            for item in arr {
-                                if let Ok(s) = String::try_from(item) {
-                                    env.push(s);
-                                }
-                            }
-                        }
-                    }
+        if let Ok(config) = parsed.value().to_member("Config")
+            && let Some(config) = config.optional()
+            && let Ok(env_member) = config.to_member("Env")
+            && let Some(env_arr) = env_member.optional()
+            && let Ok(arr) = env_arr.to_array()
+        {
+            for item in arr {
+                if let Ok(s) = String::try_from(item) {
+                    env.push(s);
                 }
             }
         }
