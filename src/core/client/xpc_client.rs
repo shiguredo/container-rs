@@ -191,17 +191,15 @@ impl XpcClient {
             let reply = conn.send("containerLogs", &[(id_key(), s(&id))])?;
             let fds = reply.log_fds();
             if fds.len() < 2 {
+                // 取得済みの有効な FD を close してからエラーにする (FD リーク防止)。
+                close_valid_fds(&fds);
                 return Err(
                     ClientError::Other("containerLogs did not return enough fds".into()).into(),
                 );
             }
             // dup 失敗 (fd 枯渇等) は -1 が入る。有効な方だけ close してエラーにする。
             if fds[0] < 0 || fds[1] < 0 {
-                for fd in &fds {
-                    if *fd >= 0 {
-                        unsafe { libc::close(*fd) };
-                    }
-                }
+                close_valid_fds(&fds);
                 return Err(
                     ClientError::Other("containerLogs returned an invalid fd".into()).into(),
                 );
@@ -350,8 +348,12 @@ impl XpcClient {
             };
 
             // プロセス終了後、デーモンが書き込み端を閉じると EOF になり join が返る。
-            let stdout = out_handle.join().unwrap_or_default();
-            let stderr = err_handle.join().unwrap_or_default();
+            let stdout = out_handle
+                .join()
+                .map_err(|_| ClientError::Other("stdout reader thread panicked".into()))??;
+            let stderr = err_handle
+                .join()
+                .map_err(|_| ClientError::Other("stderr reader thread panicked".into()))??;
 
             let exit_code = reply.try_int64(&k("exitCode"))?;
             Ok(ExecResult {
@@ -640,11 +642,29 @@ fn create_pipe() -> Result<(std::fs::File, std::fs::File)> {
     }
 }
 
-/// `File` を EOF まで読み出す。失敗時は読めた分までを返す。
-fn read_file_to_vec(mut f: std::fs::File) -> Vec<u8> {
+/// 有効な FD (0 以上) だけを close する。エラーパスでの FD リーク防止用。
+fn close_valid_fds(fds: &[std::os::fd::RawFd]) {
+    for fd in fds {
+        if *fd >= 0 {
+            unsafe { libc::close(*fd) };
+        }
+    }
+}
+
+/// `File` を EOF まで読み出す。64 MiB を超える場合はエラーを返す (OOM 防止)。
+fn read_file_to_vec(mut f: std::fs::File) -> std::io::Result<Vec<u8>> {
+    // 上限なしの read_to_end は大量出力で OOM になり得るため take で制限する。
+    const MAX_OUTPUT_SIZE: u64 = 64 * 1024 * 1024;
     let mut buf = Vec::new();
-    let _ = f.read_to_end(&mut buf);
-    buf
+    let mut limited = std::io::Read::take(&mut f, MAX_OUTPUT_SIZE + 1);
+    limited.read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_OUTPUT_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::OutOfMemory,
+            format!("output exceeds {MAX_OUTPUT_SIZE} bytes limit"),
+        ));
+    }
+    Ok(buf)
 }
 
 /// `exec` の結果。
@@ -1003,5 +1023,81 @@ mod tests {
                 "{name} に FD_CLOEXEC が立っていること: flags={flags}"
             );
         }
+    }
+
+    #[test]
+    fn read_file_to_vec_reads_small_file() {
+        // 小さなファイルはそのまま読み出せること。
+        let dir = std::env::temp_dir().join(format!(
+            "container-rs-read-file-test-{}",
+            crate::core::util::unique_suffix()
+        ));
+        std::fs::create_dir(&dir).expect("一時ディレクトリの作成に失敗した");
+        let path = dir.join("small.txt");
+        std::fs::write(&path, b"hello").expect("ファイルの書き込みに失敗した");
+        let f = std::fs::File::open(&path).expect("ファイルを開けること");
+        let result = read_file_to_vec(f).expect("読み出しに成功すること");
+        assert_eq!(result, b"hello", "ファイルの内容が一致すること");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_file_to_vec_rejects_over_limit() {
+        // 64 MiB を超えるファイルはエラーになること (OOM 防止)。
+        // 実際の 64 MiB ファイルは大きすぎるため、set_len でスパースファイルを作る。
+        let dir = std::env::temp_dir().join(format!(
+            "container-rs-read-file-limit-test-{}",
+            crate::core::util::unique_suffix()
+        ));
+        std::fs::create_dir(&dir).expect("一時ディレクトリの作成に失敗した");
+        let path = dir.join("large.bin");
+        // スパースファイル: 64 MiB + 1 バイト。
+        let size = 64 * 1024 * 1024 + 1;
+        {
+            let f = std::fs::File::create(&path).expect("ファイルの作成に失敗した");
+            f.set_len(size).expect("set_len に失敗した");
+        }
+
+        let f = std::fs::File::open(&path).expect("ファイルを開けること");
+        let result = read_file_to_vec(f);
+        assert!(result.is_err(), "64 MiB 超過はエラーであること");
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::OutOfMemory,
+            "エラー種別が OutOfMemory であること: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_file_to_vec_accepts_exactly_at_limit() {
+        // ちょうど 64 MiB のファイルは成功すること (境界値: > であり >= ではない)。
+        let dir = std::env::temp_dir().join(format!(
+            "container-rs-read-file-boundary-test-{}",
+            crate::core::util::unique_suffix()
+        ));
+        std::fs::create_dir(&dir).expect("一時ディレクトリの作成に失敗した");
+        let path = dir.join("exact.bin");
+        // スパースファイル: ちょうど 64 MiB。
+        let size = 64 * 1024 * 1024;
+        {
+            let f = std::fs::File::create(&path).expect("ファイルの作成に失敗した");
+            f.set_len(size).expect("set_len に失敗した");
+        }
+
+        let f = std::fs::File::open(&path).expect("ファイルを開けること");
+        let result = read_file_to_vec(f);
+        assert!(
+            result.is_ok(),
+            "ちょうど 64 MiB は成功すること: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap().len(),
+            size as usize,
+            "読み込みバイト数が 64 MiB であること"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

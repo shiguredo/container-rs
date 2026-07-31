@@ -1203,6 +1203,11 @@ impl FollowFdReader {
 #[cfg(target_os = "macos")]
 impl std::io::Read for FollowFdReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // Read トレイトの契約: 空バッファでは即座に Ok(0) を返す。
+        // これがないと follow + プロセス生存中に 100ms スリープの無限ループになる。
+        if buf.is_empty() {
+            return Ok(0);
+        }
         loop {
             match self.inner.read_at(buf)? {
                 0 if self.follow && !self.should_stop_follow() => {
@@ -1223,6 +1228,11 @@ impl tokio::io::AsyncRead for FollowFdReader {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         let this = self.get_mut();
+        // AsyncRead の契約: 空バッファでは即座に Ready(Ok(())) を返す。
+        // これがないと follow + プロセス生存中にスリープの無限ループになる。
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
         loop {
             let dst = buf.initialize_unfilled();
             match this.inner.read_at(dst) {
@@ -1550,5 +1560,97 @@ mod tests {
             tokio::fs::metadata(&dir).await.is_err(),
             "ヘルパー呼び出し後にパスが存在しないこと"
         );
+    }
+
+    /// FollowFdReader の同期 Read が空バッファで即座に Ok(0) を返すこと。
+    /// 修正前は follow + プロセス生存中に 100ms スリープの無限ループになっていた。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn follow_fd_reader_sync_empty_buffer_returns_zero() {
+        use std::io::Read;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+
+        // 一時ファイルの FD で FdReader を作る。
+        let dir = std::env::temp_dir().join(format!(
+            "container-rs-follow-fd-test-{}",
+            crate::core::util::unique_suffix()
+        ));
+        std::fs::create_dir(&dir).expect("一時ディレクトリの作成に失敗した");
+        let path = dir.join("test.log");
+        std::fs::write(&path, b"hello").expect("ファイルの書き込みに失敗した");
+        let file = std::fs::File::open(&path).expect("ファイルを開けること");
+        use std::os::fd::AsRawFd;
+        let reader = super::FdReader::dup_from(file.as_raw_fd()).expect("dup に成功すること");
+        let stop = Arc::new(AtomicBool::new(false));
+        let wait_state = Arc::new(std::sync::Mutex::new(WaitState::default()));
+        let mut follow_reader = super::FollowFdReader::new(reader, true, stop, wait_state);
+
+        // 空バッファで即座に Ok(0) が返ること (ハングしないこと)。
+        // ハング防止のため別スレッドで実行し、タイムアウトで検出する。
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut empty: [u8; 0] = [];
+            let result = follow_reader.read(&mut empty);
+            let _ = tx.send(result);
+        });
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("空バッファの read が 2 秒以内に返ること (無限ループしていないこと)");
+        assert_eq!(
+            result.expect("read が成功すること"),
+            0,
+            "空バッファでは Ok(0) であること"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FollowFdReader の非同期 AsyncRead が空バッファで即座に Ready(Ok(())) を返すこと。
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn follow_fd_reader_async_empty_buffer_returns_ready() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+        use tokio::io::AsyncRead;
+
+        // 一時ファイルの FD で FdReader を作る。
+        let dir = std::env::temp_dir().join(format!(
+            "container-rs-follow-fd-async-test-{}",
+            crate::core::util::unique_suffix()
+        ));
+        tokio::fs::create_dir(&dir)
+            .await
+            .expect("一時ディレクトリの作成に失敗した");
+        let path = dir.join("test.log");
+        tokio::fs::write(&path, b"hello")
+            .await
+            .expect("ファイルの書き込みに失敗した");
+        let file = tokio::fs::File::open(&path)
+            .await
+            .expect("ファイルを開けること");
+        use std::os::fd::AsRawFd;
+        let reader = super::FdReader::dup_from(file.as_raw_fd()).expect("dup に成功すること");
+        let stop = Arc::new(AtomicBool::new(false));
+        let wait_state = Arc::new(std::sync::Mutex::new(WaitState::default()));
+        let mut follow_reader = super::FollowFdReader::new(reader, true, stop, wait_state);
+
+        // 空の ReadBuf で即座に Ready(Ok(())) が返ること。
+        // ハング防止のため tokio::time::timeout で保護する。
+        let mut buf = tokio::io::ReadBuf::new(&mut []);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            std::future::poll_fn(|cx| {
+                std::pin::Pin::new(&mut follow_reader).poll_read(cx, &mut buf)
+            }),
+        )
+        .await
+        .expect("空バッファの poll_read が 2 秒以内に返ること (無限ループしていないこと)");
+        assert!(result.is_ok(), "空バッファの poll_read が成功すること");
+        assert_eq!(
+            buf.filled().len(),
+            0,
+            "空バッファでは読み込みバイト数 0 であること"
+        );
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 }

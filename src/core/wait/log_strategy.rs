@@ -97,8 +97,13 @@ impl LogWaitStrategy {
         }
     }
 
+    /// メッセージの出現回数閾値を設定する。
+    ///
+    /// 0 を指定した場合は 1 にクランプされる (0 では読み取り結果を無視して即 ready になるため)。
     pub fn with_times(mut self, times: usize) -> Self {
-        self.times = times;
+        // 0 を指定すると total >= 0 が即 true になり読み取り結果を無視して即 ready になるため、
+        // 最低 1 を保証する。
+        self.times = times.max(1);
         self
     }
 }
@@ -333,5 +338,19 @@ mod tests {
         let mut matcher = StreamMatcher::new(b"ready".to_vec());
         assert_eq!(matcher.feed(b"re"), 0);
         assert_eq!(matcher.feed(b"ady"), 1);
+    }
+
+    #[test]
+    fn with_times_zero_is_clamped_to_one() {
+        // 0 を指定しても 1 として扱われること (即 ready 化の防止)。
+        let strategy = LogWaitStrategy::stdout("ready").with_times(0);
+        assert_eq!(strategy.times, 1, "with_times(0) は 1 にクランプされること");
+    }
+
+    #[test]
+    fn with_times_positive_value_is_preserved() {
+        // 正の値はそのまま保持されること。
+        let strategy = LogWaitStrategy::stdout("ready").with_times(3);
+        assert_eq!(strategy.times, 3, "正の値は変更されないこと");
     }
 }

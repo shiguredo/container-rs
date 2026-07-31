@@ -41,6 +41,8 @@
   - @voluntas
 - [FIX] manifest 選択フォールバックで attestation manifest (`architecture: "unknown"`) を除外する
   - @voluntas
+- [FIX] FD リーク・タイムアウト欠如・無限ループ・OOM リスク・バリデーション不足のランタイム安全性を修正する
+  - @voluntas
 
 ### misc
 

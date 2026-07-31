@@ -17,6 +17,11 @@ use crate::core::ports::{ContainerPort, Ports};
 
 const DEFAULT_DOCKER_SOCKET: &str = "/var/run/docker.sock";
 
+/// `remove_blocking` 専用の UnixStream 読み書きタイムアウト。
+/// Drop 経路から呼ばれるため、デーモン無応答時に呼び出しスレッドが恒久ブロックするのを防ぐ。
+/// exec start や stop?t=N 等、正当に長時間ブロックする経路には適用しない。
+const DOCKER_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Docker exec の生結果。
 pub(crate) struct DockerExecResult {
     pub(crate) exit_code: Option<i64>,
@@ -199,6 +204,8 @@ impl DockerClient {
         );
         let request_bytes = encode_docker_api_request("DELETE", &path, None)?;
         let mut stream = UnixStream::connect(&self.socket_path)?;
+        stream.set_read_timeout(Some(DOCKER_STREAM_TIMEOUT))?;
+        stream.set_write_timeout(Some(DOCKER_STREAM_TIMEOUT))?;
         stream.write_all(&request_bytes)?;
         // 書き込み半閉じは dockerd / Docker Desktop が 500 を返すため行わない。
         // 対向の接続保持は `Connection: close` とボディ完了時の即リターンで防ぐ。
@@ -219,6 +226,9 @@ impl DockerClient {
     /// コンテナの終了を同期で待つ。`POST /containers/{id}/wait?condition=not-running` を呼び、
     /// レスポンスの `StatusCode` を返す。tokio Runtime に依存しないため std スレッドから
     /// 直接呼べる。コンテナ削除後の 404 等はエラーとして返す (呼び出し側で無視する)。
+    ///
+    /// 注意: コンテナ終了待ちは正当に無制限にブロックし得るため、
+    /// `remove_blocking` とは異なりタイムアウトを意図的に設定しない。
     pub(crate) fn wait_blocking(&self, id: &str) -> Result<i64> {
         let path = format!(
             "/containers/{}/wait?condition=not-running",
@@ -602,6 +612,9 @@ impl DockerClient {
             // 書き込み半閉じは dockerd / Docker Desktop が create / start 等で
             // 500 Internal Server Error を返すため行わない。
             // 対向の接続保持は `Connection: close` とボディ完了時の即リターンで防ぐ。
+            // 注意: exec start (Detach: false) や stop?t=N 等は正当に長時間ブロックするため、
+            // この共有メソッドにはタイムアウトを設定しない。タイムアウトは remove_blocking 等、
+            // 短時間で完了すべき同期専用経路に個別に設定する。
 
             read_http11_response(&mut stream, &method)
         })
