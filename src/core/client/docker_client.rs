@@ -775,6 +775,8 @@ struct CreateContainerBody {
     host_config: HostConfig,
     exposed_ports: Vec<String>,
     healthcheck: Option<Healthcheck>,
+    hostname: Option<String>,
+    open_stdin: Option<bool>,
 }
 
 impl CreateContainerBody {
@@ -828,6 +830,8 @@ impl CreateContainerBody {
             },
             exposed_ports,
             healthcheck: config.health_check,
+            hostname: config.hostname,
+            open_stdin: config.open_stdin,
         })
     }
 
@@ -877,6 +881,13 @@ impl CreateContainerBody {
         if let Some(hc_json) = self.healthcheck.as_ref().and_then(|hc| hc.to_docker_json()) {
             json.push_str(",\"Healthcheck\":");
             json.push_str(&hc_json);
+        }
+        if let Some(hostname) = &self.hostname {
+            json.push_str(",\"Hostname\":");
+            json.push_str(&escape_json(hostname));
+        }
+        if self.open_stdin == Some(true) {
+            json.push_str(",\"OpenStdin\":true");
         }
         json.push_str(",\"HostConfig\":");
         json.push_str(&self.host_config.to_json_string()?);
@@ -1441,6 +1452,8 @@ mod tests {
             cap_drop: vec![],
             shm_size: None,
             readonly_rootfs: false,
+            hostname: None,
+            open_stdin: None,
         }
     }
 

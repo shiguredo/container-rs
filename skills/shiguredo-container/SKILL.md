@@ -71,7 +71,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `with_log_consumer` | 対応 (行単位で `LogFrame` を配信) | 対応 (demux 済み共有バッファから行単位で配信。行末 `\n` / `\r` 剥がし、終端後の非改行残余は破棄) |
 | `with_privileged` | 部分対応 (`capAdd: ["ALL"]` 相当) | 対応 |
 | `with_cap_add`, `with_cap_drop`, `with_shm_size`, `with_readonly_rootfs` | 対応 | 対応 |
-| `with_open_stdin`, `with_hostname` | 対応 | start 時に明示エラー |
+| `with_hostname`, `with_open_stdin` | 対応 | 対応 |
 | `with_host` | 部分対応 (`ExtraHost::Addr` は exec で `/etc/hosts` 追記。`HostGateway` はエラー) | start 時に明示エラー |
 | `with_user` | 部分対応 (環境により非 root UID が機能しないことがある) | 対応 |
 | `with_init` | **shiguredo 拡張** (XPC `useInit`) | 対応 (HostConfig.Init) |
@@ -266,7 +266,7 @@ let container = GenericImage::new("nginx", "latest")
 
 - **macOS の Local Network Privacy (LNP)**: `HttpWaitStrategy` や published port への接続は macOS 15+ の LNP にブロックされ得る。LNP は TCC / MDM で事前付与できない。CI ではコンテナ IP 直結テストを基本とし、published port 依存テストは許可済み環境でのみ実行する
 - **blocking の再入 deadlock**: `LogConsumer` コールバック内や既存の tokio ランタイムコンテキストから `SyncRunner::start` 等の同期 API を呼ぶと共有 Runtime への再入で deadlock する。ライブラリは再入を検出して即エラーにするが、コールバック内での同期 API 呼び出しは避けること。共有 Runtime ワーカースレッド上で最後の同期 `Container` を drop するとハングし得る既知の限界もある
-- **Linux の残ギャップ**: `with_platform` / `with_network` / `with_hostname` / `with_host` / `with_open_stdin` / `with_ssh`、Volume / Tmpfs mount が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
+- **Linux の残ギャップ**: `with_platform` / `with_network` / `with_host` / `with_ssh`、Volume / Tmpfs mount が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
 - **イメージビルド未対応**: `GenericBuildableImage` / `BuildableImage` 等の build 系 API は無い
 - **reuse 未対応**: `reusable-containers` 相当の feature・型は無い
 - **本家との型不整合**: `CopyFromContainerError::UnsupportedEntry` は `&'static str` (本家 `tokio_tar::EntryType`)、`WaitLogError::EndOfStream` は `Vec<Vec<u8>>` (本家 `Vec<Bytes>`)。いずれも依存最小方針による意図的差分

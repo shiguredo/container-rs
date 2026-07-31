@@ -485,6 +485,8 @@ fn build_container_config<I: Image>(
         cap_drop: req.cap_drop().cloned().unwrap_or_default(),
         shm_size: req.shm_size(),
         readonly_rootfs: req.readonly_rootfs(),
+        hostname: req.hostname().map(|h| h.to_string()),
+        open_stdin: req.open_stdin(),
     }
 }
 
@@ -599,14 +601,8 @@ fn linux_unsupported_request_reason<I: Image>(req: &ContainerRequest<I>) -> Opti
     if req.network().is_some() {
         return Some("with_network() is not implemented on Linux");
     }
-    if req.hostname().is_some() {
-        return Some("with_hostname() is not implemented on Linux");
-    }
     if req.hosts().next().is_some() {
         return Some("with_host() is not implemented on Linux");
-    }
-    if req.open_stdin() == Some(true) {
-        return Some("with_open_stdin() is not implemented on Linux");
     }
     if req.ssh() {
         return Some("with_ssh() is not implemented on Linux");
