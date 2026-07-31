@@ -27,6 +27,8 @@ pub enum MountType {
     Tmpfs,
 }
 
+// 本家 testcontainers-rs と同じ公開 API。内部では match で直接変換しており本 impl を経由しないが、
+// 利用者が to_string() で使う可能性があるため意図的に保持する。
 impl std::fmt::Display for MountType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

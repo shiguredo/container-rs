@@ -57,7 +57,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `WaitFor` | 準備完了待機戦略 (下表参照) |
 | `Error` | エラー型 (下表参照) |
 
-`core::` 経由でエクスポートされる型: `ContainerState`, `ExecResult`, `SyncExecResult`, `ExtraHost`, `PortMapping`, `CgroupnsMode`, `Host`, `Mount` / `MountType` / `AccessMode` / `MountTmpfsOptions`, `ContainerPort` / `IntoContainerPort` / `Ports`, `CmdWaitFor`, copy 系 (`CopyDataSource` / `CopyFileFromContainer` / `CopyFromContainerError` / `CopyTargetOptions` / `CopyToContainer` / `CopyToContainerError`)。待機戦略型は `core::wait::` (`HttpWaitStrategy`, `LogWaitStrategy`, `ExitWaitStrategy` 等)、ログ系は `core::logs::LogFrame` / `core::logs::LogSource` / `core::logs::consumer::LogConsumer` / `core::logs::consumer::logging_consumer::LoggingConsumer`。
+`core::` 経由でエクスポートされる型: `ContainerState`, `ExecResult`, `SyncExecResult`, `ExtraHost`, `PortMapping`, `Host`, `Mount` / `MountType` / `AccessMode` / `MountTmpfsOptions`, `ContainerPort` / `IntoContainerPort` / `Ports`, `CmdWaitFor`, copy 系 (`CopyDataSource` / `CopyFileFromContainer` / `CopyFromContainerError` / `CopyTargetOptions` / `CopyToContainer` / `CopyToContainerError`)。待機戦略型は `core::wait::` (`HttpWaitStrategy`, `LogWaitStrategy`, `ExitWaitStrategy` 等)、ログ系は `core::logs::LogFrame` / `core::logs::LogSource` / `core::logs::consumer::LogConsumer` / `core::logs::consumer::logging_consumer::LoggingConsumer`。
 
 ### `ImageExt` の主要メソッド
 

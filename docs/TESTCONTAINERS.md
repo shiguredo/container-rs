@@ -79,7 +79,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップは ex
 - **部分対応** (24): シグネチャあり + 動作するが XPC の情報不足 / 型不一致 / 挙動制約付き (例: `get_host` = `localhost` 固定、`exit_code` = 観測済みキャッシュのみ など)
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
 - **未実装 (XPC 制約)** (3): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機) と `with_health_check` (start 時明示エラー)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` はシグネチャ自体を削除済みのため「なし」に分類
-- **なし** (94): 大半は build 系、feature 系、bollard 由来の詳細エラー型、未配線の `CgroupnsMode` setter など
+- **なし** (94): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
 - **shiguredo 拡張** (12): `ImageExt::with_init` / `with_ssh`、`ContainerAsync::container_state`、`Container::container_state`、`ClientError::Xpc*` / `ImageNotFound` / `ContainerNotFound` / `Json` / `Other`、`ContainerRequest` の `init` / `ssh` accessor
 
 ## サマリ (Docker Engine API)
@@ -291,7 +291,6 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `Host::Addr(IpAddr)` | あり | 対応 | 対応 | `core::host::Host` |
 | `Host::Domain(String)` | あり | 対応 | 対応 | IP でなければ Domain |
 | `Host` Display | あり | 対応 | 対応 |  |
-| `CgroupnsMode::Host / Private` | あり | なし | なし | 型のみ定義。setter / 配線は無し (`with_cgroupns_mode` は「なし」) |
 
 ## 9. `WaitFor` バリアント + コンストラクタ
 
@@ -601,7 +600,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `PortMappingError::FailedToParseContainerPort(parse_display::ParseError)` | あり | なし | なし | Ports::new / TryFrom<PortMap> 未対応と表裏 |
 | `PortMappingError::FailedToParseHostPort(ParseIntError)` | あり | なし | なし |  |
 
-## 16. `ContainerState` / `Host` / `CgroupnsMode` / `Healthcheck`
+## 16. `ContainerState` / `Host` / `Healthcheck`
 
 ### 16.1 `ContainerState` (`core::image::ContainerState`)
 
@@ -617,11 +616,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 15 章末尾 (8 章の下段) と重複。省略。
 
-### 16.3 `CgroupnsMode`
-
-8 章と重複。省略。
-
-### 16.4 `Healthcheck` (`core::healthcheck::Healthcheck`)
+### 16.3 `Healthcheck` (`core::healthcheck::Healthcheck`)
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
@@ -804,7 +799,7 @@ shiguredo には `compose` モジュールも `bollard` の再エクスポート
 |:--|:--|:--|:--|:--|
 | `pub use crate::core::Container` (feature=blocking) | あり | 対応 | 対応 |  |
 | `pub use crate::core::ReuseDirective` (feature=reusable-containers) | あり | なし | なし | 21 章参照 |
-| `pub use crate::core::{...}` (CopyDataSource, CopyTargetOptions, CopyToContainer, CopyToContainerError, Error, BuildableImage, ContainerAsync, ContainerRequest, Healthcheck, Image, ImageExt)` | あり | 部分対応 | 部分対応 | copy 系 4 型 (`CopyDataSource` / `CopyTargetOptions` / `CopyToContainer` / `CopyToContainerError`) は `core::` 経由で再エクスポート。crate root 直下には無い。`BuildableImage` は shiguredo に無し。`Healthcheck` は 16.4 節参照 (Linux 対応、macOS は accessor 対応・`with_health_check` は明示エラー)。`ExecCommand` / `WaitFor` は shiguredo 独自に追加 (元の crate の lib.rs では pub use にない) |
+| `pub use crate::core::{...}` (CopyDataSource, CopyTargetOptions, CopyToContainer, CopyToContainerError, Error, BuildableImage, ContainerAsync, ContainerRequest, Healthcheck, Image, ImageExt)` | あり | 部分対応 | 部分対応 | copy 系 4 型 (`CopyDataSource` / `CopyTargetOptions` / `CopyToContainer` / `CopyToContainerError`) は `core::` 経由で再エクスポート。crate root 直下には無い。`BuildableImage` は shiguredo に無し。`Healthcheck` は 16.3 節参照 (Linux 対応、macOS は accessor 対応・`with_health_check` は明示エラー)。`ExecCommand` / `WaitFor` は shiguredo 独自に追加 (元の crate の lib.rs では pub use にない) |
 | `pub use buildables::generic::GenericBuildableImage;` | あり | なし | なし | 20 章参照 |
 | `pub use images::generic::GenericImage;` | あり | 対応 | 対応 |  |
 | `pub use bollard;` | あり | なし | なし | 23 章 |

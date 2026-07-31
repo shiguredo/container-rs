@@ -64,6 +64,8 @@ pub enum ExtraHost {
     HostGateway,
 }
 
+// 本家 testcontainers-rs と同じ公開 API。macOS 経路では match で直接分解しており本 impl を経由しないが、
+// Linux (Docker) 経路の extra_hosts 変換で利用するため意図的に保持する。
 impl std::fmt::Display for ExtraHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -71,13 +73,6 @@ impl std::fmt::Display for ExtraHost {
             ExtraHost::HostGateway => write!(f, "host-gateway"),
         }
     }
-}
-
-/// cgroup namespace モード。macOS では未使用だが本家 API に合わせて定義。
-#[derive(Debug, Clone, Copy)]
-pub enum CgroupnsMode {
-    Host,
-    Private,
 }
 
 impl<I: Image> ContainerRequest<I> {
