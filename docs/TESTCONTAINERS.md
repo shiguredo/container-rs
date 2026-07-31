@@ -44,20 +44,20 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 
 ## Docker Engine API (Linux) の現状
 
-`DockerClient` (`src/core/client/docker_client.rs`) は `/var/run/docker.sock` 向けに pull / create / start / stop / remove / exec / inspect / logs / archive (copy) を実装済みである。`ContainerAsync` の Linux 分岐はライフサイクル系 (`ports` / `exec` / `stop` / `is_running` / `rm` / Drop / `start` 再起動 / `container_state`)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `with_log_consumer`)、copy (`copy_file_from` / `with_copy_to`) を配線済みである。
+`DockerClient` (`src/core/client/docker_client.rs`) は `/var/run/docker.sock` 向けに pull / create / start / stop / remove / exec / inspect / logs / archive (copy) を実装済みである。`ContainerAsync` の Linux 分岐はライフサイクル系 (`ports` / `exec` / `stop` / `is_running` / `rm` / Drop / `start` 再起動 / `container_state`)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `with_log_consumer`)、copy (`copy_file_from` / `with_copy_to`)、ヘルスチェック (`with_health_check` / `WaitFor::Healthcheck`) を配線済みである。
 
 ログは `GET /containers/{id}/logs` を `spawn_blocking` 内の `UnixStream` で叩き、multiplex フレームを demux して stdout / stderr 別の共有バッファ (ストリームあたり 8 MiB、上限超過時は先頭から drop) へ書き込む。`stdout` / `stderr` のリーダーはこの共有バッファを独立オフセットで読む。
 
 その結果:
 
 - `AsyncRunner::pull_image` / `AsyncRunner::start` は動く (既定の空 ready 条件なら完結する)
-- `ports` / `exec` (exit code のみ) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
+- `ports` / `exec` (exit code + stdout / stderr。Env は未実装) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
 - `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入する (親ディレクトリ自動作成・ディレクトリ一括投入対応。配下 regular file の `mode` / `uid` / `gid` は反映。中間 directory の mode は `0o755`。コピー後 mtime は epoch)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり。親作成は `createParents`）。起動前投入は Linux のみの公開契約
 - `get_bridge_ip_address` / `exit_code` / `ExitWaitStrategy` は未実装エラーのまま
 - `ImageExt` の一部 (`with_network` / `with_platform` / `with_cap_add` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` 等) は start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
 
-README の Linux 注意書きと合わせて読むこと。残ギャップは bridge IP 取得・ネットワーク詳細などである。
+README の Linux 注意書きと合わせて読むこと。残ギャップは bridge IP 取得・exec の Env・ネットワーク詳細などである。
 
 ## サマリ (Apple Container)
 
@@ -228,7 +228,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `get_host_port_ipv6(&self, port) -> Result<u16>` | あり | 対応 | 対応 | 同上 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `get_bridge_ip_address(&self) -> Result<IpAddr>` | あり | 対応 | 未実装 | `ContainerAsync::get_bridge_ip_address` に委譲 / Docker: DockerClient に bridge IP 取得は無く、公開 API は未実装エラー |
 | `get_host(&self) -> Result<Host>` | あり | 対応 | 部分対応 | `ContainerAsync::get_host` に委譲 (macOS では `localhost` 固定) / Docker: localhost 固定 |
-| `exec(&self, cmd: ExecCommand) -> Result<SyncExecResult>` | あり | 部分対応 | 部分対応 | `ContainerAsync::exec` に委譲。Linux は exit code のみ |
+| `exec(&self, cmd: ExecCommand) -> Result<SyncExecResult>` | あり | 部分対応 | 部分対応 | `ContainerAsync::exec` に委譲。XPC は stdout/stderr/Env 付き。Docker は stdout/stderr 付き (Env は未実装で非空なら明示エラー) |
 | `copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 対応 | `ContainerAsync::copy_file_from` に委譲 / Docker: `ContainerAsync` 経由で Docker archive API を利用 |
 | `stop(&self) -> Result<()>` | あり | 対応 | 対応 | `stop_with_timeout(None)` のエイリアス / Docker: stop_with_timeout 対応に依存 |
 | `stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | `ContainerAsync::stop_with_timeout` に委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
@@ -451,7 +451,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 |:--|:--|:--|:--|:--|
 | `pub struct SyncExecResult` | あり | 対応 | 対応 | async 版 `ExecResult` を包む同期ラッパー |
 | `pub fn exit_code(&self) -> Result<Option<i64>, _>` | あり | 対応 | 対応 | Docker: exec 結果の ExitCode を返す |
-| `pub fn stdout / stderr / stdout_to_vec / stderr_to_vec` | あり | 対応 | 部分対応 | `stdout` / `stderr` は `Box<dyn BufRead + Send>` / Docker: exec 出力未取得のため常に空 |
+| `pub fn stdout / stderr / stdout_to_vec / stderr_to_vec` | あり | 対応 | 対応 | `stdout` / `stderr` は `Box<dyn BufRead + Send>` / Docker: async 版 `ExecResult` の demux 済みバッファに委譲 |
 
 ## 13. Copy 関連
 

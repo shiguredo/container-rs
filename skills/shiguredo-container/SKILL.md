@@ -1,6 +1,6 @@
 ---
 name: shiguredo-container
-description: 時雨堂のテスト用コンテナライブラリ shiguredo_container の機能・API リファレンス。Apple container (macOS XPC) / Docker Engine API (Linux) でのコンテナ起動、待機戦略 (WaitFor)、exec、ログ、ポート解決、ファイルコピー、feature 構成に関する質問時に使用。
+description: 時雨堂のテスト用コンテナライブラリ shiguredo_container の機能・API リファレンス。Apple container (macOS XPC) / Docker Engine API (Linux) でのコンテナ起動、待機戦略 (WaitFor / Healthcheck)、exec、ログ、ポート解決、ファイルコピー、feature 構成に関する質問時に使用。
 ---
 
 # shiguredo_container
@@ -10,7 +10,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 ## 特徴
 
 - **macOS がメイン対象**: Apple container の XPC API を自前実装で直接叩く。Docker Desktop 不要
-- **Linux 対応**: Docker Engine API (`/var/run/docker.sock`) を利用。ライフサイクル (start / exec / stop / rm / Drop)、ログ関連 (stdout / stderr / ログ待機 / LogConsumer)、ホストポート公開、ファイルコピー (`copy_file_from` / `with_copy_to`)、exec の stdout / stderr 取得が動く。bridge IP 取得・network 系設定などは未対応
+- **Linux 対応**: Docker Engine API (`/var/run/docker.sock`) を利用。ライフサイクル (start / exec / stop / rm / Drop)、ログ関連 (stdout / stderr / ログ待機 / LogConsumer)、ホストポート公開、ファイルコピー (`copy_file_from` / `with_copy_to`)、ヘルスチェック (`with_health_check` / `WaitFor::healthcheck`)、exec の stdout / stderr 取得が動く。bridge IP 取得・network 系設定などは未対応
 - **testcontainers-rs 互換 API**: 学習コスト削減のため公開 API を testcontainers-rs 0.27 に寄せている (完全互換は目指さない)
 - **依存最小**: `libc` / `nojson` / `shiguredo_http11` / `tokio` / `tracing` (+ optional `base64ct`)。bollard / reqwest / bytes 等は使わない
 - **黙って無視しない**: 未対応の設定はリクエストに保存だけして無視するのではなく、start / create 時に明示エラーを返す
@@ -18,7 +18,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 ## バージョン情報
 
 - crate 名: `shiguredo_container`
-- バージョン: 2026.1.0-canary.1
+- バージョン: 2026.1.0-canary.4
 - Rust Edition: 2024
 - 最小 Rust バージョン: 1.93
 - ライセンス: Apache-2.0
@@ -52,6 +52,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `ContainerAsync<I>` | 起動済みコンテナ (async, 下表参照) |
 | `Container<I>` | 起動済みコンテナ (sync, feature = `blocking`)。各メソッドは `ContainerAsync` に委譲 |
 | `ContainerRequest<I>` | `ImageExt` で構築されるリクエスト。各種 accessor を持つ |
+| `Healthcheck` | ヘルスチェック設定型。Linux は Config.Healthcheck に配線。macOS は `with_health_check` 指定時に start で明示エラー |
 | `ExecCommand` | exec コマンド定義 |
 | `WaitFor` | 準備完了待機戦略 (下表参照) |
 | `Error` | エラー型 (下表参照) |
@@ -74,8 +75,9 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `with_user` | 部分対応 (環境により非 root UID が機能しないことがある) | 対応 |
 | `with_init` | **shiguredo 拡張** (XPC `useInit`) | 対応 (HostConfig.Init) |
 | `with_ssh` | **shiguredo 拡張** (XPC `ssh`) | start 時に明示エラー |
+| `with_health_check` | 未実装 (XPC 制約)。start 時に明示エラー | 対応 (Config.Healthcheck)。`WaitFor::healthcheck` と併用可 |
 
-本家にあって存在しないもの: `with_ulimit` / `with_cgroupns_mode` / `with_userns_mode` / `with_security_opt` / `with_health_check` / `with_host_config_modifier` / `with_reuse` / `with_exposed_host_port(s)` / `with_device_requests` (XPC に設定口が無い、または方針で未対応)。
+本家にあって存在しないもの: `with_ulimit` / `with_cgroupns_mode` / `with_userns_mode` / `with_security_opt` / `with_host_config_modifier` / `with_reuse` / `with_exposed_host_port(s)` / `with_device_requests` (XPC に設定口が無い、または方針で未対応)。
 
 ### `ContainerAsync<I>` / `Container<I>` のメソッド
 
@@ -86,7 +88,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `get_bridge_ip_address()` | 対応 (`networks[0].ipv4Address` から抽出) | 未実装エラー |
 | `get_host()` | `localhost` 固定 | `localhost` 固定 |
 | `exec(ExecCommand)` | 対応 (stdout / stderr / env 付き) | stdout / stderr 付き (env は未実装) |
-| `start()` (再起動), `stop()`, `stop_with_timeout(Option<i32>)`, `is_running()`, `rm()` | 対応 | 対応 |
+| `start()` (再起動), `stop()`, `stop_with_timeout(Option<i32>)`, `is_running()`, `rm()`, `rm_blocking()` | 対応 | 対応 |
 | `container_state()` | **shiguredo 拡張** | 対応 |
 | `exit_code()` | 部分対応 (バックグラウンド wait の観測済みキャッシュのみ) | 未実装エラー |
 | `copy_file_from(path, target)` | 対応 (`Vec<u8>` / `PathBuf` を target にできる) | 対応 (`GET /containers/{id}/archive` + 自前 ustar パーサ。source は絶対パス必須・ファイル専用) |
@@ -107,7 +109,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `WaitFor::message_on_stdout(msg)` / `message_on_stderr(msg)` / `message_on_either_std(msg)` / `log(LogWaitStrategy)` | 対応 | 対応 (demux 済みログストリームに対して待機) |
 | `WaitFor::http(HttpWaitStrategy)` (feature = `http_wait_plain`) | 対応 | 対応 (host port 解決可) |
 | `WaitFor::exit(ExitWaitStrategy)` | 対応 | 未実装エラー |
-| `WaitFor::healthcheck()` | 未実装 (XPC 制約: Apple container は HEALTHCHECK を実行しない) | 未実装 |
+| `WaitFor::healthcheck()` | 未実装 (XPC 制約: Apple container は HEALTHCHECK を実行しない) | 対応 (inspect ポーリング。`starting` / `healthy` / `unhealthy` / Health 不在) |
 | `WaitFor::seconds(n)` / `millis(n)` / `millis_in_env_var(name)` | 対応 | 対応 |
 
 待機戦略型:
@@ -115,13 +117,13 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 - `LogWaitStrategy`: `stdout(msg)`, `stderr(msg)`, `stdout_or_stderr(msg)`, `new(source, msg)`, `with_times(n)`
 - `HttpWaitStrategy`: `new(path)`, `with_port`, `with_method` (文字列), `with_header`, `with_body`, `with_basic_auth`, `with_bearer_auth`, `with_poll_interval`, `with_expected_status_code`, `with_response_matcher(Fn(&HttpResponse) -> bool)`。reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` で実装。TLS / `with_client` / `with_response_matcher_async` は無い
 - `ExitWaitStrategy`: `new()`, `with_poll_interval`, `with_exit_code`
-- `HealthWaitStrategy`: 型はあるが両 OS とも常に `HealthCheckNotConfigured` エラー
+- `HealthWaitStrategy`: Linux は inspect ポーリングで判定。macOS は常に `HealthCheckNotConfigured` エラー (XPC 制約)
 
 ### `ExecCommand` / `ExecResult` / `CmdWaitFor`
 
-- `ExecCommand::new(["cmd", "arg"])`, `with_container_ready_conditions(Vec<WaitFor>)`, `with_cmd_ready_condition(CmdWaitFor)`, `with_env_vars(iter)` (macOS のみ。コンテナ env にマージされ同名は ExecCommand 側優先。Linux は非空だと明示エラー)
-- `ExecResult`: `exit_code()`, `stdout()`, `stderr()`, `stdout_to_vec()`, `stderr_to_vec()`。exec 完了時点の全出力を保持したバッファ上のリーダーを返す (消費型)
-- `CmdWaitFor`: `message_on_stdout(msg)` / `message_on_stderr(msg)` (macOS のみ), `exit()`, `exit_code(n)`, `seconds(n)`, `millis(n)`
+- `ExecCommand::new(["cmd", "arg"])`, `with_container_ready_conditions(Vec<WaitFor>)`, `with_cmd_ready_condition(CmdWaitFor)`, `with_env_vars(iter)` (macOS: コンテナ env にマージされ同名は ExecCommand 側優先。Linux: 非空だと明示エラー)
+- `ExecResult`: `exit_code()`, `stdout()`, `stderr()`, `stdout_to_vec()`, `stderr_to_vec()`。exec 完了時点の全出力を保持したバッファ上のリーダーを返す (消費型)。Linux も multiplexed stream demux で stdout / stderr を返す
+- `CmdWaitFor`: `message_on_stdout(msg)` / `message_on_stderr(msg)` (両 OS とも取得済みバッファへの部分一致)、`exit()`, `exit_code(n)`, `seconds(n)`, `millis(n)`
 
 ### `Mount` / ポート
 
@@ -202,7 +204,7 @@ let container = GenericImage::new("alpine", "latest")
 
 let mut result = container.exec(ExecCommand::new(["uname", "-m"])).await?;
 assert_eq!(result.exit_code().await?, Some(0));
-let stdout = result.stdout_to_vec().await?; // Linux では常に空
+let stdout = result.stdout_to_vec().await?;
 ```
 
 ### ファイルコピー
