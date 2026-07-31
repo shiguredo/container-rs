@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-08-01
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-exit-wait-strategy
 - Polished: 2026-07-29
@@ -41,3 +41,12 @@ Linux (Docker Engine API) バックエンドで `ExitWaitStrategy` (`WaitFor::Ex
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `exit_strategy.rs` の `#[cfg(target_os = "linux")]` 未実装エラーブロックを削除し、macOS の `#[cfg(target_os = "macos")]` ループガードを解除して共通ループに統合した
+- `match client` に `#[cfg(target_os = "linux")] Client::Linux(c) => c.container_state(...)` アームを追加した
+- 統合テスト 3 件を `tests/container_linux.rs` に追加した（exit code 照合成功・UnexpectedExitCode エラー・単純終了待機）
+- `docs/TESTCONTAINERS.md` と `skills/shiguredo-container/SKILL.md` の ExitWaitStrategy 関連箇所を「対応」に更新した
+- `src/core/wait/mod.rs` のモジュールドキュメントを実態に合わせて更新した
+- `CHANGES.md` に `[ADD]` エントリを追加した
