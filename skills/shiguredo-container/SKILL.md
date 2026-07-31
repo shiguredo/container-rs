@@ -96,7 +96,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `stdout(follow)`, `stderr(follow)`, `stdout_to_vec()`, `stderr_to_vec()` | 対応 (`follow=true` は追記ポーリング) | 対応 (demux 済み共有バッファ。ストリームあたり 8 MiB・drop-oldest。`follow=false` は呼び出しごとに新規 HTTP セッションで全ログ取得) |
 | `Drop` | 対応 (削除。Keep ゲートあり) | 対応 |
 
-`pause` / `unpause` は XPC に route が無いためシグネチャごと存在しない。
+`pause` / `unpause` は macOS (XPC) には route が無いためシグネチャごと存在しない。Linux (Docker) では `#[cfg(target_os = "linux")]` で対応済み。
 
 `stop_with_timeout` の意味: macOS では `Some(0)` = 即時 SIGKILL、`None` = 30 秒 SIGTERM。Linux では `Some(t>=0)` = `t` 秒、`None`・負値 = 30 秒。
 
