@@ -25,6 +25,8 @@
   - @voluntas
 - [ADD] Linux で `Healthcheck` / `ImageExt::with_health_check` / `HealthWaitStrategy` の Linux 分岐に対応する
   - @voluntas
+- [ADD] Linux で `ExitWaitStrategy` (`WaitFor::Exit`) を実装する
+  - @voluntas
 - [ADD] `with_copy_to` で親ディレクトリ自動作成とディレクトリ一括投入に対応する
   - @voluntas
 - [ADD] Linux で HTTP ログストリームを demux して `stdout` / `stderr` / `LogConsumer` / `WaitFor::Log` を有効化する

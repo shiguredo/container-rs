@@ -54,7 +54,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `ports` / `exec` (exit code + stdout / stderr + Env) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
 - `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入する (親ディレクトリ自動作成・ディレクトリ一括投入対応。配下 regular file の `mode` / `uid` / `gid` は反映。中間 directory の mode は `0o755`。コピー後 mtime は epoch)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり。親作成は `createParents`）。起動前投入は Linux のみの公開契約
-- `ExitWaitStrategy` は未実装エラーのまま
+- `ExitWaitStrategy` は macOS / Linux とも exit_code_hint + container_state ポーリングで対応
 - `ImageExt` の一部 (`with_network` / `with_platform` / `with_cap_add` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` 等) は start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
 
 README の Linux 注意書きと合わせて読むこと。残ギャップは exec の Env・ネットワーク詳細などである。
@@ -87,7 +87,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップは ex
 件数の厳密集計より、現状の読み方を優先する。
 
 - **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code + stdout / stderr)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
-- **未配線・未実装が残るもの**: `ExitWaitStrategy`、exec の Env 本対応
+- **未配線・未実装が残るもの**: exec の Env 本対応
 - **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_cap_*` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
 
 Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差を同時に見せるためのものである。
@@ -301,14 +301,14 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `WaitFor::Duration { length }` | あり | 対応 | 対応 |  |
 | `WaitFor::Healthcheck(HealthWaitStrategy)` | あり | 未実装 (XPC 制約) | 対応 | 動作は 10.2 参照 / Linux は Healthy/Unhealthy/Starting/None (running 後) の 4 分岐 |
 | `WaitFor::Http(Box<HttpWaitStrategy>)` (feature) | あり | 対応 | 部分対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決は可能。Log 待機との併用は未対応 |
-| `WaitFor::Exit(ExitWaitStrategy)` | あり | 対応 | 未実装 | Docker: Linux では即時未実装エラー |
+| `WaitFor::Exit(ExitWaitStrategy)` | あり | 対応 | 対応 |  |
 | `pub fn message_on_stdout(msg)` | あり | 対応 | 対応 | Docker: demux が stdout を分離するため本当に stdout のみに反応 |
 | `pub fn message_on_stderr(msg)` | あり | 対応 | 対応 | macOS: stderr FD は VM の bootlog を指すためアプリの stderr メッセージは成立せず、`startup_timeout` でタイムアウトする。代わりに `message_on_stdout` / `message_on_either_std` を使うこと (アプリの stderr は stdout 側ログに混流する) / Docker: demux が stderr を分離するため本当に stderr のみに反応 |
 | `pub fn message_on_either_std(msg)` | あり | 対応 | 対応 | Docker: stdout / stderr 両ストリームを並行照合 |
 | `pub fn log(strategy)` | あり | 対応 | 対応 | Docker: logs ストリームで成立 |
 | `pub fn healthcheck() -> WaitFor` | あり | 未実装 (XPC 制約) | 対応 | Docker: Linux は inspect ポーリング、macOS は with_health_check で即エラー |
 | `pub fn http(strategy)` (feature) | あり | 対応 | 部分対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決は可能 |
-| `pub fn exit(strategy)` | あり | 対応 | 未実装 | Docker: ExitWaitStrategy 自体が Linux 未実装のため、生成しても待機時にエラー |
+| `pub fn exit(strategy)` | あり | 対応 | 対応 |  |
 | `pub fn seconds(len)` | あり | 対応 | 対応 |  |
 | `pub fn millis(len)` | あり | 対応 | 対応 |  |
 | `pub fn millis_in_env_var(name)` | あり | 対応 | 対応 |  |
@@ -367,9 +367,9 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 |:--|:--|:--|:--|:--|
 | `pub fn new()` | あり | 対応 | 対応 |  |
 | `pub fn with_poll_interval(mut, d)` | あり | 対応 | 対応 |  |
-| `pub fn with_exit_code(mut, c)` | あり | 対応 | 対応 | Docker: コンストラクタは動作するが、wait_until_ready が未実装のため設定しても効果なし |
+| `pub fn with_exit_code(mut, c)` | あり | 対応 | 対応 |  |
 | `impl Default` | あり | 対応 | 対応 |  |
-| `wait_until_ready` impl | あり | 対応 | 未実装 | macOS: バックグラウンド `containerWait` の観測値で exit code を判定。停止の検出は `containerList` のポーリング / Docker: Linux では即時未実装エラー |
+| `wait_until_ready` impl | あり | 対応 | 対応 | バックグラウンド `containerWait` の観測値で exit code を判定。停止の検出は container_state のポーリング |
 
 ### 10.5 `WaitStrategy` (`pub(crate)` trait) — 廃止済み
 

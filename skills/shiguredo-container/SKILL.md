@@ -108,7 +108,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `WaitFor::Nothing` (既定) | 対応 | 対応 |
 | `WaitFor::message_on_stdout(msg)` / `message_on_stderr(msg)` / `message_on_either_std(msg)` / `log(LogWaitStrategy)` | 対応 | 対応 (demux 済みログストリームに対して待機) |
 | `WaitFor::http(HttpWaitStrategy)` (feature = `http_wait_plain`) | 対応 | 対応 (host port 解決可) |
-| `WaitFor::exit(ExitWaitStrategy)` | 対応 | 未実装エラー |
+| `WaitFor::exit(ExitWaitStrategy)` | 対応 | 対応 |
 | `WaitFor::healthcheck()` | 未実装 (XPC 制約: Apple container は HEALTHCHECK を実行しない) | 対応 (inspect ポーリング。`starting` / `healthy` / `unhealthy` / Health 不在) |
 | `WaitFor::seconds(n)` / `millis(n)` / `millis_in_env_var(name)` | 対応 | 対応 |
 
