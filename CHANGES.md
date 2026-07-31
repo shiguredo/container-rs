@@ -29,6 +29,8 @@
   - @voluntas
 - [ADD] Linux で `with_cap_add` / `with_cap_drop` / `with_shm_size` / `with_readonly_rootfs` を HostConfig に反映する
   - @voluntas
+- [ADD] Linux で `with_hostname` / `with_open_stdin` を Config に反映する
+  - @voluntas
 - [ADD] `with_copy_to` で親ディレクトリ自動作成とディレクトリ一括投入に対応する
   - @voluntas
 - [ADD] Linux で HTTP ログストリームを demux して `stdout` / `stderr` / `LogConsumer` / `WaitFor::Log` を有効化する

@@ -79,6 +79,8 @@ pub(crate) struct ContainerConfig {
     pub cap_drop: Vec<String>,
     pub shm_size: Option<u64>,
     pub readonly_rootfs: bool,
+    pub hostname: Option<String>,
+    pub open_stdin: Option<bool>,
 }
 
 /// macOS / Linux のコンテナクライアントを統合した内部型。

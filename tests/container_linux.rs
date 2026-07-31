@@ -465,22 +465,6 @@ async fn alpine_exec_wait_for_stderr_message() {
     container.rm().await.expect("rm に失敗した");
 }
 
-/// Linux で未配線の ImageExt は start 時に明示エラーになること。
-#[tokio::test]
-async fn unsupported_image_ext_fails_fast_on_start() {
-    let err = GenericImage::new("alpine", "latest")
-        .with_cmd(["true"])
-        .with_hostname("example")
-        .start()
-        .await
-        .expect_err("with_hostname は Linux で未実装であること");
-    assert!(
-        err.to_string()
-            .contains("with_hostname() is not implemented on Linux"),
-        "明示メッセージであること: {err}"
-    );
-}
-
 /// `with_exposed_port` だけでホストポートが割当されること。
 ///
 /// create 時は host_port 0 を Docker に渡し、起動後に非 0 の割当結果を回収する。

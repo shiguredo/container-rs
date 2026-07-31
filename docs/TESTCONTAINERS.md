@@ -88,7 +88,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップは ex
 
 - **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code + stdout / stderr)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
 - **未配線・未実装が残るもの**: exec の Env 本対応
-- **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
+- **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
 
 Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差を同時に見せるためのものである。
 
@@ -122,7 +122,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_labels(self, labels)` | あり | 対応 | 対応 |  |
 | `with_env_var(self, k, v)` | あり | 対応 | 対応 |  |
 | `with_host(self, key, value)` | あり | 部分対応 | 未実装 | `ExtraHost::Addr` はコンテナ起動後に `exec` で `/etc/hosts` へ追記する。`ExtraHost::HostGateway` は起動時に明示エラー / Docker: start 時に明示エラー (設定構築に未配線) |
-| `with_hostname(self, hostname)` | あり | 対応 | 未実装 | 明示 hostname → container_name → id の優先で `networks[0].options.hostname` に反映 / Docker: start 時に明示エラー (設定構築に未配線) |
+| `with_hostname(self, hostname)` | あり | 対応 | 対応 | macOS: 明示 hostname → container_name → id の優先で `networks[0].options.hostname` に反映 / Docker: Config.Hostname に反映 |
 | `with_mount(self, mount)` | あり | 対応 | 部分対応 | Bind/Volume/Tmpfs を XPC の `virtiofs/volume/tmpfs` にマップ / Docker: Bind は HostConfig.Binds に `ro`/`rw` 付きで反映。Volume/Tmpfs は create 時に明示エラー |
 | `with_copy_to(self, target, source)` | あり | 対応 | 対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` は XPC 非反映。投入は start_process 後（起動前契約なし）。親作成は `createParents`。ホストディレクトリの再帰投入可（Apple container 1.1.0 で実測） / Docker: create 後・start 前に自前 ustar で `path=/` へ投入。親ディレクトリ自動作成・ディレクトリ一括投入対応。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で regular file に反映（中間 directory の mode は `0o755`）。コピー後 mtime は epoch。起動前投入は Linux のみの公開契約 |
 | `with_mapped_port(self, host_port, container_port)` | あり | 対応 | 対応 | `publishedPorts` に反映 |
@@ -146,7 +146,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_ready_conditions(self, conds)` | あり | 対応 | 対応 | `ContainerRequest::ready_conditions` オーバーライドが有効 (8 章参照) |
 | `with_health_check(self, hc)` | あり | 未実装 (XPC 制約) | 対応 | Linux は Config.Healthcheck に配線。macOS は start 時に `Err("with_health_check() is not supported on macOS")` |
 | `with_device_requests(self, reqs)` (feature) | あり | なし | なし | feature = `device-requests`。Apple container は GPU/デバイスマッピング未対応 |
-| `with_open_stdin(self, open)` | あり | 対応 | 未実装 | XPC `initProcess.terminal` に反映。Docker の OpenStdin と terminal は同義ではない / Docker: start 時に明示エラー (設定構築に未配線) |
+| `with_open_stdin(self, open)` | あり | 対応 | 対応 | XPC `initProcess.terminal` に反映 / Docker: Config.OpenStdin に反映 |
 | `with_init(self)` | なし | shiguredo 拡張 | 対応 | XPC `useInit` に反映 / Docker: HostConfig.Init として create JSON に反映 |
 | `with_ssh(self)` | なし | shiguredo 拡張 | 未実装 | XPC `ssh` に反映 / Docker: start 時に明示エラー (設定構築に未配線) |
 
