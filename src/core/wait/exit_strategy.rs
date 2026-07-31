@@ -44,15 +44,6 @@ impl ExitWaitStrategy {
         client: &Client,
         container: &ContainerAsync<I>,
     ) -> Result<()> {
-        #[cfg(target_os = "linux")]
-        {
-            let _ = (client, container);
-            Err(crate::core::error::Error::other(
-                "ExitWaitStrategy is not implemented on Linux",
-            ))
-        }
-
-        #[cfg(target_os = "macos")]
         loop {
             // containerList (container_state) は exit code を返さないため、
             // バックグラウンドの containerWait が観測した値で判定する。
@@ -70,7 +61,10 @@ impl ExitWaitStrategy {
             }
 
             let state = match client {
+                #[cfg(target_os = "macos")]
                 Client::MacOs(c) => c.container_state(container.id()).await?,
+                #[cfg(target_os = "linux")]
+                Client::Linux(c) => c.container_state(container.id()).await?,
             };
 
             // exit code の検証が不要なら停止の観測だけで完了。検証が必要な場合は

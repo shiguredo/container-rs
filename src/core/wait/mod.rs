@@ -5,8 +5,8 @@
 //! `Healthcheck` は Linux では inspect ポーリング (`starting` / `healthy` / `unhealthy` /
 //! `Health` 不在 = running 後は `HealthCheckNotConfigured`)。macOS は現行通り常に
 //! `HealthCheckNotConfigured` を返す（実装および docs 10.2）。
-//! `Exit` は macOS では exit_code_hint（containerWait）と container_state（list）で待ち、
-//! Linux では未実装エラーを返す（実装を正とする。docs 10.4 の Docker「対応」とは食い違う）。
+//! `Exit` は exit_code_hint（containerWait）と container_state（inspect / list）で待つ。
+//! macOS / Linux とも同一ロジック（ポーリング間隔・startup_timeout 打ち切り）。
 
 pub(crate) mod cmd_wait;
 pub(crate) mod exit_strategy;

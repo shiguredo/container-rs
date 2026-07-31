@@ -1301,3 +1301,71 @@ async fn healthcheck_startup_timeout() {
         other => panic!("StartupTimeout 以外のエラー: {other}"),
     }
 }
+
+/// Linux で WaitFor::Exit + with_exit_code(0) が正常終了コンテナで成功すること。
+#[tokio::test]
+async fn exit_wait_strategy_expected_code_zero() {
+    use shiguredo_container::core::wait::ExitWaitStrategy;
+
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["true"])
+        .with_ready_conditions(vec![WaitFor::exit(
+            ExitWaitStrategy::new().with_exit_code(0),
+        )])
+        .start()
+        .await
+        .expect("exit 0 のコンテナが WaitFor::Exit で起動できること");
+
+    assert!(
+        !container
+            .is_running()
+            .await
+            .expect("is_running の取得に失敗した"),
+        "終了後は running でないこと"
+    );
+}
+
+/// Linux で WaitFor::Exit + with_exit_code(0) が exit 3 のコンテナで UnexpectedExitCode エラーになること。
+#[tokio::test]
+async fn exit_wait_strategy_unexpected_exit_code() {
+    use shiguredo_container::core::error::WaitContainerError;
+    use shiguredo_container::core::wait::ExitWaitStrategy;
+
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["sh", "-c", "exit 3"])
+        .with_ready_conditions(vec![WaitFor::exit(
+            ExitWaitStrategy::new().with_exit_code(0),
+        )])
+        .start()
+        .await
+        .expect_err("exit 3 で with_exit_code(0) はエラーになること");
+
+    match err {
+        Error::WaitContainer(WaitContainerError::UnexpectedExitCode {
+            expected: 0,
+            actual: Some(3),
+        }) => {}
+        other => panic!("UnexpectedExitCode 以外のエラー: {other}"),
+    }
+}
+
+/// Linux で WaitFor::Exit (exit code 指定なし) がコンテナ終了まで待機すること。
+#[tokio::test]
+async fn exit_wait_strategy_no_code_check() {
+    use shiguredo_container::core::wait::ExitWaitStrategy;
+
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["sh", "-c", "sleep 1; exit 7"])
+        .with_ready_conditions(vec![WaitFor::exit(ExitWaitStrategy::new())])
+        .start()
+        .await
+        .expect("exit code 指定なしの WaitFor::Exit で起動できること");
+
+    assert!(
+        !container
+            .is_running()
+            .await
+            .expect("is_running の取得に失敗した"),
+        "終了後は running でないこと"
+    );
+}
