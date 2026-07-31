@@ -249,9 +249,7 @@ impl<I: Image> ContainerAsync<I> {
             #[cfg(target_os = "macos")]
             Client::MacOs(c) => c.bridge_ip_address(&self.id).await,
             #[cfg(target_os = "linux")]
-            Client::Linux(_) => Err(Error::other(
-                "get_bridge_ip_address is not supported on Linux",
-            )),
+            Client::Linux(c) => c.bridge_ip_address(&self.id).await,
         }
     }
 

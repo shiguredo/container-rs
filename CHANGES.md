@@ -33,6 +33,8 @@
   - @voluntas
 - [ADD] Linux で exec の `with_env_vars` を実装する
   - @voluntas
+- [ADD] Linux で `get_bridge_ip_address` を実装する
+  - @voluntas
 - [FIX] Linux で `with_exposed_port` / `Image::expose_ports` がホストポート公開に反映されないのを修正する
   - @voluntas
 - [FIX] manifest 選択フォールバックで attestation manifest (`architecture: "unknown"`) を除外する

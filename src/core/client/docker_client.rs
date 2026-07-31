@@ -345,6 +345,60 @@ impl DockerClient {
         Ok(snapshot.ports)
     }
 
+    /// コンテナのブリッジネットワーク IP アドレスを取得する。
+    ///
+    /// inspect (`GET /containers/{id}/json`) の `NetworkSettings.Networks` から
+    /// 先頭ネットワークの `IPAddress` を取得する。ネットワーク名のハードコードは
+    /// しない (カスタムネットワーク対応のため)。Docker の `Networks` は JSON オブジェクト
+    /// であり、「先頭」はキーのアルファベット順で決まる (macOS の配列順とは異なる)。
+    /// `IPAddress` が空文字列の場合 (host ネットワークモード等) や `Networks` が空・欠落
+    /// の場合はエラーを返す。
+    pub(crate) async fn bridge_ip_address(&self, id: &str) -> Result<std::net::IpAddr> {
+        let path = format!("/containers/{}/json", percent_encode_path_segment(id));
+        let response = self.request("GET", &path, None).await?;
+        if response.status_code() == 404 {
+            return Err(ClientError::ContainerNotFound(id.to_string()).into());
+        }
+        if response.status_code() >= 400 {
+            return Err(ClientError::Other(format!(
+                "failed to inspect container: {}",
+                response.status_code()
+            ))
+            .into());
+        }
+        let body = response
+            .body_bytes()
+            .ok_or_else(|| ClientError::Other("empty inspect body".into()))?;
+        let text = std::str::from_utf8(body).map_err(|e| ClientError::Json(e.to_string()))?;
+        let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
+
+        // NetworkSettings.Networks の先頭エントリの IPAddress を取得する
+        let ip_str = parsed
+            .value()
+            .to_member("NetworkSettings")
+            .ok()
+            .and_then(|m| m.optional())
+            .and_then(|ns| ns.to_member("Networks").ok())
+            .and_then(|m| m.optional())
+            .and_then(|networks| networks.to_object().ok())
+            .and_then(|mut obj| obj.next())
+            .and_then(|(_, network)| {
+                network
+                    .to_member("IPAddress")
+                    .ok()
+                    .and_then(|m| m.optional())
+                    .and_then(|v| String::try_from(v).ok())
+            })
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                ClientError::Other("no network IP address found for container".into())
+            })?;
+
+        ip_str
+            .parse::<std::net::IpAddr>()
+            .map_err(|e| ClientError::Other(format!("invalid IP address '{ip_str}': {e}")).into())
+    }
+
     /// コンテナの状態を取得する。
     pub(crate) async fn container_state(&self, id: &str) -> Result<ContainerSnapshot> {
         let path = format!("/containers/{}/json", percent_encode_path_segment(id));

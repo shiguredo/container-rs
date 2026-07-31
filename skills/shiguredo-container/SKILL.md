@@ -10,7 +10,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 ## 特徴
 
 - **macOS がメイン対象**: Apple container の XPC API を自前実装で直接叩く。Docker Desktop 不要
-- **Linux 対応**: Docker Engine API (`/var/run/docker.sock`) を利用。ライフサイクル (start / exec / stop / rm / Drop)、ログ関連 (stdout / stderr / ログ待機 / LogConsumer)、ホストポート公開、ファイルコピー (`copy_file_from` / `with_copy_to`)、ヘルスチェック (`with_health_check` / `WaitFor::healthcheck`)、exec の stdout / stderr 取得が動く。bridge IP 取得・network 系設定などは未対応
+- **Linux 対応**: Docker Engine API (`/var/run/docker.sock`) を利用。ライフサイクル (start / exec / stop / rm / Drop)、ログ関連 (stdout / stderr / ログ待機 / LogConsumer)、ホストポート公開、ファイルコピー (`copy_file_from` / `with_copy_to`)、ヘルスチェック (`with_health_check` / `WaitFor::healthcheck`)、exec の stdout / stderr 取得、bridge IP 取得が動く。network 系設定などは未対応
 - **testcontainers-rs 互換 API**: 学習コスト削減のため公開 API を testcontainers-rs 0.27 に寄せている (完全互換は目指さない)
 - **依存最小**: `libc` / `nojson` / `shiguredo_http11` / `tokio` / `tracing` (+ optional `base64ct`)。bollard / reqwest / bytes 等は使わない
 - **黙って無視しない**: 未対応の設定はリクエストに保存だけして無視するのではなく、start / create 時に明示エラーを返す
@@ -85,7 +85,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 |:--|:--|:--|
 | `id()`, `image()` | 対応 | 対応 |
 | `ports()`, `get_host_port_ipv4(port)`, `get_host_port_ipv6(port)` | 対応 | 対応 |
-| `get_bridge_ip_address()` | 対応 (`networks[0].ipv4Address` から抽出) | 未実装エラー |
+| `get_bridge_ip_address()` | 対応 (`networks[0].ipv4Address` から抽出) | 対応 (inspect の `NetworkSettings.Networks` 先頭 `IPAddress`) |
 | `get_host()` | `localhost` 固定 | `localhost` 固定 |
 | `exec(ExecCommand)` | 対応 (stdout / stderr / env 付き) | 対応 (stdout / stderr / env 付き) |
 | `start()` (再起動), `stop()`, `stop_with_timeout(Option<i32>)`, `is_running()`, `rm()`, `rm_blocking()` | 対応 | 対応 |
@@ -265,7 +265,7 @@ let container = GenericImage::new("nginx", "latest")
 
 - **macOS の Local Network Privacy (LNP)**: `HttpWaitStrategy` や published port への接続は macOS 15+ の LNP にブロックされ得る。LNP は TCC / MDM で事前付与できない。CI ではコンテナ IP 直結テストを基本とし、published port 依存テストは許可済み環境でのみ実行する
 - **blocking の再入 deadlock**: `LogConsumer` コールバック内や既存の tokio ランタイムコンテキストから `SyncRunner::start` 等の同期 API を呼ぶと共有 Runtime への再入で deadlock する。ライブラリは再入を検出して即エラーにするが、コールバック内での同期 API 呼び出しは避けること。共有 Runtime ワーカースレッド上で最後の同期 `Container` を drop するとハングし得る既知の限界もある
-- **Linux の残ギャップ**: `get_bridge_ip_address`、`exit_code`、`ExitWaitStrategy`、`with_platform` / `with_network` / `with_hostname` / `with_host` / `with_cap_add` / `with_cap_drop` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_ssh`、Volume / Tmpfs mount が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
+- **Linux の残ギャップ**: `exit_code`、`ExitWaitStrategy`、`with_platform` / `with_network` / `with_hostname` / `with_host` / `with_cap_add` / `with_cap_drop` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_ssh`、Volume / Tmpfs mount が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
 - **イメージビルド未対応**: `GenericBuildableImage` / `BuildableImage` 等の build 系 API は無い
 - **reuse 未対応**: `reusable-containers` 相当の feature・型は無い
 - **本家との型不整合**: `CopyFromContainerError::UnsupportedEntry` は `&'static str` (本家 `tokio_tar::EntryType`)、`WaitLogError::EndOfStream` は `Vec<Vec<u8>>` (本家 `Vec<Bytes>`)。いずれも依存最小方針による意図的差分
