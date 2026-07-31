@@ -112,15 +112,7 @@ where
                 &image_config,
             )?;
             if let Err(e) = client.create_container(&cfg, kernel).await {
-                // 作成失敗時はロールバックを試みる。
-                // Keep 指定時は構築前ロールバックでも削除しない (失敗したコンテナを残して調査する)。
-                if matches!(
-                    crate::core::env::Config.command(),
-                    crate::core::env::Command::Remove
-                ) && let Err(rm_err) = client.remove(&id, true).await
-                {
-                    tracing::warn!("failed to remove container {id} during rollback: {rm_err}");
-                }
+                rollback_remove(&id, client.remove(&id, true)).await;
                 return Err(e);
             }
 
@@ -137,29 +129,13 @@ where
 
             // containerBootstrap
             if let Err(e) = client.bootstrap_container(&id).await {
-                // ブートストラップ失敗時もロールバック。
-                // Keep 指定時は構築前ロールバックでも削除しない (失敗したコンテナを残して調査する)。
-                if matches!(
-                    crate::core::env::Config.command(),
-                    crate::core::env::Command::Remove
-                ) && let Err(rm_err) = client.remove(&id, true).await
-                {
-                    tracing::warn!("failed to remove container {id} during rollback: {rm_err}");
-                }
+                rollback_remove(&id, client.remove(&id, true)).await;
                 return Err(e);
             }
 
             // containerStartProcess
             if let Err(e) = client.start_process(&id).await {
-                // 初期プロセス起動失敗時もロールバック。
-                // Keep 指定時は構築前ロールバックでも削除しない (失敗したコンテナを残して調査する)。
-                if matches!(
-                    crate::core::env::Config.command(),
-                    crate::core::env::Command::Remove
-                ) && let Err(rm_err) = client.remove(&id, true).await
-                {
-                    tracing::warn!("failed to remove container {id} during rollback: {rm_err}");
-                }
+                rollback_remove(&id, client.remove(&id, true)).await;
                 return Err(e);
             }
 
@@ -168,15 +144,7 @@ where
             // `invalidState: ... is not running` になるため、start_process 後に実行する。
             // 起動前投入は Linux のみの公開契約である（1.0.0 / 1.1.0 で実測済み）。
             if let Err(e) = copy_to_sources(&client, &id, &container_req).await {
-                // コピー失敗時もロールバック。
-                // Keep 指定時は構築前ロールバックでも削除しない (失敗したコンテナを残して調査する)。
-                if matches!(
-                    crate::core::env::Config.command(),
-                    crate::core::env::Command::Remove
-                ) && let Err(rm_err) = client.remove(&id, true).await
-                {
-                    tracing::warn!("failed to remove container {id} during rollback: {rm_err}");
-                }
+                rollback_remove(&id, client.remove(&id, true)).await;
                 return Err(e);
             }
 
@@ -223,16 +191,7 @@ where
                 },
                 Err(e) => {
                     if ready_conditions_require_log_fds(&ready_conditions) {
-                        // Keep 指定時は削除しない (失敗したコンテナを残して調査する)。
-                        if matches!(
-                            crate::core::env::Config.command(),
-                            crate::core::env::Command::Remove
-                        ) && let Err(rm_err) = client.remove(&id, true).await
-                        {
-                            tracing::warn!(
-                                "failed to remove container {id} during rollback: {rm_err}"
-                            );
-                        }
+                        rollback_remove(&id, client.remove(&id, true)).await;
                         return Err(log_fd_required_error(&e));
                     }
                     tracing::warn!("failed to get log fds: {e}");
@@ -286,29 +245,16 @@ where
             // 起動前投入契約のため、create 後・start 前に実行する。
             // 失敗時は Keep-gated 明示 rm でロールバックする (未 start)。
             if let Err(e) = copy_to_sources_linux(&client, &id, &container_req).await {
-                if matches!(
-                    crate::core::env::Config.command(),
-                    crate::core::env::Command::Remove
-                ) && let Err(rm_err) = client.remove(&id, true).await
-                {
-                    tracing::warn!("failed to remove container {id} during rollback: {rm_err}");
-                }
+                rollback_remove(&id, client.remove(&id, true)).await;
                 return Err(e);
             }
 
             // 作成・コピーに成功した後に起動。起動失敗時はロールバック。
             // 失敗時のロールバックは spawn の投げっぱなしにせず await する。
             // 呼び出し元がすぐ終了 (テストプロセス等) しても削除が完了することを保証する。
-            // Keep 指定時は構築前ロールバックでも削除しない (失敗したコンテナを残して調査する)。
             // copy 済みでも個別巻き戻しはせず、コンテナ単位の明示 rm のみ行う。
             if let Err(e) = client.start_container(&id).await {
-                if matches!(
-                    crate::core::env::Config.command(),
-                    crate::core::env::Command::Remove
-                ) && let Err(rm_err) = client.remove(&id, true).await
-                {
-                    tracing::warn!("failed to remove container {id} during rollback: {rm_err}");
-                }
+                rollback_remove(&id, client.remove(&id, true)).await;
                 return Err(e);
             }
 
@@ -558,6 +504,20 @@ fn log_fd_required_error(cause: &crate::Error) -> crate::Error {
     ))
 }
 
+/// Keep ゲート付きロールバック。Remove コマンド時のみ force 削除を試みる。
+/// 削除失敗時は warn ログを出し、呼び出し元の元エラーを隠蔽しない。
+async fn rollback_remove(id: &str, remove_future: impl std::future::Future<Output = Result<()>>) {
+    if !matches!(
+        crate::core::env::Config.command(),
+        crate::core::env::Command::Remove
+    ) {
+        return;
+    }
+    if let Err(rm_err) = remove_future.await {
+        tracing::warn!("failed to remove container {id} during rollback: {rm_err}");
+    }
+}
+
 /// Linux でログストリームの起動が必須か。
 ///
 /// `WaitFor::Log` を使うか `with_log_consumer` が登録されている場合は、起動失敗を
@@ -615,13 +575,7 @@ async fn start_linux_log_stream(
         }
         Err(e) => {
             if log_required {
-                if matches!(
-                    crate::core::env::Config.command(),
-                    crate::core::env::Command::Remove
-                ) && let Err(rm_err) = client.remove(id, true).await
-                {
-                    tracing::warn!("failed to remove container {id} during rollback: {rm_err}");
-                }
+                rollback_remove(id, client.remove(id, true)).await;
                 return Err(e);
             }
             tracing::warn!("failed to start log stream; logs will be empty: {e}");

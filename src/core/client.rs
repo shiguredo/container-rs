@@ -3,6 +3,7 @@
 //! macOS では Apple Container XPC、Ubuntu では Docker Engine API を使う。
 //! このモジュールは OS ごとのクライアントを統合し、呼び出し側は特定のランタイムを意識しない。
 
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
@@ -80,7 +81,7 @@ pub(crate) struct ContainerConfig {
 #[derive(Clone)]
 pub(crate) enum Client {
     #[cfg(target_os = "macos")]
-    MacOs(Arc<XpcClient>),
+    MacOs(XpcClient),
     #[cfg(target_os = "linux")]
     Linux(Arc<DockerClient>),
 }
@@ -93,7 +94,7 @@ impl Client {
     pub fn detect() -> Result<Self> {
         #[cfg(target_os = "macos")]
         {
-            Ok(Self::MacOs(Arc::new(XpcClient)))
+            Ok(Self::MacOs(XpcClient))
         }
         #[cfg(target_os = "linux")]
         {

@@ -36,13 +36,13 @@ fn http11_err(e: impl std::fmt::Display) -> crate::core::error::Error {
 
 /// Docker Engine API クライアント。
 #[derive(Debug, Clone)]
-pub struct DockerClient {
+pub(crate) struct DockerClient {
     socket_path: String,
 }
 
 impl DockerClient {
     /// Unix ドメインソケット経由で Docker API に接続するクライアントを返す。
-    pub fn detect() -> Result<Self> {
+    pub(crate) fn detect() -> Result<Self> {
         Ok(Self {
             socket_path: DEFAULT_DOCKER_SOCKET.to_string(),
         })
