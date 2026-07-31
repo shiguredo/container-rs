@@ -63,8 +63,9 @@ pub struct ContainerAsync<I: Image> {
     image: ContainerRequest<I>,
     client: Client,
     dropped: bool,
-    /// macOS (XPC) で init プロセスの exit code を保持する。
-    /// `containerWait` を別スレッドで待ち、終了時に値が入る。
+    /// init プロセスの exit code を保持する。
+    /// バックグラウンド wait スレッドが `containerWait` (macOS) /
+    /// `POST /containers/{id}/wait` (Linux) を待ち、終了時に値が入る。
     /// 世代番号で再 start 後の旧スレッド書き込みを破棄する。
     wait_state: Arc<std::sync::Mutex<WaitState>>,
     /// ログ取得元。再 start 時に差し替えるため Mutex で保持する。
@@ -81,8 +82,6 @@ pub struct ContainerAsync<I: Image> {
 #[derive(Debug, Default)]
 pub(crate) struct WaitState {
     /// 再 start のたびに進む世代。旧スレッドの書き込み判定に使う。
-    /// Linux では再 start / wait スレッドが未接続のため lib 本体からは未使用 (単体テストでは使う)。
-    #[cfg_attr(all(not(target_os = "macos"), not(test)), expect(dead_code))]
     generation: u64,
     exit_code: Option<i64>,
 }
@@ -90,7 +89,6 @@ pub(crate) struct WaitState {
 impl WaitState {
     /// 世代が一致する場合のみ exit_code を記録する。
     /// 一致して書き込んだら true、旧世代で破棄したら false。
-    #[cfg_attr(all(not(target_os = "macos"), not(test)), expect(dead_code))]
     pub(crate) fn store_if_current(&mut self, generation: u64, code: i64) -> bool {
         if self.generation == generation {
             self.exit_code = Some(code);
@@ -101,7 +99,6 @@ impl WaitState {
     }
 
     /// 世代を進め、exit_code をクリアする。新しい世代番号を返す。
-    #[cfg_attr(all(not(target_os = "macos"), not(test)), expect(dead_code))]
     pub(crate) fn bump(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1);
         self.exit_code = None;
@@ -112,7 +109,6 @@ impl WaitState {
         self.exit_code
     }
 
-    #[cfg_attr(all(not(target_os = "macos"), not(test)), expect(dead_code))]
     pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
@@ -123,7 +119,7 @@ pub(crate) fn new_wait_state() -> Arc<std::sync::Mutex<WaitState>> {
     Arc::new(std::sync::Mutex::new(WaitState::default()))
 }
 
-/// init プロセスの exit code を待つ std スレッドを起動する。
+/// init プロセスの exit code を待つ std スレッドを起動する (macOS)。
 ///
 /// spawn 時点の世代を保持し、書き込み時に世代が一致する場合のみ記録する。
 #[cfg(target_os = "macos")]
@@ -134,6 +130,28 @@ pub(crate) fn spawn_exit_code_waiter(
 ) {
     std::thread::spawn(move || {
         if let Ok(code) = crate::core::client::xpc_client::XpcClient::wait_blocking(&id, &id) {
+            let mut guard = wait_state
+                .lock()
+                .expect("wait state mutex must not be poisoned while recording exit code");
+            let _ = guard.store_if_current(generation, code);
+        }
+    });
+}
+
+/// init プロセスの exit code を待つ std スレッドを起動する (Linux)。
+///
+/// `DockerClient::wait_blocking` (`POST /containers/{id}/wait?condition=not-running`) を
+/// 別スレッドで呼び、終了時に世代が一致する場合のみ exit code を記録する。
+/// wait のエラー (削除後の 404 等) は macOS と同様に無視する。
+#[cfg(target_os = "linux")]
+pub(crate) fn spawn_exit_code_waiter(
+    client: std::sync::Arc<crate::core::client::docker_client::DockerClient>,
+    id: String,
+    wait_state: Arc<std::sync::Mutex<WaitState>>,
+    generation: u64,
+) {
+    std::thread::spawn(move || {
+        if let Ok(code) = client.wait_blocking(&id) {
             let mut guard = wait_state
                 .lock()
                 .expect("wait state mutex must not be poisoned while recording exit code");
@@ -465,6 +483,9 @@ impl<I: Image> ContainerAsync<I> {
         {
             // 旧ログストリーム停止 → コンテナ再起動 → 新ログストリーム起動を一括で行う。
             self.refresh_log_streams(c).await?;
+            // 再起動成功後に wait スレッドを再武装する。refresh_log_streams より前に
+            // 再武装すると、停止中のコンテナに対して waiter が旧 exit code を即取得してしまう。
+            self.reset_wait_state_and_respawn();
         }
 
         // exec_after_start を実行する (本家の公開 start() と同じ構造)。
@@ -484,6 +505,28 @@ impl<I: Image> ContainerAsync<I> {
             .expect("wait state mutex must not be poisoned while restarting container")
             .bump();
         spawn_exit_code_waiter(self.id.clone(), self.wait_state.clone(), generation);
+    }
+
+    /// 再 start 時に exit_code をリセットし、containerWait スレッドを再武装する (Linux)。
+    ///
+    /// `refresh_log_streams` 成功後に呼ぶこと。macOS のように `refresh_log_streams` より
+    /// 前に再武装すると、停止中のコンテナに対して waiter が旧 exit code を即取得し、
+    /// 新世代として記録してしまう。
+    #[cfg(target_os = "linux")]
+    fn reset_wait_state_and_respawn(&self) {
+        let generation = self
+            .wait_state
+            .lock()
+            .expect("wait state mutex must not be poisoned while restarting container")
+            .bump();
+        if let Client::Linux(c) = &self.client {
+            spawn_exit_code_waiter(
+                c.clone(),
+                self.id.clone(),
+                self.wait_state.clone(),
+                generation,
+            );
+        }
     }
 
     /// 再 start 後にログ FD を再取得し、旧 FD を close、LogConsumer を再 spawn する (macOS)。
@@ -706,30 +749,24 @@ impl<I: Image> ContainerAsync<I> {
 
     /// バックグラウンドの `containerWait` が観測した exit code を返す (未終了なら `None`)。
     ///
-    /// # macOS
-    ///
     /// 取得経路はバックグラウンド wait がキャッシュした値だけである。
     /// バックグラウンド wait が未完了、または wait 自体が失敗した場合は、コンテナが
     /// 停止済みでも `Ok(None)` を返し得る。`container_state` からの再取得経路は無い。
-    ///
-    /// # Linux
-    ///
-    /// 未実装のためエラーを返す。
     pub async fn exit_code(&self) -> Result<Option<i64>> {
+        // バックグラウンドの containerWait が既に終了コードを取得していれば返す。
+        if let Some(code) = self
+            .wait_state
+            .lock()
+            .expect("wait state mutex must not be poisoned while reading exit code")
+            .exit_code()
+        {
+            return Ok(Some(code));
+        }
+
+        // running 中は exit code を持たない。
         match &self.client {
             #[cfg(target_os = "macos")]
             Client::MacOs(c) => {
-                // バックグラウンドの containerWait が既に終了コードを取得していれば返す。
-                if let Some(code) = self
-                    .wait_state
-                    .lock()
-                    .expect("wait state mutex must not be poisoned while reading exit code")
-                    .exit_code()
-                {
-                    return Ok(Some(code));
-                }
-
-                // running 中は exit code を持たない。
                 if c.container_state(&self.id).await?.running {
                     Ok(None)
                 } else {
@@ -740,7 +777,14 @@ impl<I: Image> ContainerAsync<I> {
                 }
             }
             #[cfg(target_os = "linux")]
-            Client::Linux(_) => Err(Error::other("exit_code() is not implemented on Linux")),
+            Client::Linux(c) => {
+                if c.container_state(&self.id).await?.running {
+                    Ok(None)
+                } else {
+                    // 停止済みだがまだバックグラウンド wait が完了していない。
+                    Ok(None)
+                }
+            }
         }
     }
 

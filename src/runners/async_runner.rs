@@ -322,12 +322,32 @@ where
             let (log_source, stored_consumers) =
                 start_linux_log_stream(&client, &id, log_consumers, log_required).await?;
 
+            // init プロセスの exit code をランタイム非管理の std スレッドで待機する。
+            // macOS と同じ設計判断: spawn_blocking を使うとランタイム drop 時にハングする。
+            // wait スレッドの起動は必ず start_container 成功後に行う。
+            // condition=not-running は停止中コンテナに対して即座に旧 exit code を返すため、
+            // created (non-running) 状態で spawn すると旧コードが新世代として記録され、
+            // exit_code_hint() が running 中に Some を返し LogWaitStrategy の EOF 判定が誤動作する。
+            let wait_state = crate::core::containers::async_container::new_wait_state();
+            {
+                let generation = wait_state
+                    .lock()
+                    .expect("wait state mutex must not be poisoned while spawning exit code waiter")
+                    .generation();
+                crate::core::containers::async_container::spawn_exit_code_waiter(
+                    client.clone(),
+                    id.clone(),
+                    wait_state.clone(),
+                    generation,
+                );
+            }
+
             // ContainerAsync を構築。
             let container = ContainerAsync::new(
                 id,
                 Client::Linux(client),
                 container_req,
-                crate::core::containers::async_container::new_wait_state(),
+                wait_state,
                 log_source,
                 stored_consumers,
             );

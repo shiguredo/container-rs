@@ -90,7 +90,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `exec(ExecCommand)` | 対応 (stdout / stderr / env 付き) | 対応 (stdout / stderr / env 付き) |
 | `start()` (再起動), `stop()`, `stop_with_timeout(Option<i32>)`, `is_running()`, `rm()`, `rm_blocking()` | 対応 | 対応 |
 | `container_state()` | **shiguredo 拡張** | 対応 |
-| `exit_code()` | 部分対応 (バックグラウンド wait の観測済みキャッシュのみ) | 未実装エラー |
+| `exit_code()` | 部分対応 (バックグラウンド wait の観測済みキャッシュのみ) | 部分対応 (バックグラウンド wait の観測済みキャッシュのみ) |
 | `copy_file_from(path, target)` | 対応 (`Vec<u8>` / `PathBuf` を target にできる) | 対応 (`GET /containers/{id}/archive` + 自前 ustar パーサ。source は絶対パス必須・ファイル専用) |
 | `stdout(follow)`, `stderr(follow)`, `stdout_to_vec()`, `stderr_to_vec()` | 対応 (`follow=true` は追記ポーリング) | 対応 (demux 済み共有バッファ。ストリームあたり 8 MiB・drop-oldest。`follow=false` は呼び出しごとに新規 HTTP セッションで全ログ取得) |
 | `Drop` | 対応 (削除。Keep ゲートあり) | 対応 |
@@ -265,7 +265,7 @@ let container = GenericImage::new("nginx", "latest")
 
 - **macOS の Local Network Privacy (LNP)**: `HttpWaitStrategy` や published port への接続は macOS 15+ の LNP にブロックされ得る。LNP は TCC / MDM で事前付与できない。CI ではコンテナ IP 直結テストを基本とし、published port 依存テストは許可済み環境でのみ実行する
 - **blocking の再入 deadlock**: `LogConsumer` コールバック内や既存の tokio ランタイムコンテキストから `SyncRunner::start` 等の同期 API を呼ぶと共有 Runtime への再入で deadlock する。ライブラリは再入を検出して即エラーにするが、コールバック内での同期 API 呼び出しは避けること。共有 Runtime ワーカースレッド上で最後の同期 `Container` を drop するとハングし得る既知の限界もある
-- **Linux の残ギャップ**: `exit_code`、`ExitWaitStrategy`、`with_platform` / `with_network` / `with_hostname` / `with_host` / `with_cap_add` / `with_cap_drop` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_ssh`、Volume / Tmpfs mount が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
+- **Linux の残ギャップ**: `ExitWaitStrategy`、`with_platform` / `with_network` / `with_hostname` / `with_host` / `with_cap_add` / `with_cap_drop` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_ssh`、Volume / Tmpfs mount が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
 - **イメージビルド未対応**: `GenericBuildableImage` / `BuildableImage` 等の build 系 API は無い
 - **reuse 未対応**: `reusable-containers` 相当の feature・型は無い
 - **本家との型不整合**: `CopyFromContainerError::UnsupportedEntry` は `&'static str` (本家 `tokio_tar::EntryType`)、`WaitLogError::EndOfStream` は `Vec<Vec<u8>>` (本家 `Vec<Bytes>`)。いずれも依存最小方針による意図的差分

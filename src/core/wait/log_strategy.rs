@@ -166,7 +166,8 @@ impl LogWaitStrategy {
             // 全ストリーム EOF。ログは追記されうるので待って読み直す。
             // プロセス終了後は DRAIN_GRACE だけ追加で読み、それでも現れなければ打ち切る。
             // 全体の時間制限は呼び出し側の startup_timeout が担う。
-            // macOS は exit_code_hint 経路、Linux は logs_terminated (demux 終端) 経路で EOF 判定する。
+            // macOS / Linux とも exit_code_hint 経路で EOF 判定する。
+            // Linux は加えて logs_terminated (demux 終端) 経路でも判定する。
             if container.exit_code_hint().is_some() || container.logs_terminated() {
                 let at = exited_at.get_or_insert_with(tokio::time::Instant::now);
                 if at.elapsed() >= DRAIN_GRACE {
