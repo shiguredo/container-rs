@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-23
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-macos-log-failure-keep-gate
 - Polished: 2026-07-29
@@ -36,13 +36,13 @@ Err(e) => {
 
 ## 完了条件
 
-- [ ] macOS の logs() 取得失敗 + Log 待機使用時のロールバックが Keep ゲート付きになる
-- [ ] `TESTCONTAINERS_COMMAND=keep` 指定時、当該経路でコンテナが削除されない
-- [ ] `docs/TESTCONTAINERS.md` の当該経路の記述が実態に合わせて更新されること（0037 が先に実施された場合は表記統一後の行を更新する）
-- [ ] `CHANGES.md` に `[FIX]` エントリが記載されること
-- [ ] 既存の macOS 統合テストが pass する
-- [ ] `cargo fmt --all -- --check` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --all-features` が pass すること
+- [x] macOS の logs() 取得失敗 + Log 待機使用時のロールバックが Keep ゲート付きになる
+- [x] `TESTCONTAINERS_COMMAND=keep` 指定時、当該経路でコンテナが削除されない
+- [x] `docs/TESTCONTAINERS.md` の当該経路の記述が実態に合わせて更新されること
+- [x] `CHANGES.md` に `[FIX]` エントリが記載されること
+- [x] 既存の macOS 統合テストが pass する
+- [x] `cargo fmt --all -- --check` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --all-features` が pass すること
 
 ## 解決方法
 
-`src/runners/async_runner.rs` の macOS 分岐の当該 `remove` を `matches!(Config.command(), Command::Remove)` でゲートする。必要に応じて `keep` 時の挙動を検証する統合テストを追加する。
+`src/runners/async_runner.rs` の macOS 分岐の `logs()` 取得失敗時ロールバックを、他のロールバック経路（create / bootstrap / start_process / copy 失敗時）と同一の `matches!(Config.command(), Command::Remove) && let Err(rm_err) = client.remove(&id, true).await` パターンに統一した。`keep` 指定時は remove せず `Err` を返す。`docs/TESTCONTAINERS.md` の start 行の記述も実態に合わせて更新した。
