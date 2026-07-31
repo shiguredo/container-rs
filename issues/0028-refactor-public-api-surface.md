@@ -2,7 +2,7 @@
 
 - Priority: High
 - Created: 2026-07-22
-- Completed:
+- Completed: 2026-08-01
 - Model: Claude Sonnet 4
 - Branch: feature/refactor-public-api-surface
 - Polished: 2026-07-29
@@ -53,3 +53,16 @@
 - [ ] `docs/TESTCONTAINERS.md` と `skills/shiguredo-container/SKILL.md` の関連箇所が実態に合わせて更新されること
 - [ ] `CHANGES.md` に `[CHANGE]` エントリが記載されること
 - [ ] `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `pub mod client` / `pub mod env` を `pub(crate) mod` に変更した (`src/core.rs`)
+- `src/core/image.rs` の `pub mod exec` / `pub mod image_ext` を `pub(crate) mod` に変更した
+- `src/core/logs.rs` の `pub mod consumer` を `pub(crate) mod` に変更し、`pub use consumer::{LogConsumer, LoggingConsumer}` を新規追加した
+- `src/core/logs/consumer.rs` の `pub mod logging_consumer` を `pub(crate) mod` に変更し、`pub use logging_consumer::LoggingConsumer` を中継として追加した
+- `src/core/wait/mod.rs` の 5 つのサブモジュールを `pub(crate) mod` に変更した
+- `MountTmpfsOptions` のフィールドを `pub(crate)` にし、`size_bytes()` / `mode()` アクセサを追加した
+- `CopyTargetOptions` のフィールドを `pub(crate)` にし、`path()` / `uid()` / `gid()` アクセサと `with_uid()` / `with_gid()` ビルダーを追加した
+- テストの直接フィールドアクセスをビルダー経由に更新した
+- `docs/TESTCONTAINERS.md` と `skills/shiguredo-container/SKILL.md` を実態に合わせて更新した
+- `CHANGES.md` に `[CHANGE]` エントリを追加した
