@@ -1,8 +1,8 @@
 //! `Image` トレイトと `ImageExt` 拡張トレイト。
 //! 元の 0.27 の `core::image` と同一シグネチャ。
 
-pub mod exec;
-pub mod image_ext;
+pub(crate) mod exec;
+pub(crate) mod image_ext;
 
 pub use exec::ExecCommand;
 pub use image_ext::ImageExt;

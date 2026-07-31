@@ -486,11 +486,15 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `pub struct CopyTargetOptions` | あり | 対応 | 対応 | フィールドは public `path` (本家 private `target`) + `mode: u32` (本家 `Option<u32>`、本家は `with_mode` で設定) + `uid` / `gid` (XPC 非反映) |
+| `pub struct CopyTargetOptions` | あり | 対応 | 対応 | フィールドは `pub(crate)` + アクセサ。`path` (本家 private `target`) + `mode: u32` (本家 `Option<u32>`) + `uid` / `gid` (XPC 非反映) |
 | `pub fn new(target)` | あり | 対応 | 対応 | デフォルト `mode` 0o644 |
 | `pub fn with_mode(mut, mode)` | あり | 対応 | 対応 | `mode: u32` フィールドを更新。`uid` / `gid` は XPC 非反映のまま |
-| `pub fn target(&self) -> &str` | あり | なし | なし | フィールド `path` で参照 |
+| `pub fn with_uid(mut, uid)` | あり | 対応 | 対応 | XPC 非反映 |
+| `pub fn with_gid(mut, gid)` | あり | 対応 | 対応 | XPC 非反映 |
+| `pub fn path(&self) -> &str` | あり | 対応 | 対応 | 本家は `target()` |
 | `pub fn mode(&self) -> Option<u32>` | あり | 対応 | 対応 | 常に `Some(self.mode)` (既定 0o644 含む) |
+| `pub fn uid(&self) -> u32` | あり | 対応 | 対応 | XPC 非反映 |
+| `pub fn gid(&self) -> u32` | あり | 対応 | 対応 | XPC 非反映 |
 | `impl<T: Into<String>> From<T> for CopyTargetOptions` | あり | なし | なし | 本家専用の blanket。shiguredo には無い |
 | `impl From<String> for CopyTargetOptions` | あり | 対応 | 対応 |  |
 | `impl From<&str> for CopyTargetOptions` | あり | 対応 | 対応 |  |
@@ -551,7 +555,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `AccessMode::ReadOnly` | あり | 対応 | 対応 | Docker: Bind の `:ro` に反映 |
 | `AccessMode::ReadWrite` | あり | 対応 | 対応 | Docker: Bind の `:rw` に反映 |
 | `AccessMode` `Display (ro/rw)` | あり | 対応 | 対応 | Docker: Bind のサフィックスに利用 |
-| `MountTmpfsOptions` struct + `size_bytes` `mode` | あり | 対応 | 未反映 | XPC `Filesystem.options` の `size=` / `mode=` |
+| `MountTmpfsOptions` struct + `size_bytes()` `mode()` | あり | 対応 | 未反映 | フィールドは `pub(crate)` + アクセサ。XPC `Filesystem.options` の `size=` / `mode=` |
 | `impl Default for MountTmpfsOptions` | あり | 対応 | 未反映 |  |
 
 ## 15. `ContainerPort` / `Ports` / `IntoContainerPort` / `PortMapping`

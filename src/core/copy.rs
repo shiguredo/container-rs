@@ -38,17 +38,17 @@ impl From<Vec<u8>> for CopyDataSource {
 #[derive(Debug, Clone)]
 pub struct CopyTargetOptions {
     /// コピー先のパス。
-    pub path: String,
+    pub(crate) path: String,
     /// コピー先のファイルモード。
-    pub mode: u32,
+    pub(crate) mode: u32,
     /// コピー先のオーナー UID。
     ///
     /// macOS (XPC) では非対応。
-    pub uid: u32,
+    pub(crate) uid: u32,
     /// コピー先のグループ GID。
     ///
     /// macOS (XPC) では非対応。
-    pub gid: u32,
+    pub(crate) gid: u32,
 }
 
 impl CopyTargetOptions {
@@ -68,11 +68,38 @@ impl CopyTargetOptions {
         self
     }
 
+    /// コピー先のオーナー UID を設定する。
+    pub fn with_uid(mut self, uid: u32) -> Self {
+        self.uid = uid;
+        self
+    }
+
+    /// コピー先のグループ GID を設定する。
+    pub fn with_gid(mut self, gid: u32) -> Self {
+        self.gid = gid;
+        self
+    }
+
+    /// コピー先のパスを返す。
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
     /// コピー先のファイルモードを返す。
     ///
     /// 本家互換のため `Option<u32>` を返す。既定値を含む常に設定済みのため `Some` になる。
     pub fn mode(&self) -> Option<u32> {
         Some(self.mode)
+    }
+
+    /// コピー先のオーナー UID を返す。
+    pub fn uid(&self) -> u32 {
+        self.uid
+    }
+
+    /// コピー先のグループ GID を返す。
+    pub fn gid(&self) -> u32 {
+        self.gid
     }
 }
 

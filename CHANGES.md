@@ -21,6 +21,8 @@
   - @voluntas
 - [CHANGE] 未使用の公開型 `CgroupnsMode` を削除する
   - @voluntas
+- [CHANGE] 公開 API 面を最小化する（内部モジュールの `pub(crate)` 化・pub フィールドのアクセサ化）
+  - @voluntas
 - [ADD] Linux で `Healthcheck` / `ImageExt::with_health_check` / `HealthWaitStrategy` の Linux 分岐に対応する
   - @voluntas
 - [ADD] `with_copy_to` で親ディレクトリ自動作成とディレクトリ一括投入に対応する

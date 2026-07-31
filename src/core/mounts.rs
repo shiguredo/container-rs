@@ -14,9 +14,21 @@ pub struct Mount {
 #[derive(Debug, Clone, Default)]
 pub struct MountTmpfsOptions {
     /// tmpfs のサイズ (バイト)。
-    pub size_bytes: Option<i64>,
+    pub(crate) size_bytes: Option<i64>,
     /// tmpfs のパーミッション mode (整数)。
-    pub mode: Option<i64>,
+    pub(crate) mode: Option<i64>,
+}
+
+impl MountTmpfsOptions {
+    /// tmpfs のサイズ (バイト) を返す。
+    pub fn size_bytes(&self) -> Option<i64> {
+        self.size_bytes
+    }
+
+    /// tmpfs のパーミッション mode (整数) を返す。
+    pub fn mode(&self) -> Option<i64> {
+        self.mode
+    }
 }
 
 /// マウントの種類。

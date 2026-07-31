@@ -1,9 +1,9 @@
 //! コンテナ操作の中核モジュール。
 
-pub mod client;
+pub(crate) mod client;
 pub mod containers;
 pub mod copy;
-pub mod env;
+pub(crate) mod env;
 pub mod error;
 pub mod healthcheck;
 pub mod host;

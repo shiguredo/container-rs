@@ -3,7 +3,9 @@
 //! macOS (XPC) では、`containerLogs` が返す FD を `ContainerAsync::stdout` と
 //! `ContainerAsync::stderr` から読み取る。
 
-pub mod consumer;
+pub(crate) mod consumer;
+
+pub use consumer::{LogConsumer, LoggingConsumer};
 
 /// ログの 1 フレーム。stdout または stderr。
 #[derive(Debug, Clone)]
