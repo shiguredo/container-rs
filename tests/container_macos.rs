@@ -1068,8 +1068,7 @@ mod test_container_xpc {
         ));
         std::fs::write(&src, b"hello with mode").expect("一時ファイルの書き込みに失敗した");
 
-        let mut target = CopyTargetOptions::new("/data/mode-hello.txt");
-        target.mode = 0o755;
+        let target = CopyTargetOptions::new("/data/mode-hello.txt").with_mode(0o755);
         let container = GenericImage::new("alpine", "latest")
             .with_copy_to(target, src.clone())
             .with_cmd(["sleep", "30"])

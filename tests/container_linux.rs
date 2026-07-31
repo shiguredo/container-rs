@@ -12,7 +12,7 @@ use std::time::Duration;
 use shiguredo_container::core::CmdWaitFor;
 use shiguredo_container::core::error::ClientError;
 use shiguredo_container::core::image::ExecCommand;
-use shiguredo_container::core::logs::{LogFrame, consumer::LogConsumer};
+use shiguredo_container::core::logs::{LogConsumer, LogFrame};
 use shiguredo_container::{AsyncRunner, Error, GenericImage, ImageExt, WaitFor};
 
 /// 常駐 alpine を起動する。
@@ -966,12 +966,10 @@ async fn copy_to_file_source_and_copy_file_from_pathbuf_target() {
 async fn copy_to_applies_mode_uid_gid() {
     use shiguredo_container::core::copy::CopyTargetOptions;
 
-    let target = CopyTargetOptions {
-        mode: 0o755,
-        uid: 1000,
-        gid: 1000,
-        ..CopyTargetOptions::new("/tmp/script.sh")
-    };
+    let target = CopyTargetOptions::new("/tmp/script.sh")
+        .with_mode(0o755)
+        .with_uid(1000)
+        .with_gid(1000);
     let container = GenericImage::new("alpine", "latest")
         .with_cmd(["tail", "-f", "/dev/null"])
         .with_copy_to(target, b"#!/bin/sh\necho hi\n".to_vec())
@@ -1006,12 +1004,10 @@ async fn copy_to_applies_mode_uid_gid() {
 async fn copy_to_creates_missing_parents_for_data() {
     use shiguredo_container::core::copy::CopyTargetOptions;
 
-    let target = CopyTargetOptions {
-        mode: 0o640,
-        uid: 1000,
-        gid: 1000,
-        ..CopyTargetOptions::new("/var/container-rs-copy-missing/a.txt")
-    };
+    let target = CopyTargetOptions::new("/var/container-rs-copy-missing/a.txt")
+        .with_mode(0o640)
+        .with_uid(1000)
+        .with_gid(1000);
     let container = GenericImage::new("alpine", "latest")
         .with_cmd(["tail", "-f", "/dev/null"])
         .with_copy_to(target, b"parent-ok\n".to_vec())
@@ -1072,12 +1068,10 @@ async fn copy_to_directory_source_with_missing_parents() {
     // 空サブディレクトリも残す。
     fs::create_dir_all(host_dir.join("empty")).expect("空ディレクトリの作成に失敗した");
 
-    let target = CopyTargetOptions {
-        mode: 0o600,
-        uid: 1000,
-        gid: 1000,
-        ..CopyTargetOptions::new("/var/container-rs-copy-missing-dir")
-    };
+    let target = CopyTargetOptions::new("/var/container-rs-copy-missing-dir")
+        .with_mode(0o600)
+        .with_uid(1000)
+        .with_gid(1000);
     let container = GenericImage::new("alpine", "latest")
         .with_cmd(["tail", "-f", "/dev/null"])
         .with_copy_to(target, host_dir.clone())

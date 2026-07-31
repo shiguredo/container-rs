@@ -8,12 +8,12 @@
 //! `Exit` は macOS では exit_code_hint（containerWait）と container_state（list）で待ち、
 //! Linux では未実装エラーを返す（実装を正とする。docs 10.4 の Docker「対応」とは食い違う）。
 
-pub mod cmd_wait;
-pub mod exit_strategy;
-pub mod health_strategy;
+pub(crate) mod cmd_wait;
+pub(crate) mod exit_strategy;
+pub(crate) mod health_strategy;
 #[cfg(feature = "http_wait_plain")]
-pub mod http_strategy;
-pub mod log_strategy;
+pub(crate) mod http_strategy;
+pub(crate) mod log_strategy;
 
 pub use cmd_wait::CmdWaitFor;
 pub use exit_strategy::ExitWaitStrategy;

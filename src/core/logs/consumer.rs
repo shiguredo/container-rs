@@ -1,6 +1,8 @@
 //! ログコンシューマ。元の 0.27 の `core::logs::consumer` と同一シグネチャ。
 
-pub mod logging_consumer;
+pub(crate) mod logging_consumer;
+
+pub use logging_consumer::LoggingConsumer;
 
 use std::future::Future;
 use std::pin::Pin;
