@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-12
-- Completed:
+- Completed: 2026-08-01
 - Model: Kimi
 - Branch: feature/refactor-remove-unused-types
 - Polished: 2026-07-29
@@ -55,3 +55,11 @@
 - [ ] 公開 API の削除を伴う場合は `CHANGES.md` に `[CHANGE]` エントリが記載されること
 - [ ] `cargo test` が pass すること (公開 API 変更で統合テストのコンパイルに影響する場合は `cargo test --all-features`)
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `CgroupnsMode` を `src/core/containers/request.rs` から削除し、`src/core/containers/mod.rs` と `src/core.rs` の re-export も外した
+- `MountType` (`src/core/mounts.rs`) と `ExtraHost` (`src/core/containers/request.rs`) の Display impl は意図的保持と判断し、各 impl 付近に保持理由のコメントを追加した。ExtraHost は Linux (Docker) 経路の extra_hosts 変換で利用するため保持
+- `docs/TESTCONTAINERS.md` から CgroupnsMode の型定義行と 16.3 節を削除し、節番号の振り直し (16.4 → 16.3) と相互参照の修正を行った
+- `skills/shiguredo-container/SKILL.md` の公開 API 一覧から CgroupnsMode を外した
+- `CHANGES.md` に `[CHANGE]` エントリを追加した
