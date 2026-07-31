@@ -33,6 +33,8 @@
   - @voluntas
 - [ADD] Linux で `with_network` を NetworkingConfig に反映する
   - @voluntas
+- [ADD] Linux で `with_platform` を pull / create の platform クエリパラメータに反映する
+  - @voluntas
 - [ADD] `with_copy_to` で親ディレクトリ自動作成とディレクトリ一括投入に対応する
   - @voluntas
 - [ADD] Linux で HTTP ログストリームを demux して `stdout` / `stderr` / `LogConsumer` / `WaitFor::Log` を有効化する
