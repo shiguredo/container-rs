@@ -842,6 +842,7 @@ impl CreateContainerBody {
                 cap_drop: config.cap_drop,
                 shm_size: config.shm_size,
                 readonly_rootfs: config.readonly_rootfs,
+                extra_hosts: config.extra_hosts,
             },
             exposed_ports,
             healthcheck: config.health_check,
@@ -927,6 +928,7 @@ struct HostConfig {
     cap_drop: Vec<String>,
     shm_size: Option<u64>,
     readonly_rootfs: bool,
+    extra_hosts: Vec<String>,
 }
 
 impl HostConfig {
@@ -961,6 +963,10 @@ impl HostConfig {
         if let Some(shm_size) = self.shm_size {
             json.push_str(",\"ShmSize\":");
             json.push_str(&shm_size.to_string());
+        }
+        if !self.extra_hosts.is_empty() {
+            json.push_str(",\"ExtraHosts\":");
+            json.push_str(&json_array(&self.extra_hosts));
         }
         json.push('}');
         Ok(json)
@@ -1478,6 +1484,7 @@ mod tests {
             open_stdin: None,
             network: None,
             platform: None,
+            extra_hosts: vec![],
         }
     }
 

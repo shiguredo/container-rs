@@ -493,6 +493,10 @@ fn build_container_config<I: Image>(
         open_stdin: req.open_stdin(),
         network: req.network().clone(),
         platform: req.platform().as_deref().map(|p| p.to_string()),
+        extra_hosts: req
+            .hosts()
+            .map(|(hostname, host)| format!("{hostname}:{host}"))
+            .collect(),
     }
 }
 
@@ -601,9 +605,6 @@ async fn start_linux_log_stream(
 /// 1 つでも設定されていればその理由文字列を返す (fail-fast 用)。
 #[cfg(target_os = "linux")]
 fn linux_unsupported_request_reason<I: Image>(req: &ContainerRequest<I>) -> Option<&'static str> {
-    if req.hosts().next().is_some() {
-        return Some("with_host() is not implemented on Linux");
-    }
     if req.ssh() {
         return Some("with_ssh() is not implemented on Linux");
     }
