@@ -235,7 +235,9 @@ where
             let descriptor = container_req.descriptor();
 
             // イメージの descriptor を解決。未発見時はプルして再試行。
-            let _desc_raw = resolve_or_pull_linux(&client, &descriptor).await?;
+            let platform = container_req.platform();
+            let _desc_raw =
+                resolve_or_pull_linux(&client, &descriptor, platform.as_deref()).await?;
 
             // コンテナ設定を構築。
             let config = build_container_config(&container_req);
@@ -323,7 +325,8 @@ where
             }
             #[cfg(target_os = "linux")]
             Client::Linux(c) => {
-                c.pull_image(&descriptor).await?;
+                c.pull_image(&descriptor, container_req.platform().as_deref())
+                    .await?;
             }
         }
 
@@ -370,12 +373,13 @@ async fn resolve_or_pull_macos(
 async fn resolve_or_pull_linux(
     client: &crate::core::client::DockerClient,
     descriptor: &str,
+    platform: Option<&str>,
 ) -> Result<String> {
-    match client.resolve_image_descriptor(descriptor).await {
+    match client.resolve_image_descriptor(descriptor, platform).await {
         Ok(d) => Ok(d),
         Err(_) => {
-            client.pull_image(descriptor).await?;
-            client.resolve_image_descriptor(descriptor).await
+            client.pull_image(descriptor, platform).await?;
+            client.resolve_image_descriptor(descriptor, platform).await
         }
     }
 }
@@ -488,6 +492,7 @@ fn build_container_config<I: Image>(
         hostname: req.hostname().map(|h| h.to_string()),
         open_stdin: req.open_stdin(),
         network: req.network().clone(),
+        platform: req.platform().as_deref().map(|p| p.to_string()),
     }
 }
 
@@ -596,9 +601,6 @@ async fn start_linux_log_stream(
 /// 1 つでも設定されていればその理由文字列を返す (fail-fast 用)。
 #[cfg(target_os = "linux")]
 fn linux_unsupported_request_reason<I: Image>(req: &ContainerRequest<I>) -> Option<&'static str> {
-    if req.platform().is_some() {
-        return Some("with_platform() is not implemented on Linux");
-    }
     if req.hosts().next().is_some() {
         return Some("with_host() is not implemented on Linux");
     }

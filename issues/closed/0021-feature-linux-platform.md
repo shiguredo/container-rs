@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-08-01
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-platform
 - Polished: 2026-07-29
@@ -38,3 +38,13 @@ Linux (Docker Engine API) バックエンドで `with_platform` を Docker の p
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `linux_unsupported_request_reason` から platform のガードを削除した
+- `ContainerConfig` に `platform: Option<String>` を追加し `build_container_config` で映射した
+- `DockerClient::pull_image` / `resolve_image_descriptor` に `platform: Option<&str>` パラメータを追加し、`/images/create` に platform クエリパラメータを付与した
+- `DockerClient::create_container` で `/containers/create` に platform クエリパラメータを付与した
+- `resolve_or_pull_linux` と `AsyncRunner::pull_image` の Linux 分岐に platform を浸透させた
+- docs/TESTCONTAINERS.md と skills/shiguredo-container/SKILL.md を更新した
+- CHANGES.md に [ADD] エントリを追加した

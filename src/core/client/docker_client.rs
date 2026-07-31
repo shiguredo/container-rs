@@ -49,14 +49,17 @@ impl DockerClient {
     }
 
     /// イメージをプルする。
-    pub(crate) async fn pull_image(&self, descriptor: &str) -> Result<()> {
+    pub(crate) async fn pull_image(&self, descriptor: &str, platform: Option<&str>) -> Result<()> {
         let (image, tag) = split_pull_reference(descriptor);
         // Docker Engine API は query 値の `/` 等を percent-encode する必要がある。
-        let path = format!(
+        let mut path = format!(
             "/images/create?fromImage={}&tag={}",
             percent_encode_component(image),
             percent_encode_component(tag)
         );
+        if let Some(platform) = platform {
+            path.push_str(&format!("&platform={}", percent_encode_component(platform)));
+        }
         let response = self.request("POST", &path, None).await?;
         if response.status_code() >= 400 {
             return Err(ClientError::Other(format!(
@@ -71,7 +74,11 @@ impl DockerClient {
 
     /// イメージの descriptor を解決する。
     /// ローカルに存在しなければプルして再試行する。
-    pub(crate) async fn resolve_image_descriptor(&self, descriptor: &str) -> Result<String> {
+    pub(crate) async fn resolve_image_descriptor(
+        &self,
+        descriptor: &str,
+        platform: Option<&str>,
+    ) -> Result<String> {
         // path セグメントの `/` を生のまま埋め込むとルートが壊れる
         // (例: `ghcr.io/org/app:tag` → `/images/ghcr.io/org/...`)。
         let path = format!("/images/{}/json", percent_encode_path_segment(descriptor));
@@ -79,7 +86,7 @@ impl DockerClient {
         if response.status_code() == 200 {
             Ok(descriptor.to_string())
         } else if response.status_code() == 404 {
-            self.pull_image(descriptor).await?;
+            self.pull_image(descriptor, platform).await?;
             let response = self.request("GET", &path, None).await?;
             if response.status_code() == 200 {
                 Ok(descriptor.to_string())
@@ -97,11 +104,18 @@ impl DockerClient {
 
     /// コンテナを作成する。
     pub(crate) async fn create_container(&self, config: ContainerConfig) -> Result<String> {
-        let query = config
-            .name
-            .as_ref()
-            .map(|name| format!("?name={}", percent_encode_component(name)))
-            .unwrap_or_default();
+        let mut params = Vec::new();
+        if let Some(name) = &config.name {
+            params.push(format!("name={}", percent_encode_component(name)));
+        }
+        if let Some(platform) = &config.platform {
+            params.push(format!("platform={}", percent_encode_component(platform)));
+        }
+        let query = if params.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", params.join("&"))
+        };
         let path = format!("/containers/create{query}");
         let body = CreateContainerBody::from_config(config)?;
         let body_json = body.to_json_string()?;
@@ -1463,6 +1477,7 @@ mod tests {
             hostname: None,
             open_stdin: None,
             network: None,
+            platform: None,
         }
     }
 
