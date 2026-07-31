@@ -519,14 +519,13 @@ impl<I: Image> ContainerAsync<I> {
             .lock()
             .expect("wait state mutex must not be poisoned while restarting container")
             .bump();
-        if let Client::Linux(c) = &self.client {
-            spawn_exit_code_waiter(
-                c.clone(),
-                self.id.clone(),
-                self.wait_state.clone(),
-                generation,
-            );
-        }
+        let Client::Linux(c) = &self.client;
+        spawn_exit_code_waiter(
+            c.clone(),
+            self.id.clone(),
+            self.wait_state.clone(),
+            generation,
+        );
     }
 
     /// 再 start 後にログ FD を再取得し、旧 FD を close、LogConsumer を再 spawn する (macOS)。
