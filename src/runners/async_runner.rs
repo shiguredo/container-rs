@@ -481,6 +481,10 @@ fn build_container_config<I: Image>(
         user: req.user().map(|u| u.to_string()),
         init: req.init(),
         health_check: req.health_check().cloned(),
+        cap_add: req.cap_add().cloned().unwrap_or_default(),
+        cap_drop: req.cap_drop().cloned().unwrap_or_default(),
+        shm_size: req.shm_size(),
+        readonly_rootfs: req.readonly_rootfs(),
     }
 }
 
@@ -600,18 +604,6 @@ fn linux_unsupported_request_reason<I: Image>(req: &ContainerRequest<I>) -> Opti
     }
     if req.hosts().next().is_some() {
         return Some("with_host() is not implemented on Linux");
-    }
-    if req.cap_add().is_some_and(|v| !v.is_empty()) {
-        return Some("with_cap_add() is not implemented on Linux");
-    }
-    if req.cap_drop().is_some_and(|v| !v.is_empty()) {
-        return Some("with_cap_drop() is not implemented on Linux");
-    }
-    if req.shm_size().is_some() {
-        return Some("with_shm_size() is not implemented on Linux");
-    }
-    if req.readonly_rootfs() {
-        return Some("with_readonly_rootfs() is not implemented on Linux");
     }
     if req.open_stdin() == Some(true) {
         return Some("with_open_stdin() is not implemented on Linux");
