@@ -1525,7 +1525,6 @@ mod tests {
             network: None,
             platform: None,
             extra_hosts: vec![],
-            mounts: vec![],
         }
     }
 

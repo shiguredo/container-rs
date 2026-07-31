@@ -52,7 +52,7 @@ impl std::fmt::Display for MountType {
 }
 
 /// アクセスモード。
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AccessMode {
     ReadOnly,
     ReadWrite,
