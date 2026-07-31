@@ -799,6 +799,7 @@ impl CreateContainerBody {
         let port_bindings = build_port_bindings(&config.ports);
         let exposed_ports = build_exposed_ports(&config.ports);
         let mut binds = Vec::new();
+        let mut mounts = Vec::new();
         for m in &config.mounts {
             match m.mount_type() {
                 crate::core::mounts::MountType::Bind => {
@@ -811,16 +812,47 @@ impl CreateContainerBody {
                     binds.push(format!("{source}:{target}:{}", m.access_mode()));
                 }
                 crate::core::mounts::MountType::Volume => {
-                    return Err(ClientError::Configuration(
-                        "volume mount is not implemented on Linux".into(),
-                    )
-                    .into());
+                    let source = m.source().ok_or_else(|| {
+                        ClientError::Configuration("volume mount source is required".into())
+                    })?;
+                    let target = m.target().ok_or_else(|| {
+                        ClientError::Configuration("volume mount target is required".into())
+                    })?;
+                    let read_only = m.access_mode() == crate::core::mounts::AccessMode::ReadOnly;
+                    mounts.push(format!(
+                        "{{\"Type\":\"volume\",\"Source\":{},\"Target\":{},\"ReadOnly\":{}}}",
+                        escape_json(source),
+                        escape_json(target),
+                        read_only
+                    ));
                 }
                 crate::core::mounts::MountType::Tmpfs => {
-                    return Err(ClientError::Configuration(
-                        "tmpfs mount is not implemented on Linux".into(),
-                    )
-                    .into());
+                    let target = m.target().ok_or_else(|| {
+                        ClientError::Configuration("tmpfs mount target is required".into())
+                    })?;
+                    let read_only = m.access_mode() == crate::core::mounts::AccessMode::ReadOnly;
+                    let mut entry = format!(
+                        "{{\"Type\":\"tmpfs\",\"Target\":{},\"ReadOnly\":{}",
+                        escape_json(target),
+                        read_only
+                    );
+                    if let Some(opts) = m.tmpfs_options() {
+                        let mut tmpfs_opts = String::new();
+                        if let Some(size) = opts.size_bytes() {
+                            tmpfs_opts.push_str(&format!("\"SizeBytes\":{size}"));
+                        }
+                        if let Some(mode) = opts.mode() {
+                            if !tmpfs_opts.is_empty() {
+                                tmpfs_opts.push(',');
+                            }
+                            tmpfs_opts.push_str(&format!("\"Mode\":{mode}"));
+                        }
+                        if !tmpfs_opts.is_empty() {
+                            entry.push_str(&format!(",\"TmpfsOptions\":{{{tmpfs_opts}}}"));
+                        }
+                    }
+                    entry.push('}');
+                    mounts.push(entry);
                 }
             }
         }
@@ -843,6 +875,7 @@ impl CreateContainerBody {
                 shm_size: config.shm_size,
                 readonly_rootfs: config.readonly_rootfs,
                 extra_hosts: config.extra_hosts,
+                mounts,
             },
             exposed_ports,
             healthcheck: config.health_check,
@@ -929,6 +962,8 @@ struct HostConfig {
     shm_size: Option<u64>,
     readonly_rootfs: bool,
     extra_hosts: Vec<String>,
+    /// Docker Mounts 配列の JSON エントリ (Volume / Tmpfs)。
+    mounts: Vec<String>,
 }
 
 impl HostConfig {
@@ -967,6 +1002,11 @@ impl HostConfig {
         if !self.extra_hosts.is_empty() {
             json.push_str(",\"ExtraHosts\":");
             json.push_str(&json_array(&self.extra_hosts));
+        }
+        if !self.mounts.is_empty() {
+            json.push_str(",\"Mounts\":[");
+            json.push_str(&self.mounts.join(","));
+            json.push(']');
         }
         json.push('}');
         Ok(json)
@@ -1485,6 +1525,7 @@ mod tests {
             network: None,
             platform: None,
             extra_hosts: vec![],
+            mounts: vec![],
         }
     }
 
@@ -1518,50 +1559,58 @@ mod tests {
     }
 
     #[test]
-    fn from_config_volume_mount_returns_configuration_error() {
+    fn from_config_volume_mount_is_reflected_in_mounts() {
+        // Volume マウントが HostConfig.Mounts に反映されること。
         use crate::core::mounts::Mount;
 
-        let result =
-            CreateContainerBody::from_config(config_with_mounts(vec![Mount::volume_mount(
-                "vol",
-                "/container",
-            )]));
-        let err = match result {
-            Err(e) => e,
-            Ok(_) => panic!("Volume マウントはエラーになること"),
-        };
-        match err {
-            crate::core::error::Error::Client(ClientError::Configuration(msg)) => {
-                assert_eq!(
-                    msg, "volume mount is not implemented on Linux",
-                    "Volume 未実装メッセージであること"
-                );
-            }
-            other => panic!("Configuration 以外のエラー: {other}"),
-        }
+        let body = CreateContainerBody::from_config(config_with_mounts(vec![Mount::volume_mount(
+            "data",
+            "/container/data",
+        )]))
+        .expect("Volume マウントが成功すること");
+        let json = body.to_json_string().expect("JSON 出力に失敗した");
+        assert!(
+            json.contains("\"Type\":\"volume\""),
+            "Mounts に volume タイプが含まれること: {json}"
+        );
+        assert!(
+            json.contains("\"Source\":\"data\""),
+            "Mounts にソース名が含まれること: {json}"
+        );
+        assert!(
+            json.contains("\"Target\":\"/container/data\""),
+            "Mounts にターゲットが含まれること: {json}"
+        );
     }
 
     #[test]
-    fn from_config_tmpfs_mount_returns_configuration_error() {
+    fn from_config_tmpfs_mount_is_reflected_in_mounts() {
+        // Tmpfs マウントが HostConfig.Mounts に反映されること。
         use crate::core::mounts::Mount;
 
-        let result =
-            CreateContainerBody::from_config(config_with_mounts(vec![Mount::tmpfs_mount(
-                "/tmpfs",
-            )]));
-        let err = match result {
-            Err(e) => e,
-            Ok(_) => panic!("Tmpfs マウントはエラーになること"),
-        };
-        match err {
-            crate::core::error::Error::Client(ClientError::Configuration(msg)) => {
-                assert_eq!(
-                    msg, "tmpfs mount is not implemented on Linux",
-                    "Tmpfs 未実装メッセージであること"
-                );
-            }
-            other => panic!("Configuration 以外のエラー: {other}"),
-        }
+        let body = CreateContainerBody::from_config(config_with_mounts(vec![
+            Mount::tmpfs_mount("/tmpfs")
+                .with_size_bytes(1_000_000)
+                .with_mode(0o1777),
+        ]))
+        .expect("Tmpfs マウントが成功すること");
+        let json = body.to_json_string().expect("JSON 出力に失敗した");
+        assert!(
+            json.contains("\"Type\":\"tmpfs\""),
+            "Mounts に tmpfs タイプが含まれること: {json}"
+        );
+        assert!(
+            json.contains("\"Target\":\"/tmpfs\""),
+            "Mounts にターゲットが含まれること: {json}"
+        );
+        assert!(
+            json.contains("\"SizeBytes\":1000000"),
+            "TmpfsOptions にサイズが含まれること: {json}"
+        );
+        assert!(
+            json.contains("\"Mode\":1023"),
+            "TmpfsOptions にモードが含まれること: {json}"
+        );
     }
 
     #[test]
