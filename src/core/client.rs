@@ -81,6 +81,7 @@ pub(crate) struct ContainerConfig {
     pub readonly_rootfs: bool,
     pub hostname: Option<String>,
     pub open_stdin: Option<bool>,
+    pub network: Option<String>,
 }
 
 /// macOS / Linux のコンテナクライアントを統合した内部型。

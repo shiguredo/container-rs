@@ -88,7 +88,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップは ex
 
 - **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code + stdout / stderr)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
 - **未配線・未実装が残るもの**: exec の Env 本対応
-- **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
+- **未実装 (start 時 fail-fast)**: `with_platform` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
 
 Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差を同時に見せるためのものである。
 
@@ -117,7 +117,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_tag(self, tag)` | あり | 対応 | 対応 |  |
 | `with_container_name(self, name)` | あり | 対応 | 対応 |  |
 | `with_platform(self, platform)` | あり | 対応 | 未実装 | `"linux/amd64"` / `"amd64"` で XPC `rosetta`・`imagePull` の `ociPlatform`・`containerCreate` の `platform.architecture` に反映。`"linux/arm64"` / `"arm64"` も architecture / pull に反映。それ以外は無視 / Docker: start 時に明示エラー (設定構築に未配線) |
-| `with_network(self, network)` | あり | 部分対応 | 未実装 | XPC `containerCreate` の `networks[0].network` に反映。本家と違いネットワークの自動作成は行わないため、事前に `container network create` で作成が必要。存在しない場合は起動時エラー / Docker: start 時に明示エラー (設定構築に未配線) |
+| `with_network(self, network)` | あり | 部分対応 | 対応 | XPC `containerCreate` の `networks[0].network` に反映 / Docker: NetworkingConfig.EndpointsConfig に反映。ネットワークの自動作成は行わない |
 | `with_label(self, k, v)` | あり | 対応 | 対応 |  |
 | `with_labels(self, labels)` | あり | 対応 | 対応 |  |
 | `with_env_var(self, k, v)` | あり | 対応 | 対応 |  |

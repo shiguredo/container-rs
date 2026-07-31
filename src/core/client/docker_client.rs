@@ -777,6 +777,7 @@ struct CreateContainerBody {
     healthcheck: Option<Healthcheck>,
     hostname: Option<String>,
     open_stdin: Option<bool>,
+    network: Option<String>,
 }
 
 impl CreateContainerBody {
@@ -832,6 +833,7 @@ impl CreateContainerBody {
             healthcheck: config.health_check,
             hostname: config.hostname,
             open_stdin: config.open_stdin,
+            network: config.network,
         })
     }
 
@@ -888,6 +890,12 @@ impl CreateContainerBody {
         }
         if self.open_stdin == Some(true) {
             json.push_str(",\"OpenStdin\":true");
+        }
+        if let Some(network) = &self.network {
+            json.push_str(",\"NetworkingConfig\":{\"EndpointsConfig\":{");
+            json.push_str(&escape_json(network));
+            json.push_str(":{}");
+            json.push_str("}}");
         }
         json.push_str(",\"HostConfig\":");
         json.push_str(&self.host_config.to_json_string()?);
@@ -1454,6 +1462,7 @@ mod tests {
             readonly_rootfs: false,
             hostname: None,
             open_stdin: None,
+            network: None,
         }
     }
 
