@@ -123,7 +123,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_env_var(self, k, v)` | あり | 対応 | 対応 |  |
 | `with_host(self, key, value)` | あり | 部分対応 | 対応 | macOS: `ExtraHost::Addr` は exec で `/etc/hosts` へ追記、`HostGateway` は明示エラー / Docker: HostConfig.ExtraHosts に反映 (`HostGateway` 含む) |
 | `with_hostname(self, hostname)` | あり | 対応 | 対応 | macOS: 明示 hostname → container_name → id の優先で `networks[0].options.hostname` に反映 / Docker: Config.Hostname に反映 |
-| `with_mount(self, mount)` | あり | 対応 | 部分対応 | Bind/Volume/Tmpfs を XPC の `virtiofs/volume/tmpfs` にマップ / Docker: Bind は HostConfig.Binds に `ro`/`rw` 付きで反映。Volume/Tmpfs は create 時に明示エラー |
+| `with_mount(self, mount)` | あり | 対応 | 対応 | Bind/Volume/Tmpfs を XPC の `virtiofs/volume/tmpfs` にマップ / Docker: Bind は HostConfig.Binds、Volume/Tmpfs は HostConfig.Mounts に反映 |
 | `with_copy_to(self, target, source)` | あり | 対応 | 対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` は XPC 非反映。投入は start_process 後（起動前契約なし）。親作成は `createParents`。ホストディレクトリの再帰投入可（Apple container 1.1.0 で実測） / Docker: create 後・start 前に自前 ustar で `path=/` へ投入。親ディレクトリ自動作成・ディレクトリ一括投入対応。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で regular file に反映（中間 directory の mode は `0o755`）。コピー後 mtime は epoch。起動前投入は Linux のみの公開契約 |
 | `with_mapped_port(self, host_port, container_port)` | あり | 対応 | 対応 | `publishedPorts` に反映 |
 | `with_exposed_host_port(self, port)` (feature) | あり | なし | なし | `host-port-exposure` feature、Rust 側で SSH tunnel 実装が必要 |
@@ -532,12 +532,12 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `pub fn bind_mount(host, container)` | あり | 対応 | 対応 | Docker: HostConfig.Binds に `source:target:ro|rw` で反映 |
-| `pub fn volume_mount(name, container)` | あり | 対応 | 明示エラー | Docker: create 時に `volume mount is not implemented on Linux` |
-| `pub fn tmpfs_mount(container)` | あり | 対応 | 明示エラー | Docker: create 時に `tmpfs mount is not implemented on Linux` |
+| `pub fn volume_mount(name, container)` | あり | 対応 | 対応 | Docker: HostConfig.Mounts に Type=volume で反映 |
+| `pub fn tmpfs_mount(container)` | あり | 対応 | 対応 | Docker: HostConfig.Mounts に Type=tmpfs で反映 (TmpfsOptions 付き) |
 | `pub fn with_access_mode(mut, mode)` | あり | 対応 | 対応 | Docker: Bind の `:ro` / `:rw` に反映 |
 | `pub fn access_mode(&self) -> AccessMode` | あり | 対応 | 対応 | Docker: Bind の `:ro` / `:rw` に反映 |
-| `pub fn mount_type(&self) -> MountType` | あり | 対応 | 部分対応 | Docker: Bind は反映。Volume/Tmpfs は create 時に明示エラー |
-| `pub fn source(&self) -> Option<&str>` | あり | 対応 | 部分対応 | Docker: Bind は反映。Volume/Tmpfs は create 時に明示エラー |
+| `pub fn mount_type(&self) -> MountType` | あり | 対応 | 対応 |  |
+| `pub fn source(&self) -> Option<&str>` | あり | 対応 | 対応 |  |
 | `pub fn target(&self) -> Option<&str>` | あり | 対応 | 部分対応 | Docker: Bind は反映。Volume/Tmpfs は create 時に明示エラー |
 | `pub fn with_size_bytes(mut, size)` | あり | 対応 | 未反映 | tmpfs 用。XPC `options` に `size=<bytes>` |
 | `pub fn with_size(mut, "20g")` | あり | 対応 | 未反映 | tmpfs 用。人間可読サイズをバイトへ変換 |

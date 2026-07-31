@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-08-01
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-volume-tmpfs-mount
 - Polished: 2026-07-29
@@ -39,3 +39,12 @@ Linux (Docker Engine API) バックエンドで Volume マウントと Tmpfs マ
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `CreateContainerBody::from_config` の Volume/Tmpfs エラー分岐を Mounts 構築に置き換えた
+- `HostConfig` に `mounts` フィールドを追加し `to_json_string` で Mounts 配列を JSON 出力した
+- Volume: Type=volume + Source + Target + ReadOnly、Tmpfs: Type=tmpfs + Target + ReadOnly + TmpfsOptions (SizeBytes/Mode)
+- 既存のエラー検証テストを Mounts 反映の検証テストに置き換えた
+- docs/TESTCONTAINERS.md と skills/shiguredo-container/SKILL.md を更新した
+- CHANGES.md に [ADD] エントリを追加した
