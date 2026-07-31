@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-08-01
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-network
 - Polished: 2026-07-29
@@ -37,3 +37,11 @@ Linux (Docker Engine API) バックエンドで `with_network` を Docker の Ne
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `linux_unsupported_request_reason` から network のガードを削除した
+- `ContainerConfig` に `network: Option<String>` を追加し `build_container_config` で映射した
+- `CreateContainerBody` に network フィールドを追加し `to_json_string` で NetworkingConfig.EndpointsConfig を JSON 出力した
+- docs/TESTCONTAINERS.md と skills/shiguredo-container/SKILL.md を更新した
+- CHANGES.md に [ADD] エントリを追加した

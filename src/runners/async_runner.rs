@@ -487,6 +487,7 @@ fn build_container_config<I: Image>(
         readonly_rootfs: req.readonly_rootfs(),
         hostname: req.hostname().map(|h| h.to_string()),
         open_stdin: req.open_stdin(),
+        network: req.network().clone(),
     }
 }
 
@@ -597,9 +598,6 @@ async fn start_linux_log_stream(
 fn linux_unsupported_request_reason<I: Image>(req: &ContainerRequest<I>) -> Option<&'static str> {
     if req.platform().is_some() {
         return Some("with_platform() is not implemented on Linux");
-    }
-    if req.network().is_some() {
-        return Some("with_network() is not implemented on Linux");
     }
     if req.hosts().next().is_some() {
         return Some("with_host() is not implemented on Linux");
