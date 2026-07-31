@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-12
-- Completed:
+- Completed: 2026-07-31
 - Model: Kimi
 - Branch: feature/update-canary-py
 - Polished: 2026-07-29
@@ -31,4 +31,12 @@ canary.py は canary リリース用にバージョンの bump、`cargo update`�
 
 ## 完了条件
 
-- [ ] 0046 / 0047 / 0048 のすべてが closed になること
+- [x] 0046 / 0047 / 0048 のすべてが closed になること
+
+## 解決方法
+
+分割先の 3 issue がすべて closed になったため、本 issue も closed とする。
+
+- 0046: 確認プロンプトの挙動修正 + dry-run 非対話化（PR #8 で squash merge 済み）
+- 0047: バージョン変換ロジックの純粋関数抽出 + テスト追加（PR #9 で squash merge 済み）
+- 0048: 不正確なコメントと関数名の修正（PR #10 で squash merge 済み）
