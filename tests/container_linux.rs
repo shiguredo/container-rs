@@ -216,13 +216,28 @@ async fn unimplemented_boundaries_return_err() {
     let container = start_alpine().await;
 
     container
-        .get_bridge_ip_address()
-        .await
-        .expect_err("get_bridge_ip_address は Linux で未対応であること");
-    container
         .exit_code()
         .await
         .expect_err("exit_code は Linux で未実装であること");
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// Linux で get_bridge_ip_address がコンテナの IP アドレスを返すこと。
+#[tokio::test]
+async fn alpine_bridge_ip_address() {
+    let container = start_alpine().await;
+
+    let ip = container
+        .get_bridge_ip_address()
+        .await
+        .expect("get_bridge_ip_address に失敗した");
+
+    // ブリッジネットワークの IP はループバックでも unspecified でもないこと
+    assert!(
+        !ip.is_loopback() && !ip.is_unspecified(),
+        "ブリッジ IP はループバックでも unspecified でもないこと: {ip}"
+    );
 
     container.rm().await.expect("rm に失敗した");
 }
