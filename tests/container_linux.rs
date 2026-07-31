@@ -227,15 +227,50 @@ async fn unimplemented_boundaries_return_err() {
     container.rm().await.expect("rm に失敗した");
 }
 
-/// Linux では exec の with_env_vars が明示エラーになること。
+/// Linux で exec の with_env_vars が環境変数を exec プロセスに渡すこと。
+///
+/// コンテナ作成時の env (`with_env_var`) と exec 時の env (`with_env_vars`) が
+/// マージされ、同名キーは exec 側が優先されることを検証する。
 #[tokio::test]
-async fn exec_unsupported_options_return_err() {
-    let container = start_alpine().await;
-
-    container
-        .exec(ExecCommand::new(["true"]).with_env_vars([("K", "V")]))
+async fn alpine_exec_with_env_vars() {
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_env_var("BASE_VAR", "base_val")
+        .with_env_var("OVERRIDE_VAR", "original")
+        .start()
         .await
-        .expect_err("with_env_vars は Linux で未対応であること");
+        .expect("alpine コンテナの起動に失敗した");
+
+    let mut result = container
+        .exec(
+            ExecCommand::new(["sh", "-c", "echo $BASE_VAR $EXEC_TEST_VAR $OVERRIDE_VAR"])
+                .with_env_vars([
+                    ("EXEC_TEST_VAR", "hello_env"),
+                    ("OVERRIDE_VAR", "overridden"),
+                ]),
+        )
+        .await
+        .expect("with_env_vars 付き exec に失敗した");
+
+    let stdout = result
+        .stdout_to_vec()
+        .await
+        .expect("stdout_to_vec に失敗した");
+    let stdout_str = String::from_utf8_lossy(&stdout);
+    // コンテナ env の BASE_VAR が保持され、exec 分の EXEC_TEST_VAR が追加され、
+    // 同名キーの OVERRIDE_VAR は exec 側が優先されること
+    assert!(
+        stdout_str.contains("base_val"),
+        "コンテナ env の BASE_VAR が保持されること: {stdout_str}"
+    );
+    assert!(
+        stdout_str.contains("hello_env"),
+        "exec env の EXEC_TEST_VAR が渡されること: {stdout_str}"
+    );
+    assert!(
+        stdout_str.contains("overridden"),
+        "同名キーは exec 側が優先されること: {stdout_str}"
+    );
 
     container.rm().await.expect("rm に失敗した");
 }

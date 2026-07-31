@@ -221,12 +221,22 @@ impl DockerClient {
     /// `AttachStdout: true, AttachStderr: true, Detach: false` で exec を作成・起動し、
     /// `POST /exec/{id}/start` のレスポンスボディ (multiplexed stream) を全蓄積して
     /// demux する。ストリーム EOF 後に inspect で exit code を取得する。
-    pub(crate) async fn exec(&self, id: &str, cmd: &[String]) -> Result<DockerExecResult> {
+    ///
+    /// `env` が非空の場合は `ExecConfig.Env` に設定する。Docker Engine API は
+    /// `Env` 指定時にコンテナ env を置換するため、呼び出し側でコンテナ env との
+    /// マージ済みリストを渡すこと。空の場合は `Env` を送信せず Docker の継承に任せる。
+    pub(crate) async fn exec(
+        &self,
+        id: &str,
+        cmd: &[String],
+        env: Vec<String>,
+    ) -> Result<DockerExecResult> {
         let exec_path = format!("/containers/{}/exec", percent_encode_path_segment(id));
         let exec_config = ExecConfig {
             cmd: cmd.to_vec(),
             attach_stdout: true,
             attach_stderr: true,
+            env,
         };
         let exec_json = exec_config.to_json_string()?;
         let response = self
@@ -370,6 +380,49 @@ impl DockerClient {
         let ports = parse_ports(&parsed);
 
         Ok(ContainerSnapshot { running, ports })
+    }
+
+    /// コンテナの環境変数を inspect (`GET /containers/{id}/json`) の `Config.Env` から取得する。
+    ///
+    /// 返り値は `["KEY=VALUE", ...]` 形式の文字列ベクトル。exec の `Env` 指定時に
+    /// コンテナ env を置換する Docker Engine API のセマンティクスに対応するため、
+    /// 呼び出し側で exec 分の env を上書きマージしてから `exec` に渡す。
+    pub(crate) async fn container_env(&self, id: &str) -> Result<Vec<String>> {
+        let path = format!("/containers/{}/json", percent_encode_path_segment(id));
+        let response = self.request("GET", &path, None).await?;
+        if response.status_code() == 404 {
+            return Err(ClientError::ContainerNotFound(id.to_string()).into());
+        }
+        if response.status_code() >= 400 {
+            return Err(ClientError::Other(format!(
+                "failed to inspect container: {}",
+                response.status_code()
+            ))
+            .into());
+        }
+        let body = response
+            .body_bytes()
+            .ok_or_else(|| ClientError::Other("empty inspect body".into()))?;
+        let text = std::str::from_utf8(body).map_err(|e| ClientError::Json(e.to_string()))?;
+        let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
+
+        let mut env = Vec::new();
+        if let Ok(config) = parsed.value().to_member("Config") {
+            if let Some(config) = config.optional() {
+                if let Ok(env_member) = config.to_member("Env") {
+                    if let Some(env_arr) = env_member.optional() {
+                        if let Ok(arr) = env_arr.to_array() {
+                            for item in arr {
+                                if let Ok(s) = String::try_from(item) {
+                                    env.push(s);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(env)
     }
 
     /// コンテナの running と `State.Health.Status` を取得する。
@@ -764,6 +817,8 @@ struct ExecConfig {
     cmd: Vec<String>,
     attach_stdout: bool,
     attach_stderr: bool,
+    /// 環境変数。`["KEY=VALUE", ...]` 形式。空の場合は Docker の継承に任せる。
+    env: Vec<String>,
 }
 
 impl ExecConfig {
@@ -776,6 +831,10 @@ impl ExecConfig {
         if !self.cmd.is_empty() {
             json.push_str(",\"Cmd\":");
             json.push_str(&json_array(&self.cmd));
+        }
+        if !self.env.is_empty() {
+            json.push_str(",\"Env\":");
+            json.push_str(&json_array(&self.env));
         }
         json.push('}');
         Ok(json)

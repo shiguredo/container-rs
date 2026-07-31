@@ -326,14 +326,14 @@ impl<I: Image> ContainerAsync<I> {
     ///
     /// Docker Engine API の exec は `AttachStdout` / `AttachStderr` で stdout / stderr を
     /// 取得する。`CmdWaitFor::StdOutMessage` / `StdErrMessage` は取得済みバッファに
-    /// 対する部分一致で判定する。`ExecCommand::with_env_vars` は未実装のため非空なら
-    /// 明示エラーになる。
+    /// 対する部分一致で判定する。`ExecCommand::with_env_vars` はコンテナ env を
+    /// inspect で取得し、exec 分で上書きマージして `ExecConfig.Env` に設定する。
     pub async fn exec(&self, cmd: ExecCommand) -> Result<exec::ExecResult> {
         let ExecCommand {
             cmd,
             container_ready_conditions,
             cmd_ready_condition,
-            env_vars: _env_vars,
+            env_vars,
         } = cmd;
 
         let cmd_owned: Vec<String> = cmd;
@@ -347,7 +347,7 @@ impl<I: Image> ContainerAsync<I> {
                     .env_vars()
                     .map(|(k, v)| (k.into_owned(), v.into_owned()))
                     .collect();
-                for (k, v) in _env_vars {
+                for (k, v) in env_vars {
                     merged.insert(k, v);
                 }
                 let environment: Vec<String> = merged
@@ -358,14 +358,29 @@ impl<I: Image> ContainerAsync<I> {
             }
             #[cfg(target_os = "linux")]
             Client::Linux(c) => {
-                // Docker は Env 省略時にコンテナ env を継承する。
-                // with_env_vars の Linux 本対応は未実装のため、非空なら明示エラーにする。
-                if !_env_vars.is_empty() {
-                    return Err(Error::other(
-                        "ExecCommand::with_env_vars is not supported on Linux",
-                    ));
+                // Docker は Env 省略時にコンテナ env を継承するが、Env 指定時は置換する。
+                // env_vars が非空ならコンテナ env を inspect で取得し、exec 分で上書きマージする。
+                if env_vars.is_empty() {
+                    c.exec(&self.id, &cmd_owned, Vec::new()).await?
+                } else {
+                    let container_env = c.container_env(&self.id).await?;
+                    // "KEY=VALUE" 形式を BTreeMap に展開し、exec 分で上書きする
+                    let mut merged: std::collections::BTreeMap<String, String> = container_env
+                        .iter()
+                        .filter_map(|s| {
+                            let (k, v) = s.split_once('=')?;
+                            Some((k.to_string(), v.to_string()))
+                        })
+                        .collect();
+                    for (k, v) in env_vars {
+                        merged.insert(k, v);
+                    }
+                    let env: Vec<String> = merged
+                        .into_iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect();
+                    c.exec(&self.id, &cmd_owned, env).await?
                 }
-                c.exec(&self.id, &cmd_owned).await?
             }
         };
 
