@@ -216,6 +216,42 @@ impl DockerClient {
         Ok(())
     }
 
+    /// コンテナの終了を同期で待つ。`POST /containers/{id}/wait?condition=not-running` を呼び、
+    /// レスポンスの `StatusCode` を返す。tokio Runtime に依存しないため std スレッドから
+    /// 直接呼べる。コンテナ削除後の 404 等はエラーとして返す (呼び出し側で無視する)。
+    pub(crate) fn wait_blocking(&self, id: &str) -> Result<i64> {
+        let path = format!(
+            "/containers/{}/wait?condition=not-running",
+            percent_encode_path_segment(id)
+        );
+        let request_bytes = encode_docker_api_request("POST", &path, None)?;
+        let mut stream = UnixStream::connect(&self.socket_path)?;
+        stream.write_all(&request_bytes)?;
+        let response = read_http11_response(&mut stream, "POST")?;
+        if response.status_code() >= 400 {
+            return Err(ClientError::Other(format!(
+                "failed to wait for container: {}",
+                response.status_code()
+            ))
+            .into());
+        }
+        let body = response
+            .body_bytes()
+            .ok_or_else(|| ClientError::Other("empty wait response body".into()))?;
+        let text = std::str::from_utf8(body).map_err(|e| ClientError::Json(e.to_string()))?;
+        let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
+        let status_code = parsed
+            .value()
+            .to_member("StatusCode")
+            .map_err(|e| ClientError::Json(e.to_string()))?
+            .required()
+            .map_err(|e| ClientError::Json(e.to_string()))?;
+        let code: i64 = status_code
+            .try_into()
+            .map_err(|e: nojson::JsonParseError| ClientError::Json(e.to_string()))?;
+        Ok(code)
+    }
+
     /// コンテナ内でコマンドを実行し、終了コードと stdout / stderr を取得する。
     ///
     /// `AttachStdout: true, AttachStderr: true, Detach: false` で exec を作成・起動し、

@@ -210,15 +210,92 @@ async fn inspect_after_external_rm_returns_container_not_found() {
     }
 }
 
-/// 未実装境界が Err を返すこと。
+/// Linux で exit_code がコンテナ終了後に取得できること。
 #[tokio::test]
-async fn unimplemented_boundaries_return_err() {
+async fn alpine_exit_code_after_exit() {
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["sh", "-c", "exit 42"])
+        .start()
+        .await
+        .expect("alpine コンテナの起動に失敗した");
+
+    // exit code が観測されるまでポーリングで待つ。
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let code = loop {
+        let code = container
+            .exit_code()
+            .await
+            .expect("exit_code の取得に失敗した");
+        if code.is_some() {
+            break code;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "exit code が時間内に観測されること"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    assert_eq!(code, Some(42), "exit code は 42 であること");
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// Linux で exit_code がコンテナ実行中に None を返すこと。
+#[tokio::test]
+async fn alpine_exit_code_running_returns_none() {
     let container = start_alpine().await;
 
-    container
+    let code = container
         .exit_code()
         .await
-        .expect_err("exit_code は Linux で未実装であること");
+        .expect("exit_code の取得に失敗した");
+    assert_eq!(code, None, "実行中は exit code は None であること");
+
+    container.rm().await.expect("rm に失敗した");
+}
+
+/// Linux で再 start 直後の running 中は exit_code() が None を返すこと。
+///
+/// 再 start 時に世代管理 (bump + 再武装) が正しく動作し、
+/// 旧世代の exit code が新世代に漏れないことを検証する。
+#[tokio::test]
+async fn alpine_exit_code_after_restart_returns_none() {
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["sh", "-c", "exit 42"])
+        .start()
+        .await
+        .expect("alpine コンテナの起動に失敗した");
+
+    // 初回終了を待つ。
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let code = container
+            .exit_code()
+            .await
+            .expect("exit_code の取得に失敗した");
+        if code.is_some() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "初回 exit code が時間内に観測されること"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // 再 start する。
+    container.start().await.expect("再 start に失敗した");
+
+    // 再 start 直後の running 中は exit code が None であること。
+    // 旧世代の exit code (42) が漏れていないことを検証する。
+    let code = container
+        .exit_code()
+        .await
+        .expect("exit_code の取得に失敗した");
+    assert_eq!(
+        code, None,
+        "再 start 直後の running 中は exit code は None であること"
+    );
 
     container.rm().await.expect("rm に失敗した");
 }

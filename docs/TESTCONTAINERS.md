@@ -54,7 +54,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `ports` / `exec` (exit code + stdout / stderr + Env) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
 - `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入する (親ディレクトリ自動作成・ディレクトリ一括投入対応。配下 regular file の `mode` / `uid` / `gid` は反映。中間 directory の mode は `0o755`。コピー後 mtime は epoch)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり。親作成は `createParents`）。起動前投入は Linux のみの公開契約
-- `exit_code` / `ExitWaitStrategy` は未実装エラーのまま
+- `ExitWaitStrategy` は未実装エラーのまま
 - `ImageExt` の一部 (`with_network` / `with_platform` / `with_cap_add` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` 等) は start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
 
 README の Linux 注意書きと合わせて読むこと。残ギャップは exec の Env・ネットワーク詳細などである。
@@ -87,7 +87,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップは ex
 件数の厳密集計より、現状の読み方を優先する。
 
 - **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code + stdout / stderr)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
-- **未配線・未実装が残るもの**: `exit_code`、`ExitWaitStrategy`、exec の Env 本対応
+- **未配線・未実装が残るもの**: `ExitWaitStrategy`、exec の Env 本対応
 - **未実装 (start 時 fail-fast)**: `with_network` / `with_platform` / `with_cap_*` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` など、Linux 設定構築に載らない ImageExt
 
 Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差を同時に見せるためのものである。
@@ -192,7 +192,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `async fn unpause(&self) -> Result<()>` | あり | なし | なし | 同上 / Docker: 同上 |
 | `async fn is_running(&self) -> Result<bool>` | あり | 対応 | 対応 | `XpcClient::container_state` の `running` を返す / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn container_state(&self) -> Result<ContainerState>` | なし | shiguredo 拡張 | 対応 | XPC `containerState`。本家 0.27 に無し。`ContainerState::from_container` は本メソッドへ委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
-| `async fn exit_code(&self) -> Result<Option<i64>>` | あり | 部分対応 | 未実装 | バックグラウンド wait の観測済みキャッシュのみ。未観測のときは停止後も `None` (都度 `containerWait` はしない) / Docker: 公開 API は未実装エラー (バックグラウンド wait 無し) |
+| `async fn exit_code(&self) -> Result<Option<i64>>` | あり | 部分対応 | 部分対応 | バックグラウンド wait の観測済みキャッシュのみ。未観測のときは停止後も `None` (都度 `containerWait` はしない) / Docker: バックグラウンド wait スレッド (`POST /containers/{id}/wait?condition=not-running`) の観測済みキャッシュのみ。未観測のときは停止後も `None` |
 | `async fn copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 対応 | XPC `containerCopyOut` でホスト上の一時ファイルに書き出し、`CopyFileFromContainer` に流し込む / Docker: `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開し先頭 regular file を渡す。ディレクトリは `IsDirectory`、source は絶対パス必須 |
 | `async fn rm(mut self) -> Result<()>` | あり | 対応 | 対応 | XPC `containerDelete` / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `fn rm_blocking(mut self) -> Result<()>` | なし | shiguredo 拡張 | shiguredo 拡張 | `block_on` を使わず `remove_blocking` (同期 I/O) を直接呼び出す。tokio Runtime 内の同期コンテキスト (Drop ガードや `spawn_blocking` 内) から呼んでも deadlock しない。`force=true`、404 は冪等成功、`keep` でも削除する |
@@ -243,7 +243,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `stderr_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `ContainerAsync::stderr_to_vec` に委譲 / Docker: 1-shot 取得 |
 | `is_running(&self) -> Result<bool>` | あり | 対応 | 対応 | `ContainerAsync::is_running` に委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `container_state(&self) -> Result<ContainerState>` | なし | shiguredo 拡張 | 対応 | `ContainerAsync::container_state` に委譲。本家 0.27 に無し / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
-| `exit_code(&self) -> Result<Option<i64>>` | あり | 部分対応 | 未実装 | `ContainerAsync::exit_code` に委譲。6.1 委譲・制約同じ (観測済みキャッシュのみ) / Docker: 公開 API は未実装エラー (バックグラウンド wait 無し) |
+| `exit_code(&self) -> Result<Option<i64>>` | あり | 部分対応 | 部分対応 | `ContainerAsync::exit_code` に委譲。6.1 委譲・制約同じ (観測済みキャッシュのみ) / Docker: バックグラウンド wait スレッドの観測済みキャッシュのみ |
 
 ## 8. `ContainerRequest<I>` のメソッド (`core::containers::request`)
 

@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/add-linux-exit-code
 - Polished: 2026-07-29
@@ -49,3 +49,20 @@ exit code の取得はコンテナの正常終了検証に必要であり、`Exi
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+`DockerClient` に `wait_blocking` メソッドを追加し、Linux でバックグラウンド wait スレッドによる exit code 取得を実装した。
+
+1. `DockerClient::wait_blocking` を新規追加し、`POST /containers/{id}/wait?condition=not-running` を同期で呼び `StatusCode` をパースして返す
+2. `spawn_exit_code_waiter` の Linux 版を追加し、`Arc<DockerClient>` を受け取って別スレッドで `wait_blocking` を呼ぶ。wait のエラーは macOS と同様に無視する
+3. `AsyncRunner::start` の Linux 分岐で `start_container` 成功後に wait スレッドを起動する
+4. `WaitState` の `cfg_attr(dead_code)` 属性を除去し、Linux で世代管理を有効化した
+5. `reset_wait_state_and_respawn` の Linux 版を追加し、`refresh_log_streams` 成功後に wait スレッドを再武装する
+6. `exit_code()` の Linux 分岐を macOS と同じ WaitState キャッシュ参照に更新した
+7. `log_strategy.rs` の EOF 判定コメントを実態に合わせて更新した
+8. 統合テスト 3 件（終了後 exit code 取得、実行中 None、再 start 後 None）を追加した
+9. TESTCONTAINERS.md / SKILL.md の exit_code 関連箇所を実装済みに更新した
+10. CHANGES.md に `[ADD]` エントリを追加した
+
+変更ファイル: `src/core/client/docker_client.rs`、`src/core/containers/async_container.rs`、`src/runners/async_runner.rs`、`src/core/wait/log_strategy.rs`、`tests/container_linux.rs`、`docs/TESTCONTAINERS.md`、`skills/shiguredo-container/SKILL.md`、`CHANGES.md`
