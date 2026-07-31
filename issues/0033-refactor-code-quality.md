@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-22
-- Completed:
+- Completed: 2026-08-01
 - Model: Claude Sonnet 4
 - Branch: feature/refactor-code-quality
 - Polished: 2026-07-29
@@ -40,3 +40,15 @@
 - [ ] 上記の設計改善がすべて適用されていること
 - [ ] `CHANGES.md` の `### misc` セクションに内部リファクタリングの記載をすること（公開 API の変更は伴わない）
 - [ ] `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `DockerClient` / `XpcClient` を `pub(crate)` 宣言に変更した
+- XPC 側の `ExecResult` を `XpcExecResult` に改名した
+- `ExecCommand` の `env_vars` を `HashMap` から `BTreeMap` に統一した
+- `with_cmd_ready_condition` の引数名を `ready_condition`（単数形）に修正した
+- `LogSource` / `LogFrame` に `PartialEq, Eq` を derive した
+- `LoggingConsumer` の `BothStd` 分岐を `unreachable!()` に置き換えた
+- ロールバックパターンを `rollback_remove` ヘルパ関数に抽出し 8 箇所の重複を解消した
+- `Arc<XpcClient>` を `XpcClient` の直接保持に変更した（ZST のため Arc 不要）
+- `CHANGES.md` の `### misc` セクションに `[UPDATE]` エントリを追加した
