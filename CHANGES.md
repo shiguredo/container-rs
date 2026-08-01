@@ -90,6 +90,8 @@
   - @voluntas
 - [UPDATE] `ContainerAsync::exec` の rustdoc に出力上限 (Linux: 64 MiB 合計 / macOS: 各 64 MiB) と超過時の挙動を明記する
   - @voluntas
+- [UPDATE] `with_copy_to` の rustdoc に macOS で起動前にファイルを見せたい場合は `Mount::bind_mount` を使う旨と制約を明記する
+  - @voluntas
 - [UPDATE] canary.py のバージョン変換ロジックを純粋関数 `next_canary_version` として抽出し unittest テストを追加する
   - @voluntas
 - [UPDATE] canary.py の不正確なコメントと関数名 `git_operations_after_build` を `git_tag_and_push` に修正する

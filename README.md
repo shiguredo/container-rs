@@ -26,7 +26,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 > [!WARNING]
 > Linux ではライフサイクル (start / exec / stop / rm / Drop) に加えログ関連 (stdout / stderr / ログ待機 / LogConsumer) とファイルコピー (`copy_file_from` / `with_copy_to`) とヘルスチェック待機 (`with_health_check` / `WaitFor::healthcheck`) と exec の stdout / stderr / env 取得と bridge IP 取得も動くが、`with_ssh` / `with_masked_paths` / `with_readonly_paths` とネットワークの自動作成・自動削除などは未対応のままである。対応範囲は [testcontainers-rs / Apple Container / Docker Engine API の比較](docs/TESTCONTAINERS.md) を参照してください。
 >
-> `with_copy_to` の起動前投入は Linux のみ。macOS は start 後コピーのため、初期プロセスが起動時に読むファイルには利用側の起動待ち等が別途必要になり得る。
+> `with_copy_to` の起動前投入は Linux のみ。macOS は start 後コピーのため、初期プロセスが起動時に読むファイルには利用側の起動待ち等が別途必要になり得る。macOS で起動前にファイルを見せたい場合は `with_mount(Mount::bind_mount(host_path, container_path))` を使うこと (host_path は絶対パスかつ実ファイル / 実ディレクトリ必須)。
 
 ## モチベーション
 

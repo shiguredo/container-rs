@@ -59,6 +59,22 @@ pub trait ImageExt<I: Image> {
     /// - **macOS (Apple container)**: `start_process` 後に `containerCopyIn` で投入する。
     ///   running でないと XPC が拒否するため、起動前投入の公開契約は無い。
     ///   初期プロセスが起動時に読むファイルには、利用側の起動待ち等が別途必要になり得る。
+    ///   macOS で起動前にファイルを見せたい場合は `with_mount(Mount::bind_mount(host_path,
+    ///   container_path))` を使うこと (virtiofs として起動前に見えるようになる)。
+    ///   container_path はコンテナ内の絶対パスを渡すこと。
+    ///   次の制約に注意すること。
+    ///   - `host_path` は絶対パスかつ実ファイル / 実ディレクトリを渡す前提 (相対パスは
+    ///     apiserver 側の cwd で解決されるため。symlink は未検証のため対象外)
+    ///   - `CopyDataSource::Data` (インメモリ bytes) の起動前投入は対象外。必要なら
+    ///     利用者側で一時ファイル (`tempfile` クレート等) に書き出して bind する。
+    ///     コンテナ稼働中はその一時ファイルを削除 (unlink) しないこと (virtiofs は
+    ///     ホスト側ファイルを直接共有するため。スコープを抜けると自動 unlink される
+    ///     `NamedTempFile` 等はコンテナ停止まで変数で保持すること)
+    ///   - virtiofs はコンテナ稼働中にホスト側ファイルを書き換えるとコンテナ内の
+    ///     見え方が変わり得る (即時反映は実測されていないため断言しない)。既定は
+    ///     ReadWrite のため、読み取り専用にしたい場合は
+    ///     `with_access_mode(AccessMode::ReadOnly)` を指定する。`with_copy_to` の
+    ///     スナップショット投入とは意味論が異なる
     ///
     /// # 投入能力
     ///

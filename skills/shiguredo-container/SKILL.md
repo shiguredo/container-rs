@@ -225,6 +225,11 @@ let image = GenericImage::new("alpine", "latest")
 
 Linux は親ディレクトリ自動作成とディレクトリ一括投入に対応する。`with_copy_to` の起動前投入は Linux のみの公開契約である。
 
+macOS で起動前にファイルを見せたい場合は `with_mount(Mount::bind_mount(host_path, container_path))` を使うこと (virtiofs として起動前に見えるようになる)。
+host_path は絶対パスかつ実ファイル / 実ディレクトリ必須。
+`CopyDataSource::Data` の起動前投入は対象外で、必要なら一時ファイルに書き出して bind する (コンテナ稼働中は unlink しないこと)。
+virtiofs はホスト側ファイルを共有するため、稼働中の書き換えはコンテナ内の見え方に反映され得る (即時反映は実測されていないため断言しない。読み取り専用にしたい場合は `with_access_mode(AccessMode::ReadOnly)` を指定する)。
+
 ### LogConsumer
 
 ```rust
