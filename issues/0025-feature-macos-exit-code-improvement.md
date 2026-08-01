@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-08-01
 - Model: qwen3.8-max-preview
 - Branch: feature/change-macos-exit-code-improvement
 - Polished: 2026-07-29
@@ -39,3 +39,12 @@ macOS (Apple Container) バックエンドで `ContainerAsync::exit_code` の精
 - [ ] `CHANGES.md` に `[UPDATE]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `XpcClient` に `wait_blocking_with_timeout` メソッドを追加した
+- `exit_code()` の macOS 分岐で、停止済みかつ未観測時に `spawn_blocking` + 5 秒 XPC タイムアウトで都度 `containerWait` を呼ぶ経路を追加した
+- 取得成功時は `WaitState` に保存し後続呼び出しがキャッシュヒットする
+- 取得失敗 (タイムアウト・XPC エラー・runtime 解放済み) は `Ok(None)` を返す
+- `exit_code()` の rustdoc を実態に合わせて更新した
+- CHANGES.md に [UPDATE] エントリを追加した
