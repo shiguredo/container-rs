@@ -2236,6 +2236,45 @@ mod test_container_xpc {
             "macOS fail-fast メッセージを含むこと: {err}"
         );
     }
+
+    /// 不正な `with_container_name` が macOS の start で pull / resolve より前に明示エラーになること。
+    ///
+    /// ID 検証が pull / resolve より前に走ることを実証するため、存在しないイメージ名を使う。
+    /// 検証が pull より後に移動するとイメージ解決が先に失敗し、このテストは落ちる。
+    /// エラー内容 (ID 値と規則の要約) も検証する。
+    #[tokio::test]
+    async fn xpc_invalid_container_name_is_rejected() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        // 63 文字超・空文字・1 文字・禁止文字・先頭が非英数字の各ケース。
+        for invalid in [
+            "a".repeat(64),
+            String::new(),
+            "a".to_string(),
+            "has space".to_string(),
+            "-leading-dash".to_string(),
+        ] {
+            let err = GenericImage::new("shiguredo/no-such-image", "latest")
+                .with_container_name(&invalid)
+                .with_cmd(["sleep", "30"])
+                .start()
+                .await
+                .expect_err("不正なコンテナ名は start で拒否されること");
+
+            let message = err.to_string();
+            assert!(
+                message.contains("invalid container id")
+                    && message.contains("must match ^[a-zA-Z0-9][a-zA-Z0-9_.-]+$"),
+                "エラーに規則の要約が含まれること: {message}"
+            );
+            assert!(
+                message.contains(&format!("{invalid:?}")),
+                "エラーに ID 値が引用符付きで含まれること: {message}"
+            );
+        }
+    }
 }
 
 #[cfg(all(target_os = "macos", feature = "blocking"))]

@@ -23,6 +23,8 @@
   - @voluntas
 - [CHANGE] 公開 API 面を最小化する（内部モジュールの `pub(crate)` 化・pub フィールドのアクセサ化）
   - @voluntas
+- [CHANGE] macOS のコンテナ ID (`with_container_name`) を Apple container 1.2.0 の `nameValid` 相当の制約で検証して start 時に拒否するようにし、macOS ランタイム要件を 1.2.0 以上に変更する（破壊的変更）
+  - @voluntas
 - [ADD] Linux で `Healthcheck` / `ImageExt::with_health_check` / `HealthWaitStrategy` の Linux 分岐に対応する
   - @voluntas
 - [ADD] Linux で `ExitWaitStrategy` (`WaitFor::Exit`) を実装する

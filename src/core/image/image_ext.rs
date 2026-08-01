@@ -24,6 +24,10 @@ pub trait ImageExt<I: Image> {
     /// イメージタグを上書きする。
     fn with_tag(self, tag: impl Into<String>) -> ContainerRequest<I>;
     /// コンテナ名を設定する。
+    ///
+    /// 設定した名前はコンテナ ID として使われる。Apple container 1.2.0 の `nameValid` と
+    /// 同じ制約 (先頭は英数字・実質 2 文字以上・63 文字以下・文字種は英数字 / `_` / `.` / `-`)
+    /// を満たさない場合、macOS の `AsyncRunner::start` が pull / resolve より前に明示エラーを返す。
     fn with_container_name(self, name: impl Into<String>) -> ContainerRequest<I>;
     /// コンテナのホスト名を設定する。
     ///

@@ -27,7 +27,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 
 | OS | ランタイム | 備考 |
 |:--|:--|:--|
-| macOS 26 (Apple Silicon) | `container` (`brew install container`) | `container system start` 済みであること |
+| macOS 26 (Apple Silicon) | `container` (`brew install container`) | Apple container 1.2.0 以上・`container system start` 済みであること |
 | Linux | Docker Engine (Docker Engine API 互換) | Podman 等 API 互換ランタイムも可 |
 
 ## feature フラグ
@@ -264,6 +264,7 @@ let container = GenericImage::new("nginx", "latest")
 
 ## 既知の制限事項
 
+- **macOS のコンテナ ID 制約**: コンテナ ID (`with_container_name` の値) は Apple container 1.2.0 の `nameValid` と同じ制約 (先頭は英数字・実質 2 文字以上・63 文字以下・文字種は英数字 / `_` / `.` / `-`) を持つ。違反すると `AsyncRunner::start` が pull / resolve より前に明示エラーを返す
 - **macOS の Local Network Privacy (LNP)**: `HttpWaitStrategy` や published port への接続は macOS 15+ の LNP にブロックされ得る。LNP は TCC / MDM で事前付与できない。CI ではコンテナ IP 直結テストを基本とし、published port 依存テストは許可済み環境でのみ実行する
 - **blocking の再入 deadlock**: `LogConsumer` コールバック内や既存の tokio ランタイムコンテキストから `SyncRunner::start` 等の同期 API を呼ぶと共有 Runtime への再入で deadlock する。ライブラリは再入を検出して即エラーにするが、コールバック内での同期 API 呼び出しは避けること。共有 Runtime ワーカースレッド上で最後の同期 `Container` を drop するとハングし得る既知の限界もある
 - **Linux の残ギャップ**: `with_ssh` とネットワークの自動作成・自動削除が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
