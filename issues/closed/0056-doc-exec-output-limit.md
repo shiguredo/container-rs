@@ -1,7 +1,7 @@
 # ドキュメント: Linux exec の出力上限超過時の挙動を明記する
 
 - Created: 2026-08-01
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-02
 - Branch: feature/update-exec-output-limit-doc
 - Polished: 2026-08-02
 
@@ -36,3 +36,10 @@ Linux (Docker Engine API) 経路の `ContainerAsync::exec` が出力上限 (64 M
 - [ ] `ContainerAsync::exec` の rustdoc に出力上限・超過時の挙動・macOS との非対称が追記されていること
 - [ ] `skills/shiguredo-container/SKILL.md` の `ExecCommand` / `ExecResult` / `CmdWaitFor` セクションに同旨が追記されていること
 - [ ] `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `docs/TESTCONTAINERS.md` の 12.2 `ExecResult` の冒頭パラグラフ直下に「出力上限」の注記を追加した。Linux は demux 前の multiplexed stream 全体 (stdout + stderr の合計、フレームヘッダ込み) で 64 MiB かつ蓄積超過の時点で即座にエラー、macOS は stdout / stderr 各 64 MiB かつエラーはプロセス終了後に返る、の非対称を明記し、上限超過時に exit code を取得できないこととコンテナ内のプロセス継続は実測されていないことを共通の記述とした。あわせて 12.4 `SyncExecResult` の備考に 12.2 の注記への逆参照を追加した
+- `ContainerAsync::exec` の rustdoc の Linux 節に出力上限・超過時の挙動・macOS との非対称を追記した (同期版の rustdoc には追記しない方針は 12.2 の注記でカバーする)
+- `skills/shiguredo-container/SKILL.md` の `ExecCommand` / `ExecResult` / `CmdWaitFor` セクションに同旨を追記した
+- 設計方針の「`CHANGES.md` には反映しない」は規約解釈の誤りだった。`.md` ファイルの変更分は非対象だが、rustdoc 追記はコード内のドキュメント追加であり `### misc` に記載する対象のため、`[UPDATE]` エントリを追加した

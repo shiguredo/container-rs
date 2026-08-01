@@ -126,6 +126,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 - `ExecCommand::new(["cmd", "arg"])`, `with_container_ready_conditions(Vec<WaitFor>)`, `with_cmd_ready_condition(CmdWaitFor)`, `with_env_vars(iter)` (macOS: コンテナ env にマージされ同名は ExecCommand 側優先。Linux: コンテナ env を inspect で取得し exec 分で上書きマージして `ExecConfig.Env` に設定。空ならコンテナ env を継承)
 - `ExecResult`: `exit_code()`, `stdout()`, `stderr()`, `stdout_to_vec()`, `stderr_to_vec()`。exec 完了時点の全出力を保持したバッファ上のリーダーを返す (消費型)。Linux も multiplexed stream demux で stdout / stderr を返す
 - `CmdWaitFor`: `message_on_stdout(msg)` / `message_on_stderr(msg)` (両 OS とも取得済みバッファへの部分一致)、`exit()`, `exit_code(n)`, `seconds(n)`, `millis(n)`
+- **出力上限**: exec 出力のクライアント側蓄積には上限があり、超過時はエラーを返す (切り詰めない)。Linux は stdout + stderr の合計 (multiplexed stream 全体、フレームヘッダ込み) で 64 MiB (蓄積超過の時点で即座にエラー)、macOS は stdout / stderr 各 64 MiB (非対称。エラーはプロセス終了後に返る)。上限超過時は exit code を取得できない (コンテナ内のプロセスが継続するかは実測されていない)
 
 ### `Mount` / ポート
 

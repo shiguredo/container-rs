@@ -427,6 +427,13 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 本家と同一シグネチャ。本家はログストリームを追いかけるリーダーだが、shiguredo は exec 完了時点の全出力を保持したバッファ上のリーダーを返す (読み出しは本家と同様に消費型)。
 
+> **出力上限**: exec 出力のクライアント側蓄積にはバックエンドごとに上限があり、超過時はエラーを返す (切り詰めない)。上限超過時は exit code を取得できない (コンテナ内のプロセスが継続するかは実測されていない)。
+>
+> - Linux: demux 前の multiplexed stream 全体 (stdout + stderr の合計、フレームヘッダ込み) で 64 MiB。蓄積超過の時点で即座にエラーを返す。エラー文言は `output exceeds 67108864 bytes limit`
+> - macOS: stdout / stderr 各 64 MiB (Linux と非対称)。エラーはプロセス終了後に返る
+>
+> 同期版 `SyncExecResult` (12.4 参照) も同じ出力上限の影響を受ける。
+
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `pub async fn exit_code(&self) -> Result<Option<i64>>` | あり | 対応 | 対応 | `XpcClient::exec` が `containerWait` の `exitCode` を取得済み / Docker: ストリーム EOF 後の inspect で ExitCode を取得 |
@@ -457,7 +464,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `pub struct SyncExecResult` | あり | 対応 | 対応 | async 版 `ExecResult` を包む同期ラッパー |
+| `pub struct SyncExecResult` | あり | 対応 | 対応 | async 版 `ExecResult` を包む同期ラッパー (出力上限は 12.2 の注記参照) |
 | `pub fn exit_code(&self) -> Result<Option<i64>, _>` | あり | 対応 | 対応 | Docker: exec 結果の ExitCode を返す |
 | `pub fn stdout / stderr / stdout_to_vec / stderr_to_vec` | あり | 対応 | 対応 | `stdout` / `stderr` は `Box<dyn BufRead + Send>` / Docker: async 版 `ExecResult` の demux 済みバッファに委譲 |
 

@@ -361,6 +361,12 @@ impl<I: Image> ContainerAsync<I> {
     /// 取得する。`CmdWaitFor::StdOutMessage` / `StdErrMessage` は取得済みバッファに
     /// 対する部分一致で判定する。`ExecCommand::with_env_vars` はコンテナ env を
     /// inspect で取得し、exec 分で上書きマージして `ExecConfig.Env` に設定する。
+    ///
+    /// 出力には 64 MiB の蓄積上限がある。上限は demux 前の multiplexed stream 全体
+    /// (stdout + stderr の合計、フレームヘッダ込み) に適用されるため、実効上限は
+    /// macOS の stdout / stderr 各 64 MiB より厳しい。蓄積超過の時点で切り詰めず
+    /// 即座にエラーを返し、exit code を取得できない (コンテナ内のプロセスが継続
+    /// するかは実測されていない)。
     pub async fn exec(&self, cmd: ExecCommand) -> Result<exec::ExecResult> {
         let ExecCommand {
             cmd,
