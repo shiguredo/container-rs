@@ -41,6 +41,8 @@
   - @voluntas
 - [ADD] Linux で `pause` / `unpause` を実装する
   - @voluntas
+- [ADD] Linux でプライベートレジストリ認証 (`X-Registry-Auth`) を対応する
+  - @voluntas
 - [ADD] `with_copy_to` で親ディレクトリ自動作成とディレクトリ一括投入に対応する
   - @voluntas
 - [ADD] Linux で HTTP ログストリームを demux して `stdout` / `stderr` / `LogConsumer` / `WaitFor::Log` を有効化する
