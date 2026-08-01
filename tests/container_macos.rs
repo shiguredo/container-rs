@@ -32,8 +32,8 @@ fn skip_unless_rosetta() -> bool {
         std::path::Path::new("/Library/Apple/usr/libexec/oah/libRosettaRuntime").exists();
     if !installed {
         eprintln!(
-            "SKIP: Rosetta runtime is not installed; \
-             amd64 containers require softwareupdate --install-rosetta"
+            "スキップ: Rosetta runtime が未導入。 \
+             amd64 コンテナには softwareupdate --install-rosetta が必要"
         );
         true
     } else {
@@ -474,7 +474,10 @@ mod test_container_macos {
         let actual_host_port = ports
             .map_to_host_port_ipv4(80_u16)
             .expect("ポート 80 が公開されていない");
-        assert_eq!(actual_host_port, host_port, "mapped host port should match");
+        assert_eq!(
+            actual_host_port, host_port,
+            "マップされたホストポートが一致すること"
+        );
 
         // ブリッジ IP アドレスが取得できること。
         let bridge_ip = container
@@ -536,7 +539,7 @@ mod test_container_xpc {
         let content = String::from_utf8_lossy(&bytes);
         assert!(
             content.contains("Alpine Linux"),
-            "unexpected /etc/os-release content: {content}"
+            "/etc/os-release の内容が想定外: {content}"
         );
 
         // PathBuf にコピーできること。
@@ -557,7 +560,7 @@ mod test_container_xpc {
             .expect("コピー済みファイルの読み取りに失敗した");
         assert!(
             file_content.contains("Alpine Linux"),
-            "unexpected copied file content: {file_content}"
+            "コピー済みファイルの内容が想定外: {file_content}"
         );
         let _ = tokio::fs::remove_file(&temp_path).await;
 
@@ -646,7 +649,7 @@ mod test_container_xpc {
                 .await
                 .expect("終了コードの取得に失敗した"),
             Some(0),
-            "uname -m should succeed"
+            "uname -m の終了コードが 0 であること"
         );
         let stdout = result
             .stdout_to_vec()
@@ -655,7 +658,7 @@ mod test_container_xpc {
         let stdout = String::from_utf8_lossy(&stdout);
         assert!(
             stdout.contains("x86_64"),
-            "amd64 platform container should report x86_64, got: {stdout}"
+            "amd64 プラットフォームのコンテナは x86_64 を報告すること: {stdout}"
         );
 
         container.stop_with_timeout(Some(0)).await.ok();
@@ -693,7 +696,7 @@ mod test_container_xpc {
         let elapsed = start.elapsed();
         assert!(
             elapsed < std::time::Duration::from_secs(10),
-            "with_ready_conditions should override with_wait_for, elapsed: {elapsed:?}"
+            "with_ready_conditions は with_wait_for を上書きすること, 経過時間: {elapsed:?}"
         );
         container.stop_with_timeout(Some(0)).await.ok();
         container.rm().await.ok();
@@ -723,7 +726,7 @@ mod test_container_xpc {
                 .await
                 .expect("終了コードの取得に失敗した"),
             Some(0),
-            "privileged container should allow ip link set lo down"
+            "privileged コンテナは ip link set lo down を許可すること"
         );
         let result = container
             .exec(ExecCommand::new(["ip", "link", "set", "lo", "up"]))
@@ -735,7 +738,7 @@ mod test_container_xpc {
                 .await
                 .expect("終了コードの取得に失敗した"),
             Some(0),
-            "privileged container should allow ip link set lo up"
+            "privileged コンテナは ip link set lo up を許可すること"
         );
 
         container.stop_with_timeout(Some(0)).await.ok();
@@ -766,7 +769,7 @@ mod test_container_xpc {
                 .await
                 .expect("終了コードの取得に失敗した"),
             Some(0),
-            "container process should run as uid=0"
+            "コンテナプロセスは uid=0 で実行されること"
         );
 
         container.stop_with_timeout(Some(0)).await.ok();
@@ -799,7 +802,7 @@ mod test_container_xpc {
                 .await
                 .expect("終了コードの取得に失敗した"),
             Some(0),
-            "with_host entry should resolve via /etc/hosts"
+            "with_host のエントリは /etc/hosts 経由で名前解決されること"
         );
 
         container.stop_with_timeout(Some(0)).await.ok();
@@ -839,7 +842,7 @@ mod test_container_xpc {
                 .await
                 .expect("終了コードの取得に失敗した"),
             Some(0),
-            "copied file should be readable in container"
+            "コピーしたファイルがコンテナ内で読み取り可能であること"
         );
 
         container.stop_with_timeout(Some(0)).await.ok();
@@ -1207,7 +1210,7 @@ mod test_container_xpc {
                 .is_running()
                 .await
                 .expect("実行状態の取得に失敗した"),
-            "container should be running"
+            "コンテナは実行中であること"
         );
 
         container
@@ -1219,7 +1222,7 @@ mod test_container_xpc {
                 .is_running()
                 .await
                 .expect("実行状態の取得に失敗した"),
-            "container should be stopped"
+            "コンテナは停止していること"
         );
 
         container.rm().await.ok();
@@ -1250,7 +1253,7 @@ mod test_container_xpc {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        assert_eq!(code, Some(42), "exit code should be 42");
+        assert_eq!(code, Some(42), "終了コードは 42 であること");
 
         container.rm().await.ok();
     }
@@ -1273,7 +1276,7 @@ mod test_container_xpc {
                 .await
                 .expect("終了コードの取得に失敗した"),
             None,
-            "running container should have no exit code"
+            "実行中のコンテナに終了コードがないこと"
         );
 
         container.stop_with_timeout(Some(0)).await.ok();
@@ -1301,7 +1304,7 @@ mod test_container_xpc {
                 .is_running()
                 .await
                 .expect("実行状態の取得に失敗した"),
-            "container should be stopped immediately with SIGKILL"
+            "コンテナは SIGKILL で即座に停止すること"
         );
 
         container.rm().await.ok();
@@ -1330,7 +1333,7 @@ mod test_container_xpc {
         let stdout_text = String::from_utf8_lossy(&stdout);
         assert!(
             stdout_text.contains("STDOUT_MSG"),
-            "stdout should contain 'STDOUT_MSG': {stdout_text}"
+            "stdout に 'STDOUT_MSG' が含まれること: {stdout_text}"
         );
 
         let stderr = container
@@ -1341,7 +1344,7 @@ mod test_container_xpc {
         // Apple container は init プロセスの stderr に vminitd のログが流れる。
         assert!(
             stderr_text.contains("setting up relay for StandardIO stderr"),
-            "stderr should contain vminitd log: {stderr_text}"
+            "stderr に vminitd のログが含まれること: {stderr_text}"
         );
 
         container.rm().await.ok();
@@ -1429,7 +1432,7 @@ mod test_container_xpc {
         let stdout = String::from_utf8_lossy(&stdout);
         assert!(
             stdout.contains("STDOUT_MSG"),
-            "stdout should contain 'STDOUT_MSG': {stdout}"
+            "stdout に 'STDOUT_MSG' が含まれること: {stdout}"
         );
         let stderr = result
             .stderr_to_vec()
@@ -1438,7 +1441,7 @@ mod test_container_xpc {
         let stderr = String::from_utf8_lossy(&stderr);
         assert!(
             stderr.contains("STDERR_MSG"),
-            "stderr should contain 'STDERR_MSG': {stderr}"
+            "stderr に 'STDERR_MSG' が含まれること: {stderr}"
         );
 
         container.stop_with_timeout(Some(0)).await.ok();
@@ -1491,7 +1494,7 @@ mod test_container_xpc {
                 captured.iter().any(|(_, bytes)| {
                     String::from_utf8_lossy(bytes).contains("CONSUMER_READY")
                 }),
-                "log consumer should receive 'CONSUMER_READY': {captured:?}"
+                "log consumer が 'CONSUMER_READY' を受け取ること: {captured:?}"
             );
         }
 
@@ -1543,7 +1546,7 @@ mod test_container_xpc {
             .expect("サブネットがドット区切り IPv4 形式であること");
         assert!(
             bridge_ip.to_string().starts_with(&subnet_prefix),
-            "bridge ip {bridge_ip} should be in test network subnet {subnet}"
+            "ブリッジ IP {bridge_ip} はテスト用ネットワークのサブネット {subnet} に属すること"
         );
 
         container.stop_with_timeout(Some(0)).await.ok();
@@ -1590,7 +1593,7 @@ mod test_container_xpc {
                 .await
                 .expect("終了コードの取得に失敗した"),
             Some(0),
-            "exec should exit 0"
+            "exec の終了コードが 0 であること"
         );
         let stdout = result
             .stdout_to_vec()
@@ -1598,7 +1601,7 @@ mod test_container_xpc {
             .expect("標準出力の読み取りに失敗した");
         assert!(
             stdout.len() > 1_000_000,
-            "stdout should contain the whole output: {} bytes",
+            "stdout に全出力が含まれること: {} バイト",
             stdout.len()
         );
 
@@ -1748,7 +1751,7 @@ mod test_container_xpc {
                 captured
                     .iter()
                     .any(|bytes| String::from_utf8_lossy(bytes).contains("CONSUMER_AND_WAIT")),
-                "log consumer should also receive the message"
+                "log consumer もメッセージを受け取ること"
             );
         }
 
@@ -1812,7 +1815,7 @@ mod test_container_xpc {
         // self-hosted macOS CI では Local Network Privacy の関係でフォワーダーが機能しないためスキップする。
         if std::env::var("GITHUB_ACTIONS").is_ok() {
             eprintln!(
-                "SKIP: GitHub Actions では published port 経由の HTTP 待機が Local Network Privacy で使えない"
+                "スキップ: GitHub Actions では published port 経由の HTTP 待機が Local Network Privacy で使えない"
             );
             return;
         }
@@ -1939,11 +1942,11 @@ mod test_container_xpc {
             .expect("2 回目の標準出力読み取りに失敗した");
         assert!(
             String::from_utf8_lossy(&first).contains("OFFSET_TEST"),
-            "first read should contain the message"
+            "1 回目の読み取りにメッセージが含まれること"
         );
         assert!(
             String::from_utf8_lossy(&second).contains("OFFSET_TEST"),
-            "second read should also contain the message (independent offset)"
+            "2 回目の読み取りにもメッセージが含まれること (独立オフセット)"
         );
 
         container.stop_with_timeout(Some(0)).await.ok();
@@ -2028,7 +2031,7 @@ mod test_container_xpc {
 
         assert!(
             result.is_ok(),
-            "dropping the runtime should not hang while a container is running"
+            "コンテナ実行中にランタイムを drop してもハングしないこと"
         );
     }
 
@@ -2046,7 +2049,7 @@ mod test_container_xpc {
             .await;
         assert!(
             result.is_err(),
-            "start with nonexistent network should fail"
+            "存在しないネットワークでの起動は失敗すること"
         );
     }
 
@@ -2112,7 +2115,7 @@ mod test_container_xpc {
                 },
             )) => {
                 assert_eq!(expected, 0);
-                assert_eq!(actual, Some(3), "actual exit code should be observed");
+                assert_eq!(actual, Some(3), "実際の終了コードが観測されること");
             }
             other => panic!("UnexpectedExitCode エラーを期待したが異なる値だった: {other:?}"),
         }
@@ -2298,7 +2301,7 @@ mod test_container_sync {
                 captured
                     .iter()
                     .any(|bytes| String::from_utf8_lossy(bytes).contains("SYNC_BG_LOG")),
-                "log consumer should receive logs while idle"
+                "log consumer がアイドル中もログを受け取ること"
             );
         }
 
@@ -2334,7 +2337,7 @@ mod test_container_sync {
         let stdout = String::from_utf8_lossy(&stdout);
         assert!(
             stdout.contains("Linux"),
-            "stdout should contain Linux: {stdout}"
+            "stdout に Linux が含まれること: {stdout}"
         );
 
         container
@@ -2637,7 +2640,7 @@ mod test_container_http_direct {
             .expect("nginx が起動すること");
 
         let (status, _body) = wait_http_ready(&container, 80).await;
-        assert_eq!(status, 200, "nginx should return 200");
+        assert_eq!(status, 200, "nginx は 200 を返すこと");
 
         container
             .stop_with_timeout(Some(0))
@@ -2664,10 +2667,10 @@ mod test_container_http_direct {
             .expect("nginx が起動すること");
 
         let (status, body) = wait_http_ready(&container, 80).await;
-        assert_eq!(status, 200, "nginx should return 200");
+        assert_eq!(status, 200, "nginx は 200 を返すこと");
         assert!(
             body.contains("nginx"),
-            "response body should contain 'nginx'"
+            "レスポンスボディに 'nginx' が含まれること"
         );
 
         container
