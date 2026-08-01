@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-08-01
 - Model: qwen3.8-max-preview
 - Branch: feature/add-macos-copy-uid-gid
 - Polished: 2026-07-29
@@ -39,3 +39,13 @@ macOS (Apple Container) バックエンドで `CopyTargetOptions` の `uid` / `g
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `copy_to_sources` に `chown_after_copy` ヘルパを追加した
+- コピー後に uid/gid が非ゼロの場合、exec で `chown {uid}:{gid} {path}` を実行する
+- ディレクトリ一括投入時は `chown -R` を実行する
+- chown 失敗時は warn ログのみでエラーにしない
+- `src/core/copy.rs` の rustdoc を実態に合わせて更新した
+- docs/TESTCONTAINERS.md を更新した
+- CHANGES.md に [ADD] エントリを追加した
