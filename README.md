@@ -142,7 +142,7 @@ fn test_with_nginx_blocking() {
   - Runtime 外 Drop: 呼び出しスレッドで削除試行が終わるまで待つ (成功は保証しない。失敗は `tracing::error` に記録するのみで呼び出し側には届かない)
 - 削除の完了待ち、または成否の `Result` が必要なら明示 `rm()` を使う (async は `rm().await`、sync は `rm()`)。同期コンテキスト (Runtime 内の Drop ガードや `spawn_blocking` 内) から削除完了を待ちたい場合は `rm_blocking()` を使う (`block_on` を使わないため Runtime 内から呼んでも deadlock しない)。明示 `rm()` / `rm_blocking()` は `TESTCONTAINERS_COMMAND=keep` でも削除する (Drop の `keep` ゲートとは非対称)
 - `TESTCONTAINERS_COMMAND=keep` のときは Drop で削除しない (調査用に残す)
-- `stop()` は LogConsumer 配信を止める。明示的な `rm()` を呼ばなくても Drop で削除される (keep 除く)
+- `stop()` は LogConsumer 配信を止める。明示的な `rm()` を呼ばなくても Drop で削除される (`keep` 除く)
 - 共有 Runtime のワーカースレッド上から最後の同期 `Container` を drop するとハングし得る既知の限界がある。LogConsumer コールバック内での `Container` drop は避けること
 
 ## サンプル
