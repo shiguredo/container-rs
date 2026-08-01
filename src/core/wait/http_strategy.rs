@@ -330,12 +330,16 @@ impl HttpWaitStrategy {
         port: u16,
         request_bytes: &[u8],
     ) -> std::result::Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
-        use crate::core::client::http_decode::ResponseAccumulator;
+        use crate::core::client::http_decode::{BodyLimit, ResponseAccumulator};
 
         let mut stream = tokio::net::TcpStream::connect((host, port)).await?;
         stream.write_all(request_bytes).await?;
 
-        let mut acc = ResponseAccumulator::new(&self.method, Some(MAX_HTTP_RESPONSE_BODY_BYTES));
+        // HTTP 待機はボディの 1 MiB 超を切り詰めて続行する (既存挙動)。
+        let mut acc = ResponseAccumulator::new(
+            &self.method,
+            BodyLimit::Truncate(MAX_HTTP_RESPONSE_BODY_BYTES),
+        );
 
         loop {
             let want = acc.read_buf_size();
