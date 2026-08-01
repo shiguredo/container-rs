@@ -82,10 +82,15 @@ jobs:
       - name: Update PATH
         run: echo "PATH=$HOME/.cargo/bin:/opt/homebrew/bin:$PATH" >> $GITHUB_ENV
       - run: rustup update stable
-      # Apple container コマンドと apiserver が利用可能か確認する
+      # Apple container CLI を最新に更新する (macOS ランタイム要件は 1.2.0 以上)
+      - name: Update Apple container to latest
+        run: brew upgrade container
+      # Apple container コマンドと apiserver が利用可能か確認する。
+      # apiserver が未起動なら container system start で起動してから再確認する。
       - name: Check Apple container availability
         run: |
           container --version
+          container system status || container system start
           container system status
       # host→container のネットワーク到達性を診断する (非致命的)。
       # コンテナ IP 直結・published port 経由ともに失敗する場合は
