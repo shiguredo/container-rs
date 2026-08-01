@@ -6,7 +6,7 @@
 |:--|:--|
 | 本家 | testcontainers-rs 0.27.3 (bollard 経由の Docker Engine) |
 | Apple Container | 本クレートの macOS 実装 (XPC)。メイン対象 |
-| Docker Engine API | 本クレートの Linux 実装 (`DockerClient` + unix socket)。ライフサイクル・ログ関連・copy・bridge IP 取得は配線済み、ネットワーク詳細等は未実装 |
+| Docker Engine API | 本クレートの Linux 実装 (`DockerClient` + unix socket)。ライフサイクル・ログ関連・copy・bridge IP 取得は配線済み、ネットワークの自動作成等は未対応 |
 
 判定ルール (Apple Container / Docker Engine API 列):
 
@@ -44,9 +44,9 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 
 ## Docker Engine API (Linux) の現状
 
-`DockerClient` (`src/core/client/docker_client.rs`) は `/var/run/docker.sock` 向けに pull / create / start / stop / remove / exec / inspect / logs / archive (copy) を実装済みである。`ContainerAsync` の Linux 分岐はライフサイクル系 (`ports` / `exec` / `stop` / `is_running` / `rm` / Drop / `start` 再起動 / `container_state`)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `with_log_consumer`)、copy (`copy_file_from` / `with_copy_to`)、ヘルスチェック (`with_health_check` / `WaitFor::Healthcheck`) を配線済みである。
+`DockerClient` (`src/core/client/docker_client.rs`) は `/var/run/docker.sock` 向けに pull (プライベートレジストリ認証 `X-Registry-Auth` 対応) / create / start / stop / remove / exec / inspect / logs / archive (copy) を実装済みである。`ContainerAsync` の Linux 分岐はライフサイクル系 (`ports` / `exec` / `stop` / `is_running` / `rm` / Drop / `start` 再起動 / `container_state`)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `with_log_consumer`)、copy (`copy_file_from` / `with_copy_to`)、ヘルスチェック (`with_health_check` / `WaitFor::Healthcheck`) を配線済みである。
 
-ログは `GET /containers/{id}/logs` を `spawn_blocking` 内の `UnixStream` で叩き、multiplex フレームを demux して stdout / stderr 別の共有バッファ (ストリームあたり 8 MiB、上限超過時は先頭から drop) へ書き込む。`stdout` / `stderr` のリーダーはこの共有バッファを独立オフセットで読む。
+ログは `GET /containers/{id}/logs` を `spawn_blocking` 内の `UnixStream` で叩き、multiplex フレームを demux して stdout / stderr 別の共有バッファ (ストリームあたり 8 MiB、上限超過時は先頭から drop) へ書き込む。`stdout` / `stderr` のリーダーはこの共有バッファを独立オフセットで読む。セッション起動 (接続・リクエスト送信・ヘッダ検証) には 30 秒のタイムアウトが設定され、起動成功後 (follow 経路) は解除される (デーモン無応答時の無限ブロック抑止)。
 
 その結果:
 
@@ -55,40 +55,40 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
 - `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入する (親ディレクトリ自動作成・ディレクトリ一括投入対応。配下 regular file の `mode` / `uid` / `gid` は反映。中間 directory の mode は `0o755`。コピー後 mtime は epoch)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり。親作成は `createParents`）。起動前投入は Linux のみの公開契約
 - `ExitWaitStrategy` は macOS / Linux とも exit_code_hint + container_state ポーリングで対応
-- `ImageExt` の一部 (`with_network` / `with_platform` / `with_cap_add` / `with_shm_size` / `with_readonly_rootfs` / `with_open_stdin` / `with_hostname` / `with_host` / `with_ssh` 等) は start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
+- `ImageExt::with_ssh` のみ Linux では start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
 
-README の Linux 注意書きと合わせて読むこと。残ギャップは exec の Env・ネットワーク詳細などである。
+README の Linux 注意書きと合わせて読むこと。残ギャップはネットワークの自動作成・自動削除などである。
 
 ## サマリ (Apple Container)
 
 | 状態 | 件数 |
 |:--|--:|
-| 対応 | 276 |
-| 部分対応 | 24 |
+| 対応 | 274 |
+| 部分対応 | 22 |
 | 未実装 (実装可能) | 0 |
 | 未実装 (XPC 制約) | 3 |
 | なし | 94 |
-| shiguredo 拡張 (本家に無い追加 API) | 12 |
+| shiguredo 拡張 (本家に無い追加 API) | 16 |
 | 内部型/内部関数 (対象外) | 4 |
 
 内訳合計: 409 API (判定対象。対象外 4 は含まない。feature ゲート表の「備考」列も集計外)
 
 判定内訳の傾向 (Apple Container):
 
-- **対応** (276): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` / `Healthcheck` 型はほぼ揃っている
-- **部分対応** (24): シグネチャあり + 動作するが XPC の情報不足 / 型不一致 / 挙動制約付き (例: `get_host` = `localhost` 固定、`exit_code` = 観測済みキャッシュのみ など)
+- **対応** (274): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` / `Healthcheck` 型はほぼ揃っている
+- **部分対応** (22): シグネチャあり + 動作するが XPC の情報不足 / 型不一致 / 挙動制約付き (例: `get_host` = `localhost` 固定 など)
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
 - **未実装 (XPC 制約)** (3): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機) と `with_health_check` (start 時明示エラー)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` はシグネチャ自体を削除済みのため「なし」に分類
 - **なし** (94): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
-- **shiguredo 拡張** (12): `ImageExt::with_init` / `with_ssh`、`ContainerAsync::container_state`、`Container::container_state`、`ClientError::Xpc*` / `ImageNotFound` / `ContainerNotFound` / `Json` / `Other`、`ContainerRequest` の `init` / `ssh` accessor
+- **shiguredo 拡張** (16): `ImageExt::with_init` / `with_ssh`、`ContainerAsync::container_state`、`Container::container_state`、`ClientError::Xpc*` / `ImageNotFound` / `ContainerNotFound` / `Json` / `Other`、`ContainerRequest` の `init` / `ssh` accessor、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()`
 
 ## サマリ (Docker Engine API)
 
 件数の厳密集計より、現状の読み方を優先する。
 
-- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code + stdout / stderr)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
-- **未配線・未実装が残るもの**: exec の Env 本対応
-- **未実装 (start 時 fail-fast)**: `with_ssh` など、Linux 設定構築に載らない ImageExt
+- **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code + stdout / stderr + Env)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
+- **未配線・未実装が残るもの**: ネットワークの自動作成・自動削除など
+- **未実装 (start 時 fail-fast)**: `with_ssh`、Linux 設定構築に載らない ImageExt
 
 Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差を同時に見せるためのものである。
 
@@ -124,7 +124,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_host(self, key, value)` | あり | 対応 | 対応 | macOS: exec で `/etc/hosts` へ追記 (`HostGateway` は `ipv4Gateway` から解決) / Docker: HostConfig.ExtraHosts に反映 |
 | `with_hostname(self, hostname)` | あり | 対応 | 対応 | macOS: 明示 hostname → container_name → id の優先で `networks[0].options.hostname` に反映 / Docker: Config.Hostname に反映 |
 | `with_mount(self, mount)` | あり | 対応 | 対応 | Bind/Volume/Tmpfs を XPC の `virtiofs/volume/tmpfs` にマップ / Docker: Bind は HostConfig.Binds、Volume/Tmpfs は HostConfig.Mounts に反映 |
-| `with_copy_to(self, target, source)` | あり | 対応 | 対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` は XPC 非反映。投入は start_process 後（起動前契約なし）。親作成は `createParents`。ホストディレクトリの再帰投入可（Apple container 1.1.0 で実測） / Docker: create 後・start 前に自前 ustar で `path=/` へ投入。親ディレクトリ自動作成・ディレクトリ一括投入対応。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で regular file に反映（中間 directory の mode は `0o755`）。コピー後 mtime は epoch。起動前投入は Linux のみの公開契約 |
+| `with_copy_to(self, target, source)` | あり | 対応 | 対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` はコピー後 exec で chown して反映 (uid/gid が非ゼロの場合のみ。ディレクトリ一括投入時は `chown -R`)。投入は start_process 後（起動前契約なし）。親作成は `createParents`。ホストディレクトリの再帰投入可（Apple container 1.1.0 で実測） / Docker: create 後・start 前に自前 ustar で `path=/` へ投入。親ディレクトリ自動作成・ディレクトリ一括投入対応。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で regular file に反映（中間 directory の mode は `0o755`）。コピー後 mtime は epoch。起動前投入は Linux のみの公開契約 |
 | `with_mapped_port(self, host_port, container_port)` | あり | 対応 | 対応 | `publishedPorts` に反映 |
 | `with_exposed_host_port(self, port)` (feature) | あり | なし | なし | `host-port-exposure` feature、Rust 側で SSH tunnel 実装が必要 |
 | `with_exposed_host_ports(self, ports)` (feature) | あり | なし | なし | 同上 |
@@ -192,7 +192,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `async fn unpause(&self) -> Result<()>` | あり | なし | 対応 | 同上 / Docker: `POST /containers/{id}/unpause` (304 冪等) |
 | `async fn is_running(&self) -> Result<bool>` | あり | 対応 | 対応 | `XpcClient::container_state` の `running` を返す / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn container_state(&self) -> Result<ContainerState>` | なし | shiguredo 拡張 | 対応 | XPC `containerState`。本家 0.27 に無し。`ContainerState::from_container` は本メソッドへ委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
-| `async fn exit_code(&self) -> Result<Option<i64>>` | あり | 部分対応 | 部分対応 | バックグラウンド wait の観測済みキャッシュのみ。未観測のときは停止後も `None` (都度 `containerWait` はしない) / Docker: バックグラウンド wait スレッド (`POST /containers/{id}/wait?condition=not-running`) の観測済みキャッシュのみ。未観測のときは停止後も `None` |
+| `async fn exit_code(&self) -> Result<Option<i64>>` | あり | 対応 | 部分対応 | macOS: バックグラウンド wait のキャッシュ優先、停止済みかつ未観測なら 5 秒タイムアウトで都度 `containerWait` を呼び取得を試みる (取得失敗時は `Ok(None)`) / Docker: バックグラウンド wait スレッド (`POST /containers/{id}/wait?condition=not-running`) の観測済みキャッシュのみ。未観測のときは停止後も `None` |
 | `async fn copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 対応 | XPC `containerCopyOut` でホスト上の一時ファイルに書き出し、`CopyFileFromContainer` に流し込む / Docker: `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開し先頭 regular file を渡す。ディレクトリは `IsDirectory`、source は絶対パス必須 |
 | `async fn rm(mut self) -> Result<()>` | あり | 対応 | 対応 | XPC `containerDelete` / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `fn rm_blocking(mut self) -> Result<()>` | なし | shiguredo 拡張 | shiguredo 拡張 | `block_on` を使わず `remove_blocking` (同期 I/O) を直接呼び出す。tokio Runtime 内の同期コンテキスト (Drop ガードや `spawn_blocking` 内) から呼んでも deadlock しない。`force=true`、404 は冪等成功、`keep` でも削除する |
@@ -243,7 +243,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `stderr_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `ContainerAsync::stderr_to_vec` に委譲 / Docker: 1-shot 取得 |
 | `is_running(&self) -> Result<bool>` | あり | 対応 | 対応 | `ContainerAsync::is_running` に委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `container_state(&self) -> Result<ContainerState>` | なし | shiguredo 拡張 | 対応 | `ContainerAsync::container_state` に委譲。本家 0.27 に無し / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
-| `exit_code(&self) -> Result<Option<i64>>` | あり | 部分対応 | 部分対応 | `ContainerAsync::exit_code` に委譲。6.1 委譲・制約同じ (観測済みキャッシュのみ) / Docker: バックグラウンド wait スレッドの観測済みキャッシュのみ |
+| `exit_code(&self) -> Result<Option<i64>>` | あり | 対応 | 部分対応 | `ContainerAsync::exit_code` に委譲。6.1 委譲・制約同じ (macOS は停止後都度取得、Docker は観測済みキャッシュのみ) / Docker: バックグラウンド wait スレッドの観測済みキャッシュのみ |
 
 ## 8. `ContainerRequest<I>` のメソッド (`core::containers::request`)
 
@@ -489,12 +489,12 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `pub struct CopyTargetOptions` | あり | 対応 | 対応 | フィールドは `pub(crate)` + アクセサ。`path` (本家 private `target`) + `mode: u32` (本家 `Option<u32>`) + `uid` / `gid` (macOS: chown で反映) |
 | `pub fn new(target)` | あり | 対応 | 対応 | デフォルト `mode` 0o644 |
 | `pub fn with_mode(mut, mode)` | あり | 対応 | 対応 | `mode: u32` フィールドを更新 |
-| `pub fn with_uid(mut, uid)` | あり | 対応 | 対応 | XPC 非反映 |
-| `pub fn with_gid(mut, gid)` | あり | 対応 | 対応 | XPC 非反映 |
+| `pub fn with_uid(mut, uid)` | なし | shiguredo 拡張 | shiguredo 拡張 | macOS: コピー後 chown で反映 (非ゼロの場合のみ) |
+| `pub fn with_gid(mut, gid)` | なし | shiguredo 拡張 | shiguredo 拡張 | 同上 |
 | `pub fn path(&self) -> &str` | あり | 対応 | 対応 | 本家は `target()` |
 | `pub fn mode(&self) -> Option<u32>` | あり | 対応 | 対応 | 常に `Some(self.mode)` (既定 0o644 含む) |
-| `pub fn uid(&self) -> u32` | あり | 対応 | 対応 | XPC 非反映 |
-| `pub fn gid(&self) -> u32` | あり | 対応 | 対応 | XPC 非反映 |
+| `pub fn uid(&self) -> u32` | なし | shiguredo 拡張 | shiguredo 拡張 | macOS: コピー後 chown で反映 (非ゼロの場合のみ) |
+| `pub fn gid(&self) -> u32` | なし | shiguredo 拡張 | shiguredo 拡張 | 同上 |
 | `impl<T: Into<String>> From<T> for CopyTargetOptions` | あり | なし | なし | 本家専用の blanket。shiguredo には無い |
 | `impl From<String> for CopyTargetOptions` | あり | 対応 | 対応 |  |
 | `impl From<&str> for CopyTargetOptions` | あり | 対応 | 対応 |  |
@@ -616,7 +616,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `pub fn host_port_ipv4(&self, port) -> Result<u16>` | あり | 対応 | 対応 |  |
 | `pub fn host_port_ipv6(&self, port) -> Result<u16>` | あり | 対応 | 対応 |  |
 
-### 16.2 `Host` (`core::containers::request::Host`)
+### 16.2 `Host` (`core::host::Host`)
 
 15 章末尾 (8 章の下段) と重複。省略。
 
@@ -701,7 +701,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `StateUnavailable` | あり | 対応 | 対応 |  |
 | `HttpWait(#[from] HttpWaitError)` (feature) | あり | 対応 | 対応 | feature = `http_wait_plain`。non-feature ビルドではバリアント自体が無い (本家と同じ) |
 | `HealthCheckNotConfigured(String)` | あり | 対応 | 対応 |  |
-| `Unhealthy(String)` | あり | 対応 | 対応 |  |
+| `Unhealthy(String)` | あり | 対応 | 対応 | 本家は `Unhealthy` (ユニットバリアント)。shiguredo は原因を保持する `Unhealthy(String)` (意図的差分) |
 | `StartupTimeout` | あり | 対応 | 対応 |  |
 | `UnexpectedExitCode { expected: i64, actual: Option<i64> }` | あり | 対応 | 対応 |  |
 
@@ -855,3 +855,4 @@ Apple container の XPC には対応 route が無いが、本家 API 互換の�
 |:--|:--|:--|:--|
 | `CopyFromContainerError::UnsupportedEntry` 型 | `tokio_tar::EntryType` | `&'static str` | 意図的な差分 (tokio_tar 依存を追加しない方針) |
 | `WaitLogError::EndOfStream` 要素型 | `Vec<Bytes>` | `Vec<Vec<u8>>` | 意図的な差分 (`bytes` 依存を追加しない方針) |
+| `WaitContainerError::Unhealthy` | `Unhealthy` (ユニットバリアント) | `Unhealthy(String)` | 意図的な差分 (エラー内容を保持するため) |
