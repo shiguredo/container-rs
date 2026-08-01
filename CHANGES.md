@@ -61,6 +61,8 @@
   - @voluntas
 - [UPDATE] macOS の `exit_code()` で停止済みコンテナの exit code を都度取得できるようにする
   - @voluntas
+- [ADD] macOS で `with_host(..., ExtraHost::HostGateway)` を対応する
+  - @voluntas
 - [FIX] Linux で `with_exposed_port` / `Image::expose_ports` がホストポート公開に反映されないのを修正する
   - @voluntas
 - [FIX] manifest 選択フォールバックで attestation manifest (`architecture: "unknown"`) を除外する

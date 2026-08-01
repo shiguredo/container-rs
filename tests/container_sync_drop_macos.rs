@@ -197,7 +197,7 @@ fn sync_startup_timeout_removes_container() {
     );
 }
 
-/// 同期 API の HostGateway 未対応エラーで孤立コンテナが残らないこと。
+/// 同期 API の構築後エラー (with_health_check 未対応) で孤立コンテナが残らないこと。
 #[test]
 fn sync_host_gateway_removes_container() {
     if helpers::skip_if_ci() {
@@ -210,18 +210,18 @@ fn sync_host_gateway_removes_container() {
 
     let result = GenericImage::new("alpine", "latest")
         .with_container_name(&name)
-        .with_host("gw.test", shiguredo_container::core::ExtraHost::HostGateway)
+        .with_health_check(shiguredo_container::core::healthcheck::Healthcheck::none())
         .with_cmd(["sleep", "30"])
         .start();
 
     match result {
         Err(err) => {
             assert!(
-                err.to_string().contains("HostGateway"),
-                "HostGateway 未対応のメッセージを含むこと: {err}"
+                err.to_string().contains("with_health_check"),
+                "with_health_check 未対応のメッセージを含むこと: {err}"
             );
         }
-        Ok(_) => panic!("HostGateway は macOS で必ずエラーになること"),
+        Ok(_) => panic!("with_health_check は macOS で必ずエラーになること"),
     }
 
     let listed = container_id_listed(&name);
@@ -277,18 +277,18 @@ fn keep_on_startup_failure_victim() {
 
     let result = GenericImage::new("alpine", "latest")
         .with_container_name(&name)
-        .with_host("gw.test", shiguredo_container::core::ExtraHost::HostGateway)
+        .with_copy_to(
+            "/data/nonexistent.txt",
+            std::path::PathBuf::from("/nonexistent/path/that/does/not/exist.txt"),
+        )
         .with_cmd(["sleep", "30"])
         .start();
 
     match result {
-        Err(err) => {
-            assert!(
-                err.to_string().contains("HostGateway"),
-                "HostGateway 未対応のメッセージを含むこと: {err}"
-            );
+        Err(_) => {
+            // コピー元のファイルが存在しないため構築後エラーになること。
         }
-        Ok(_) => panic!("HostGateway は macOS で必ずエラーになること"),
+        Ok(_) => panic!("存在しないコピー元で必ずエラーになること"),
     }
 
     assert!(

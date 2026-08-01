@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed:
+- Completed: 2026-08-01
 - Model: qwen3.8-max-preview
 - Branch: feature/add-macos-host-gateway
 - Polished: 2026-07-29
@@ -38,3 +38,13 @@ macOS (Apple Container) バックエンドで `with_host(..., ExtraHost::HostGat
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `XpcClient` に `gateway_ip_address` メソッドを追加した (`containerList` の `networks[0].ipv4Gateway` を読み取る)
+- `ContainerAsync` に `gateway_ip_address` 委譲メソッドを追加した
+- `apply_extra_hosts` の `HostGateway` アームを、ゲートウェイ IP を取得して `/etc/hosts` に追記する処理に変更した
+- ゲートウェイ IP 取得失敗時は明示エラーを返す
+- HostGateway エラー前提テストを `with_health_check` エラートリガに差し替えた
+- docs/TESTCONTAINERS.md と skills/shiguredo-container/SKILL.md を更新した
+- CHANGES.md に [ADD] エントリを追加した

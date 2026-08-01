@@ -283,6 +283,39 @@ impl XpcClient {
         .await?
     }
 
+    /// `containerList` のレスポンスから `networks[0].ipv4Gateway` を取得する。
+    /// ゲートウェイが取得できない場合はエラー。
+    pub(crate) async fn gateway_ip_address(&self, id: &str) -> Result<IpAddr> {
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            with_first_container(&id, |item| {
+                let networks = item
+                    .to_member("networks")
+                    .ok()
+                    .and_then(|m| m.optional())
+                    .and_then(|v| v.to_array().ok())
+                    .ok_or_else(|| ClientError::Other("no network attachments".into()))?;
+                let first = networks
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| ClientError::Other("no network attachments".into()))?;
+                let addr_str: String = first
+                    .to_member("ipv4Gateway")
+                    .and_then(|m| m.required())
+                    .and_then(|v| v.try_into())
+                    .map_err(|e| ClientError::Json(e.to_string()))?;
+                // CIDR 表記の場合に備えてアドレス部分のみを取り出す。
+                let addr_only = addr_str
+                    .split_once('/')
+                    .map_or(addr_str.as_str(), |(addr, _)| addr);
+                addr_only.parse::<IpAddr>().map_err(|e| {
+                    ClientError::Other(format!("invalid gateway ip address: {e}")).into()
+                })
+            })
+        })
+        .await?
+    }
+
     /// コンテナの公開ポートを取得する。
     ///
     /// `container_state` から `publishedPorts` を取得する。

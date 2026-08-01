@@ -2758,7 +2758,7 @@ mod test_drop_removal_race {
 
     use shiguredo_container::{
         GenericImage, ImageExt,
-        core::{ExtraHost, WaitFor, error::WaitContainerError},
+        core::{WaitFor, error::WaitContainerError},
         runners::AsyncRunner,
     };
 
@@ -2823,7 +2823,7 @@ mod test_drop_removal_race {
         );
     }
 
-    /// HostGateway 未対応エラーの構築後エラーで、Err 返却後にコンテナが残らないこと。
+    /// 構築後エラー (with_health_check 未対応) で Err 返却後にコンテナが残らないこと。
     #[tokio::test(flavor = "current_thread")]
     async fn async_host_gateway_removes_container() {
         if super::helpers::skip_if_ci() {
@@ -2835,7 +2835,7 @@ mod test_drop_removal_race {
 
         let result = GenericImage::new("alpine", "latest")
             .with_container_name(&name)
-            .with_host("gw.test", ExtraHost::HostGateway)
+            .with_health_check(shiguredo_container::core::healthcheck::Healthcheck::none())
             .with_cmd(["sleep", "30"])
             .start()
             .await;
@@ -2843,11 +2843,11 @@ mod test_drop_removal_race {
         match result {
             Err(err) => {
                 assert!(
-                    err.to_string().contains("HostGateway"),
-                    "HostGateway 未対応のメッセージを含むこと: {err}"
+                    err.to_string().contains("with_health_check"),
+                    "with_health_check 未対応のメッセージを含むこと: {err}"
                 );
             }
-            Ok(_) => panic!("HostGateway は macOS で必ずエラーになること"),
+            Ok(_) => panic!("with_health_check は macOS で必ずエラーになること"),
         }
 
         let listed = container_id_listed(&name);
