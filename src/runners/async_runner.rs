@@ -727,6 +727,16 @@ async fn copy_to_sources<I: Image>(
                 client
                     .copy_in(id, p, &src.target.path, src.target.mode)
                     .await?;
+                // uid/gid が非ゼロの場合、chown で所有者を変更する。
+                chown_after_copy(
+                    client,
+                    id,
+                    &src.target.path,
+                    src.target.uid,
+                    src.target.gid,
+                    p.is_dir(),
+                )
+                .await;
             }
             CopyDataSource::Data(b) => {
                 let guard = write_copy_data_temp(b).await?;
@@ -734,11 +744,47 @@ async fn copy_to_sources<I: Image>(
                     .copy_in(id, guard.as_path(), &src.target.path, src.target.mode)
                     .await?;
                 // Data コピー用の一時ファイルはガードの Drop で削除する。
+                // uid/gid が非ゼロの場合、chown で所有者を変更する。
+                chown_after_copy(
+                    client,
+                    id,
+                    &src.target.path,
+                    src.target.uid,
+                    src.target.gid,
+                    false,
+                )
+                .await;
             }
         }
     }
 
     Ok(())
+}
+
+/// コピー後のファイル/ディレクトリの所有者を chown で変更する。
+///
+/// `uid == 0 && gid == 0` の場合はスキップする。
+/// 失敗時は warn ログのみでエラーにしない (権限不足で失敗し得るため)。
+async fn chown_after_copy(
+    client: &crate::core::client::xpc_client::XpcClient,
+    id: &str,
+    path: &str,
+    uid: u32,
+    gid: u32,
+    recursive: bool,
+) {
+    if uid == 0 && gid == 0 {
+        return;
+    }
+    let mut cmd = vec!["chown".to_string()];
+    if recursive {
+        cmd.push("-R".to_string());
+    }
+    cmd.push(format!("{uid}:{gid}"));
+    cmd.push(path.to_string());
+    if let Err(e) = client.exec(id, &cmd, vec![]).await {
+        tracing::warn!("failed to chown {path} to {uid}:{gid}: {e}");
+    }
 }
 
 /// `ContainerRequest::copy_to_sources` をコンテナへコピーする (Linux)。

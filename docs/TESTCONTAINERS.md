@@ -486,9 +486,9 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `pub struct CopyTargetOptions` | あり | 対応 | 対応 | フィールドは `pub(crate)` + アクセサ。`path` (本家 private `target`) + `mode: u32` (本家 `Option<u32>`) + `uid` / `gid` (XPC 非反映) |
+| `pub struct CopyTargetOptions` | あり | 対応 | 対応 | フィールドは `pub(crate)` + アクセサ。`path` (本家 private `target`) + `mode: u32` (本家 `Option<u32>`) + `uid` / `gid` (macOS: chown で反映) |
 | `pub fn new(target)` | あり | 対応 | 対応 | デフォルト `mode` 0o644 |
-| `pub fn with_mode(mut, mode)` | あり | 対応 | 対応 | `mode: u32` フィールドを更新。`uid` / `gid` は XPC 非反映のまま |
+| `pub fn with_mode(mut, mode)` | あり | 対応 | 対応 | `mode: u32` フィールドを更新 |
 | `pub fn with_uid(mut, uid)` | あり | 対応 | 対応 | XPC 非反映 |
 | `pub fn with_gid(mut, gid)` | あり | 対応 | 対応 | XPC 非反映 |
 | `pub fn path(&self) -> &str` | あり | 対応 | 対応 | 本家は `target()` |
