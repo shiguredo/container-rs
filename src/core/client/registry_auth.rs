@@ -7,9 +7,16 @@
 ///
 /// Docker Hub の場合は `https://index.docker.io/v1/`、
 /// それ以外は先頭コンポーネント (レジストリホスト) を返す。
+/// `/` を含まない参照 (例: `alpine:latest`) は常に Docker Hub。
 pub(crate) fn auths_key(descriptor: &str) -> String {
-    let first = descriptor.split('/').next().unwrap_or("");
-    if first.contains('.') || first.contains(':') || first == "localhost" {
+    // `/` を含まない場合は Docker Hub 固有。
+    let Some(first) = descriptor.split('/').next() else {
+        return "https://index.docker.io/v1/".to_string();
+    };
+    // `/` で分割して 2 コンポーネント以上ある場合のみホスト判定する。
+    if descriptor.contains('/')
+        && (first.contains('.') || first.contains(':') || first == "localhost")
+    {
         first.to_string()
     } else {
         "https://index.docker.io/v1/".to_string()
