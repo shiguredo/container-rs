@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::core::ports::ContainerPort;
 
+/// このクレートで使用する結果型。
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// `EndOfStream` の表示に含めるログ末尾プレビューの上限バイト数。
@@ -21,7 +22,12 @@ pub enum Error {
     /// コンテナが準備完了でない。
     WaitContainer(WaitContainerError),
     /// コンテナが指定ポートを公開していない。
-    PortNotExposed { id: String, port: ContainerPort },
+    PortNotExposed {
+        /// コンテナ ID。
+        id: String,
+        /// 公開されていないポート。
+        port: ContainerPort,
+    },
     /// コンテナの情報が足りない。
     MissingInfo(ContainerMissingInfo),
     /// exec 操作の失敗。
@@ -145,6 +151,7 @@ impl fmt::Display for ClientError {
 
 impl StdError for ClientError {}
 
+/// コンテナに必要な情報が存在しないことを示すエラー。
 #[derive(Debug)]
 pub struct ContainerMissingInfo {
     pub(crate) id: String,
@@ -162,7 +169,14 @@ impl StdError for ContainerMissingInfo {}
 /// exec 操作のエラー。
 #[derive(Debug)]
 pub enum ExecError {
-    ExitCodeMismatch { expected: i64, actual: i64 },
+    /// exec プロセスの終了コードが期待値と異なる。
+    ExitCodeMismatch {
+        /// 期待していた終了コード。
+        expected: i64,
+        /// 実際の終了コード。
+        actual: i64,
+    },
+    /// exec のログ待機に失敗した。
     WaitLog(WaitLogError),
 }
 
@@ -198,18 +212,29 @@ impl From<WaitLogError> for ExecError {
 /// コンテナ準備完了待機のエラー。
 #[derive(Debug)]
 pub enum WaitContainerError {
+    /// ログ待機に失敗した。
     WaitLog(WaitLogError),
+    /// コンテナの状態を取得できない。
     StateUnavailable,
+    /// HTTP 待機に失敗した。
     #[cfg(feature = "http_wait_plain")]
     HttpWait(crate::core::wait::http_strategy::HttpWaitError),
+    /// ヘルスチェックが設定されていない。
     HealthCheckNotConfigured(String),
+    /// コンテナが unhealthy 状態である。
     Unhealthy(String),
+    /// コンテナの起動がタイムアウトした。
     StartupTimeout {
+        /// コンテナ ID。
         id: String,
+        /// タイムアウト時間。
         timeout: Duration,
     },
+    /// コンテナが予期しない終了コードで終了した。
     UnexpectedExitCode {
+        /// 期待していた終了コード。
         expected: i64,
+        /// 実際の終了コード。取得できない場合は `None`。
         actual: Option<i64>,
     },
 }
@@ -264,6 +289,7 @@ pub enum WaitLogError {
     /// ストリームがメッセージを見つける前に終端に達した。
     /// 診断のため、上限内で保持した直近ログを含める (連結済み、要素は 0 または 1)。
     EndOfStream(Vec<Vec<u8>>),
+    /// I/O エラー。
     Io(std::io::Error),
 }
 

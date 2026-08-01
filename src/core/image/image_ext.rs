@@ -17,24 +17,34 @@ use crate::{
 
 /// `Image` に設定を重ねる拡張トレイト。
 pub trait ImageExt<I: Image> {
+    /// コンテナの CMD を上書きする。
     fn with_cmd(self, cmd: impl IntoIterator<Item = impl Into<String>>) -> ContainerRequest<I>;
+    /// イメージ名を上書きする。
     fn with_name(self, name: impl Into<String>) -> ContainerRequest<I>;
+    /// イメージタグを上書きする。
     fn with_tag(self, tag: impl Into<String>) -> ContainerRequest<I>;
+    /// コンテナ名を設定する。
     fn with_container_name(self, name: impl Into<String>) -> ContainerRequest<I>;
     /// コンテナのホスト名を設定する。
     ///
     /// macOS (Apple container) では `networks[0].options.hostname` に反映される。
     /// 未指定時は `with_container_name` の値、それも無ければコンテナ ID が使われる。
     fn with_hostname(self, hostname: impl Into<String>) -> ContainerRequest<I>;
+    /// 接続するネットワークを設定する。
     fn with_network(self, network: impl Into<String>) -> ContainerRequest<I>;
+    /// ラベルを 1 件追加する。
     fn with_label(self, key: impl Into<String>, value: impl Into<String>) -> ContainerRequest<I>;
+    /// ラベルを複数追加する。
     fn with_labels(
         self,
         labels: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
     ) -> ContainerRequest<I>;
+    /// 環境変数を 1 件追加する。
     fn with_env_var(self, name: impl Into<String>, value: impl Into<String>)
     -> ContainerRequest<I>;
+    /// extra_hosts エントリを追加する。
     fn with_host(self, key: impl Into<String>, value: impl Into<ExtraHost>) -> ContainerRequest<I>;
+    /// マウントを追加する。
     fn with_mount(self, mount: impl Into<Mount>) -> ContainerRequest<I>;
     /// コンテナへコピーするファイルを登録する。
     ///
@@ -60,18 +70,25 @@ pub trait ImageExt<I: Image> {
         target: impl Into<CopyTargetOptions>,
         source: impl Into<CopyDataSource>,
     ) -> ContainerRequest<I>;
+    /// ホストポートとコンテナポートのマッピングを追加する。
     fn with_mapped_port(self, host_port: u16, container_port: ContainerPort)
     -> ContainerRequest<I>;
+    /// privileged モードを設定する。
     fn with_privileged(self, privileged: bool) -> ContainerRequest<I>;
     /// ルートファイルシステムを読み取り専用にする。
     ///
     /// macOS (Apple container) では XPC `readOnly` に反映される。
     /// 個別マウントの read-only (`Mount` の AccessMode) とは別設定である。
     fn with_readonly_rootfs(self, readonly_rootfs: bool) -> ContainerRequest<I>;
+    /// Linux capability を追加する。
     fn with_cap_add(self, capability: impl Into<String>) -> ContainerRequest<I>;
+    /// Linux capability を削除する。
     fn with_cap_drop(self, capability: impl Into<String>) -> ContainerRequest<I>;
+    /// /dev/shm のサイズをバイト単位で設定する。
     fn with_shm_size(self, bytes: u64) -> ContainerRequest<I>;
+    /// 起動タイムアウトを設定する。
     fn with_startup_timeout(self, timeout: Duration) -> ContainerRequest<I>;
+    /// 作業ディレクトリを設定する。
     fn with_working_dir(self, working_dir: impl Into<String>) -> ContainerRequest<I>;
     /// ログフレームを受け取るコールバックを登録する。
     ///
@@ -81,12 +98,14 @@ pub trait ImageExt<I: Image> {
     /// を呼び出すと共有 Runtime への再入によって deadlock する。コールバック内では
     /// 同期 API の呼び出しを避けること。
     fn with_log_consumer(self, log_consumer: impl LogConsumer + 'static) -> ContainerRequest<I>;
+    /// コンテナ内でプロセスを実行するユーザーを設定する。
     fn with_user(self, user: impl Into<String>) -> ContainerRequest<I>;
     /// stdin を開いた状態で起動する (XPC では `initProcess.terminal` に反映)。
     ///
     /// Docker の `OpenStdin` と XPC の `terminal` は同義ではないが、
     /// Apple container で利用可能な最も近い設定口として使う。
     fn with_open_stdin(self, open_stdin: bool) -> ContainerRequest<I>;
+    /// 準備完了条件を設定する。`Image::ready_conditions` を上書きする。
     fn with_ready_conditions(
         self,
         ready_conditions: Vec<crate::core::WaitFor>,
@@ -106,7 +125,9 @@ pub trait ImageExt<I: Image> {
     fn with_platform(self, platform: impl Into<String>) -> ContainerRequest<I>;
 
     // ── shiguredo 拡張（本家には無いが既存 API 互換のため残す）──
+    /// init プロセスを有効にする (shiguredo 拡張)。
     fn with_init(self) -> ContainerRequest<I>;
+    /// SSH 転送を有効にする (shiguredo 拡張)。
     fn with_ssh(self) -> ContainerRequest<I>;
 }
 

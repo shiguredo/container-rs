@@ -7,6 +7,10 @@ use crate::{
     core::{client::Client, error::Result},
 };
 
+/// コンテナの終了を待つ戦略。
+///
+/// バックグラウンドの `containerWait` が観測した exit code と
+/// `container_state` のポーリングで終了を判定する。
 #[derive(Debug, Clone)]
 pub struct ExitWaitStrategy {
     expected_code: Option<i64>,
@@ -14,6 +18,7 @@ pub struct ExitWaitStrategy {
 }
 
 impl ExitWaitStrategy {
+    /// デフォルト設定 (exit code 不問、100ms ポーリング) で戦略を作る。
     pub fn new() -> Self {
         Self {
             expected_code: None,
@@ -21,11 +26,13 @@ impl ExitWaitStrategy {
         }
     }
 
+    /// ポーリング間隔を設定する。
     pub fn with_poll_interval(mut self, poll_interval: Duration) -> Self {
         self.poll_interval = poll_interval;
         self
     }
 
+    /// 期待する exit code を設定する。不一致の場合はエラーになる。
     pub fn with_exit_code(mut self, expected_code: i64) -> Self {
         self.expected_code = Some(expected_code);
         self

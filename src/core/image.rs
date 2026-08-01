@@ -106,10 +106,12 @@ impl ContainerState {
         &self.id
     }
 
+    /// ホストを返す。
     pub fn host(&self) -> &Host {
         &self.host
     }
 
+    /// コンテナポートに対応するホストの IPv4 ポートを返す。
     pub fn host_port_ipv4(&self, internal_port: ContainerPort) -> Result<u16> {
         self.ports
             .map_to_host_port_ipv4(internal_port)
@@ -119,6 +121,7 @@ impl ContainerState {
             })
     }
 
+    /// コンテナポートに対応するホストの IPv6 ポートを返す。
     pub fn host_port_ipv6(&self, internal_port: ContainerPort) -> Result<u16> {
         self.ports
             .map_to_host_port_ipv6(internal_port)

@@ -7,8 +7,11 @@ use std::collections::BTreeMap;
 /// `u16` からは `Into::into` で `Tcp` になる。`IntoContainerPort` トレイトで `123.udp()` のように明示できる。
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum ContainerPort {
+    /// TCP ポート。
     Tcp(u16),
+    /// UDP ポート。
     Udp(u16),
+    /// SCTP ポート。
     Sctp(u16),
 }
 
@@ -48,8 +51,11 @@ impl std::str::FromStr for ContainerPort {
 
 /// `u16` を `ContainerPort` に変換するヘルパートレイト。
 pub trait IntoContainerPort {
+    /// TCP ポートに変換する。
     fn tcp(self) -> ContainerPort;
+    /// UDP ポートに変換する。
     fn udp(self) -> ContainerPort;
+    /// SCTP ポートに変換する。
     fn sctp(self) -> ContainerPort;
 }
 

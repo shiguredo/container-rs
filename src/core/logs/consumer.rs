@@ -21,6 +21,7 @@ use crate::core::logs::LogFrame;
 /// 呼び出すと共有 Runtime への再入によって deadlock する。実装側は再入を検出して
 /// 即座にエラーにする (fail-fast) が、コールバック内では同期 API の呼び出しを避けること。
 pub trait LogConsumer: Send + Sync {
+    /// ログフレームを 1 件受け取って処理する。
     fn accept<'a>(&'a self, record: &'a LogFrame) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 

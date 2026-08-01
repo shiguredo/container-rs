@@ -76,10 +76,12 @@ pub struct LogWaitStrategy {
 }
 
 impl LogWaitStrategy {
+    /// stdout に指定メッセージが出るまで待つ戦略を作る。
     pub fn stdout(message: impl AsRef<[u8]>) -> Self {
         Self::new(LogSource::StdOut, message)
     }
 
+    /// stderr に指定メッセージが出るまで待つ戦略を作る。
     pub fn stderr(message: impl AsRef<[u8]>) -> Self {
         Self::new(LogSource::StdErr, message)
     }
@@ -89,6 +91,7 @@ impl LogWaitStrategy {
         Self::new(LogSource::BothStd, message)
     }
 
+    /// ログ出力元とメッセージを指定して新しい戦略を作る。
     pub fn new(source: LogSource, message: impl AsRef<[u8]>) -> Self {
         Self {
             source,

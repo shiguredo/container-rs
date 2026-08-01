@@ -14,7 +14,9 @@ use std::path::PathBuf;
 /// コピー元データソース。
 #[derive(Debug, Clone)]
 pub enum CopyDataSource {
+    /// ホスト上のファイルパス。
     File(PathBuf),
+    /// メモリ上のバイト列。
     Data(Vec<u8>),
 }
 
@@ -130,6 +132,7 @@ pub struct CopyToContainer {
 }
 
 impl CopyToContainer {
+    /// コピー元とコピー先を指定して新しいインスタンスを作る。
     pub fn new(source: impl Into<CopyDataSource>, target: impl Into<CopyTargetOptions>) -> Self {
         Self {
             source: source.into(),
@@ -192,7 +195,9 @@ mod tests {
 /// `CopyToContainer` のエラー。
 #[derive(Debug)]
 pub enum CopyToContainerError {
+    /// I/O エラー。
     IoError(std::io::Error),
+    /// パス名のエラー。
     PathNameError(String),
 }
 
@@ -229,7 +234,9 @@ impl From<std::io::Error> for CopyToContainerError {
 /// `GET /containers/{id}/archive` で取得した tar を自前 ustar パーサ (`docker_tar`) で展開し、
 /// 先頭 regular file の内容を `Cursor` に載せてこのトレイトへ渡す。
 pub trait CopyFileFromContainer: Sized + Send {
+    /// コピー結果の出力型。
     type Output: Send;
+    /// 非同期リーダーからデータを読み取り、コピー結果を生成する。
     fn copy_from_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
         self,
         reader: R,
@@ -288,9 +295,13 @@ impl CopyFileFromContainer for Vec<u8> {
 /// `CopyFileFromContainer` のエラー。
 #[derive(Debug)]
 pub enum CopyFromContainerError {
+    /// I/O エラー。
     Io(std::io::Error),
+    /// コピー対象がディレクトリである。
     IsDirectory,
+    /// アーカイブが空である。
     EmptyArchive,
+    /// サポートされていないエントリ種別である。
     UnsupportedEntry(&'static str),
 }
 

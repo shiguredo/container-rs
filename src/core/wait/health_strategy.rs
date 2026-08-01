@@ -11,18 +11,25 @@ use crate::{
     core::{client::Client, error::Result},
 };
 
+/// ヘルスチェックの通過を待つ戦略。
+///
+/// Linux (Docker) では inspect をポーリングして `healthy` を待つ。
+/// macOS (Apple container) は Docker HEALTHCHECK 相当を実装していないため、
+/// 常に `HealthCheckNotConfigured` エラーを返す。
 #[derive(Debug, Clone)]
 pub struct HealthWaitStrategy {
     poll_interval: Duration,
 }
 
 impl HealthWaitStrategy {
+    /// デフォルト設定 (100ms ポーリング) で戦略を作る。
     pub fn new() -> Self {
         Self {
             poll_interval: Duration::from_millis(100),
         }
     }
 
+    /// ポーリング間隔を設定する。
     pub fn with_poll_interval(mut self, poll_interval: Duration) -> Self {
         self.poll_interval = poll_interval;
         self

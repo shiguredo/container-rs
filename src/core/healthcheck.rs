@@ -103,26 +103,32 @@ impl Healthcheck {
         self
     }
 
+    /// プローブコマンドの配列を返す。
     pub fn test(&self) -> &[String] {
         &self.test
     }
 
+    /// プローブ実行間隔を返す。
     pub fn interval(&self) -> Option<Duration> {
         self.interval
     }
 
+    /// 1 回のプローブのタイムアウトを返す。
     pub fn timeout(&self) -> Option<Duration> {
         self.timeout
     }
 
+    /// リトライ回数を返す。
     pub fn retries(&self) -> Option<u64> {
         self.retries
     }
 
+    /// 起動直後に失敗を無視する期間を返す。
     pub fn start_period(&self) -> Option<Duration> {
         self.start_period
     }
 
+    /// 起動期間中のプローブ間隔を返す。
     pub fn start_interval(&self) -> Option<Duration> {
         self.start_interval
     }
