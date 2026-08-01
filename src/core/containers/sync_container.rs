@@ -429,7 +429,7 @@ mod tests {
     }
 
     /// 既存 tokio ランタイム (current_thread) 内から呼ばれた場合は別スレッドで
-    /// future を実行し、panic しないこと (0019 の回帰テスト)。
+    /// future を実行し、panic しないこと (既存 tokio ランタイム内で block_on_runtime を呼んだとき別スレッドで実行されることの回帰テスト)。
     #[test]
     fn block_on_runtime_inside_current_thread_runtime_runs_on_another_thread() {
         let outer = tokio::runtime::Builder::new_current_thread()
