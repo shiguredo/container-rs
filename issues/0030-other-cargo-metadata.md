@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-22
-- Completed:
+- Completed: 2026-08-01
 - Model: Claude Sonnet 4
 - Branch: feature/update-cargo-metadata
 - Polished: 2026-07-29
@@ -31,3 +31,8 @@ crates.io での検索性・パブリッシュ品質を確保し、宣言した 
 - [ ] Cargo.toml に keywords / categories が設定されていること
 - [ ] CI に MSRV (1.93.0) 検証ジョブがあること
 - [ ] `cargo package` が pass すること
+
+## 解決方法
+
+- Cargo.toml に `keywords` / `categories` を追加した
+- CI に MSRV (1.93.0) 検証ジョブ (`cargo +1.93.0 check --all-features`) を追加した
