@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-22
-- Completed:
+- Completed: 2026-08-01
 - Model: Claude Sonnet 4
 - Branch: feature/fix-test-messages-japanese
 - Polished: 2026-07-29
@@ -36,3 +36,9 @@ AGENTS.md の「テストのログメッセージは全て日本語にするこ�
 - [ ] スキップメッセージのプレフィックスが `"スキップ:"` に統一されていること
 - [ ] ソースコード内に issue 番号への言及がなくなること
 - [ ] `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- tests/container_macos.rs の英語 assert メッセージ 35 箇所を日本語化した
+- SKIP: プレフィックスを「スキップ:」に統一した
+- sync_container.rs の issue 番号言及 (0019) を理由そのものに置き換えた
