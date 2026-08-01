@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-31
-- Completed:
+- Completed: 2026-08-01
 - Branch: feature/change-macos-container-id-validation
 - Polished: 2026-08-01
 
@@ -53,3 +53,17 @@ Apple container 1.2.0 で XPC リクエストに対するコンテナ ID 検証�
 - [ ] 単体テスト (PBT を含む) または統合テストが追加されていること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+`src/core/util.rs` に Apple container 1.2.0 の `nameValid` 相当の共通検証関数 `is_valid_container_id` (先頭は英数字・実質 2 文字以上・63 文字以下・文字種は英数字 / `_` / `.` / `-`) を追加した。
+
+`src/runners/async_runner.rs` の macOS ブロック冒頭で、コンテナ ID (`with_container_name` の値、未指定時は自動生成 `c-{unique_suffix()}`) を確定して pull / resolve より前に検証するようにした。不正な ID は `invalid container id ...` (ID 値と規則の要約を含む英語) の `crate::Error::other` を返す。
+
+`src/watchdog.rs` の `is_valid_container_id` は共通関数への委譲に変更し、1 文字 ID を許可していた挙動は捨てた (新規則の受理集合は従来の部分集合のため reaper スクリプトのシェル安全性は維持される)。
+
+テストは次を追加した: `src/core/util.rs` の単体テスト (境界値 63 / 64 文字・先頭文字種・非 ASCII・自動生成 ID の適合)、`src/watchdog.rs` の 1 文字 ID 拒否への反転更新、`tests/container_macos.rs` の統合テスト (存在しないイメージ名を使い pull より前の検証を実証)。自動生成 ID の長さは最悪ケースでも 63 文字未満に収まる。
+
+ドキュメントは次を更新した: `README.md` の要件表に Apple container 1.2.0 以上、`docs/TESTCONTAINERS.md` に 1.2.0 前提とコンテナ ID 制約の節、`skills/shiguredo-container/SKILL.md` の要件表と既知の制限事項、`with_container_name` の rustdoc。
+
+`CHANGES.md` に `[CHANGE]` (破壊的変更) エントリを追加した。
