@@ -620,6 +620,12 @@ fn linux_unsupported_request_reason<I: Image>(req: &ContainerRequest<I>) -> Opti
     if req.ssh() {
         return Some("with_ssh() is not implemented on Linux");
     }
+    if req.masked_paths().is_some() {
+        return Some("with_masked_paths() is not implemented on Linux");
+    }
+    if req.readonly_paths().is_some() {
+        return Some("with_readonly_paths() is not implemented on Linux");
+    }
     None
 }
 
@@ -1060,7 +1066,7 @@ mod tests {
     }
 }
 
-/// Linux: `build_container_config` のポート合成を検証する。
+/// Linux: `build_container_config` のポート合成と `linux_unsupported_request_reason` を検証する。
 ///
 /// 既存の macOS 向け `mod tests` は触らず、別モジュールとして追加する。
 #[cfg(all(test, target_os = "linux"))]
@@ -1068,7 +1074,27 @@ mod linux_tests {
     use crate::core::ports::IntoContainerPort;
     use crate::{ContainerRequest, GenericImage, ImageExt};
 
-    use super::build_container_config;
+    use super::{build_container_config, linux_unsupported_request_reason};
+
+    #[test]
+    fn masked_readonly_paths_are_unsupported_on_linux() {
+        // with_masked_paths / with_readonly_paths は空リストでも Linux では start 時に明示エラーになること。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_masked_paths(std::iter::empty::<String>());
+        assert_eq!(
+            linux_unsupported_request_reason(&req),
+            Some("with_masked_paths() is not implemented on Linux")
+        );
+
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_readonly_paths(["/etc"]);
+        assert_eq!(
+            linux_unsupported_request_reason(&req),
+            Some("with_readonly_paths() is not implemented on Linux")
+        );
+    }
 
     #[test]
     fn expose_only_gets_host_port_zero() {

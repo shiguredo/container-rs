@@ -250,6 +250,161 @@ mod test_container_macos {
         container.rm().await.expect("コンテナの削除に失敗した");
     }
 
+    /// `with_readonly_paths` で指定したパスへの書き込みが失敗すること。
+    #[tokio::test]
+    async fn xpc_readonly_paths_blocks_write() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        let container = GenericImage::new("alpine", "latest")
+            .with_readonly_paths(["/etc"])
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .start()
+            .await
+            .expect("alpine コンテナの起動に失敗した");
+
+        let result = container
+            .exec(ExecCommand::new(["touch", "/etc/readonly_probe"]))
+            .await
+            .expect("touch の exec に失敗した");
+        let code = result
+            .exit_code()
+            .await
+            .expect("終了コードの取得に失敗した");
+        assert_ne!(
+            code,
+            Some(0),
+            "readonlyPaths 指定パスへの touch は失敗すること (exit={code:?})"
+        );
+
+        // control: 指定外パスへの書き込みは成功する (readonlyPaths が原因であることの対比)。
+        let result = container
+            .exec(ExecCommand::new(["touch", "/tmp/readonly_probe"]))
+            .await
+            .expect("touch の exec に失敗した");
+        let code = result
+            .exit_code()
+            .await
+            .expect("終了コードの取得に失敗した");
+        assert_eq!(
+            code,
+            Some(0),
+            "readonlyPaths 外のパスへの touch は成功すること (exit={code:?})"
+        );
+
+        container
+            .stop_with_timeout(Some(0))
+            .await
+            .expect("コンテナの停止に失敗した");
+        container.rm().await.expect("コンテナの削除に失敗した");
+    }
+
+    /// `with_masked_paths` の空リストで既定マスクが解除されること。
+    ///
+    /// 既定では OCI のマスク対象 (`/proc/timer_list` 等) が null デバイスへの
+    /// 文字デバイスに置き換えられる。空リスト指定でマスクが解除されると
+    /// 通常ファイルになり、文字デバイス判定 (`-c`) が外れる (Apple container 1.2.0)。
+    #[tokio::test]
+    async fn xpc_masked_paths_empty_disables_default_mask() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        // control: 既定 (マスクあり) では /proc/timer_list が文字デバイス (null) に置き換わること。
+        let control = GenericImage::new("alpine", "latest")
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .start()
+            .await
+            .expect("control alpine コンテナの起動に失敗した");
+        let result = control
+            .exec(ExecCommand::new(["sh", "-c", "[ -c /proc/timer_list ]"]))
+            .await
+            .expect("control プローブの exec に失敗した");
+        let code = result
+            .exit_code()
+            .await
+            .expect("終了コードの取得に失敗した");
+        assert_eq!(
+            code,
+            Some(0),
+            "既定マスクでは /proc/timer_list が文字デバイスであること (exit={code:?})"
+        );
+        control
+            .stop_with_timeout(Some(0))
+            .await
+            .expect("control コンテナの停止に失敗した");
+        control
+            .rm()
+            .await
+            .expect("control コンテナの削除に失敗した");
+
+        // 空リスト指定でマスク解除 → 通常ファイルになり文字デバイス判定が外れること。
+        let container = GenericImage::new("alpine", "latest")
+            .with_masked_paths(std::iter::empty::<String>())
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .start()
+            .await
+            .expect("alpine コンテナの起動に失敗した");
+        let result = container
+            .exec(ExecCommand::new(["sh", "-c", "[ -f /proc/timer_list ]"]))
+            .await
+            .expect("プローブの exec に失敗した");
+        let code = result
+            .exit_code()
+            .await
+            .expect("終了コードの取得に失敗した");
+        assert_eq!(
+            code,
+            Some(0),
+            "マスク解除で /proc/timer_list が通常ファイルになること (exit={code:?})"
+        );
+
+        container
+            .stop_with_timeout(Some(0))
+            .await
+            .expect("コンテナの停止に失敗した");
+        container.rm().await.expect("コンテナの削除に失敗した");
+    }
+
+    /// `with_masked_paths` の明示リストが既定マスクを完全に上書きすること。
+    ///
+    /// 明示リストは既定セットへの追加ではなく置換であるため、既定マスク対象
+    /// (`/proc/timer_list`) のマスクが外れる (Apple container 1.2.0)。
+    #[tokio::test]
+    async fn xpc_masked_paths_explicit_list_overrides_default_mask() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        let container = GenericImage::new("alpine", "latest")
+            .with_masked_paths(["/tmp/sensitive"])
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .start()
+            .await
+            .expect("alpine コンテナの起動に失敗した");
+
+        let result = container
+            .exec(ExecCommand::new(["sh", "-c", "[ -f /proc/timer_list ]"]))
+            .await
+            .expect("プローブの exec に失敗した");
+        let code = result
+            .exit_code()
+            .await
+            .expect("終了コードの取得に失敗した");
+        assert_eq!(
+            code,
+            Some(0),
+            "明示リストで既定マスクが上書きされ /proc/timer_list が通常ファイルになること (exit={code:?})"
+        );
+
+        container
+            .stop_with_timeout(Some(0))
+            .await
+            .expect("コンテナの停止に失敗した");
+        container.rm().await.expect("コンテナの削除に失敗した");
+    }
+
     /// with_open_stdin(true) で stdin 待ちの cat がすぐ終了せず running のままであること。
     #[tokio::test]
     async fn alpine_with_open_stdin_keeps_cat_running() {

@@ -69,6 +69,8 @@
   - @voluntas
 - [ADD] Linux ログセッションの起動経路にタイムアウト (30 秒) を導入する
   - @voluntas
+- [ADD] macOS で OCI `maskedPaths` / `readonlyPaths` を `ImageExt::with_masked_paths` / `with_readonly_paths` で設定できるようにする（Apple container 1.2.0 以上）
+  - @voluntas
 - [FIX] Linux で `with_exposed_port` / `Image::expose_ports` がホストポート公開に反映されないのを修正する
   - @voluntas
 - [FIX] manifest 選択フォールバックで attestation manifest (`architecture: "unknown"`) を除外する

@@ -33,7 +33,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `configuration.image: ImageDescription`
 - `configuration.mounts: [Filesystem]`
 - `configuration.publishedPorts: [PublishPort]` — `hostAddress`, `hostPort`, `containerPort`, `proto` (`tcp` | `udp`)
-- `configuration.publishedSockets, labels, sysctls, networks, dns, rosetta, initProcess, platform, resources, runtimeHandler, virtualization, ssh, readOnly, useInit, capAdd, capDrop, shmSize, stopSignal, creationDate`
+- `configuration.publishedSockets, labels, sysctls, networks, dns, rosetta, initProcess, platform, resources, runtimeHandler, virtualization, ssh, readOnly, useInit, capAdd, capDrop, shmSize, maskedPaths, readonlyPaths, stopSignal, creationDate`
 - `status: RuntimeStatus` — `unknown` | `stopped` | `running` | `stopping`
 - `networks: [Attachment]` — `network, hostname, ipv4Address (CIDRv4), ipv4Gateway, ipv6Address? (CIDRv6), macAddress?, mtu?, variant?`
 - `startedDate: Date?`
@@ -61,7 +61,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
 - `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入する (親ディレクトリ自動作成・ディレクトリ一括投入対応。配下 regular file の `mode` / `uid` / `gid` は反映。中間 directory の mode は `0o755`。コピー後 mtime は epoch)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり。親作成は `createParents`）。起動前投入は Linux のみの公開契約
 - `ExitWaitStrategy` は macOS / Linux とも exit_code_hint + container_state ポーリングで対応
-- `ImageExt::with_ssh` のみ Linux では start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
+- `ImageExt::with_ssh` / `with_masked_paths` / `with_readonly_paths` のみ Linux では start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
 
 README の Linux 注意書きと合わせて読むこと。残ギャップはネットワークの自動作成・自動削除などである。
 
@@ -74,10 +74,10 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 | 未実装 (実装可能) | 0 |
 | 未実装 (XPC 制約) | 3 |
 | なし | 94 |
-| shiguredo 拡張 (本家に無い追加 API) | 16 |
+| shiguredo 拡張 (本家に無い追加 API) | 20 |
 | 内部型/内部関数 (対象外) | 4 |
 
-内訳合計: 409 API (判定対象。対象外 4 は含まない。feature ゲート表の「備考」列も集計外)
+内訳合計: 413 API (判定対象。対象外 4 は含まない。feature ゲート表の「備考」列も集計外)
 
 判定内訳の傾向 (Apple Container):
 
@@ -86,7 +86,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
 - **未実装 (XPC 制約)** (3): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機) と `with_health_check` (start 時明示エラー)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` はシグネチャ自体を削除済みのため「なし」に分類
 - **なし** (94): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
-- **shiguredo 拡張** (16): `ImageExt::with_init` / `with_ssh`、`ContainerAsync::container_state`、`Container::container_state`、`ClientError::Xpc*` / `ImageNotFound` / `ContainerNotFound` / `Json` / `Other`、`ContainerRequest` の `init` / `ssh` accessor、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()`
+- **shiguredo 拡張** (20): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths`、`ContainerAsync::container_state`、`Container::container_state`、`ClientError::Xpc*` / `ImageNotFound` / `ContainerNotFound` / `Json` / `Other`、`ContainerRequest` の `init` / `ssh` / `masked_paths` / `readonly_paths` accessor、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()`
 
 ## サマリ (Docker Engine API)
 
@@ -94,7 +94,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 
 - **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code + stdout / stderr + Env)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
 - **未配線・未実装が残るもの**: ネットワークの自動作成・自動削除など
-- **未実装 (start 時 fail-fast)**: `with_ssh`、Linux 設定構築に載らない ImageExt
+- **未実装 (start 時 fail-fast)**: `with_ssh` / `with_masked_paths` / `with_readonly_paths`、Linux 設定構築に載らない ImageExt
 
 Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差を同時に見せるためのものである。
 
@@ -155,6 +155,8 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_open_stdin(self, open)` | あり | 対応 | 対応 | XPC `initProcess.terminal` に反映 / Docker: Config.OpenStdin に反映 |
 | `with_init(self)` | なし | shiguredo 拡張 | 対応 | XPC `useInit` に反映 / Docker: HostConfig.Init として create JSON に反映 |
 | `with_ssh(self)` | なし | shiguredo 拡張 | 未実装 | XPC `ssh` に反映 / Docker: start 時に明示エラー (設定構築に未配線) |
+| `with_masked_paths(self, paths)` | なし | shiguredo 拡張 | 未実装 | macOS: XPC `ContainerCfg.maskedPaths` に反映 (Apple container 1.2.0 以上)。空リストは既定マスクの無効化、明示リストは既定を上書き / Docker: start 時に明示エラー (設定構築に未配線) |
+| `with_readonly_paths(self, paths)` | なし | shiguredo 拡張 | 未実装 | macOS: XPC `ContainerCfg.readonlyPaths` に反映 (Apple container 1.2.0 以上)。個別パスの読み取り専用化であり `with_readonly_rootfs` とは別物 / Docker: start 時に明示エラー (設定構築に未配線) |
 
 ## 3. `AsyncRunner` トレイト (`runners::AsyncRunner`)
 
@@ -291,6 +293,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `open_stdin(&self) -> Option<bool>` | あり | 対応 | 対応 |  |
 | `impl<I: Image> From<I> for ContainerRequest<I>` | あり | 対応 | 対応 |  |
 | `init/ssh` accessor | なし | shiguredo 拡張 | 部分対応 | `init()` は Docker HostConfig.Init に配線済み。`ssh()` は Linux の Docker 設定構築で未反映 |
+| `masked_paths/readonly_paths` accessor | なし | shiguredo 拡張 | 部分対応 | macOS で `ContainerCfg` に反映。Linux では `Some` を返すと start 時に明示エラー |
 | `PortMapping::new (crate内)` | あり | 対応 | 対応 |  |
 | `PortMapping::host_port` | あり | 対応 | 対応 |  |
 | `PortMapping::container_port` | あり | 対応 | 対応 |  |

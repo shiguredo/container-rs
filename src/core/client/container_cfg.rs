@@ -200,6 +200,8 @@ pub(crate) fn build_config<I: Image>(
         cpus,
         creation_date,
         terminal: req.open_stdin().unwrap_or(false),
+        masked_paths: req.masked_paths().cloned(),
+        readonly_paths: req.readonly_paths().cloned(),
     })
 }
 
@@ -276,6 +278,8 @@ pub(crate) struct ContainerCfg {
     cpus: i32,
     creation_date: f64,
     terminal: bool,
+    masked_paths: Option<Vec<String>>,
+    readonly_paths: Option<Vec<String>>,
 }
 
 impl DisplayJson for ContainerCfg {
@@ -336,6 +340,8 @@ impl DisplayJson for ContainerCfg {
             f.member("capAdd", &self.cap_add)?;
             f.member("capDrop", &self.cap_drop)?;
             f.member("shmSize", self.shm_size)?;
+            f.member("maskedPaths", &self.masked_paths)?;
+            f.member("readonlyPaths", &self.readonly_paths)?;
             f.member("stopSignal", &Option::<String>::None)?;
             f.member("creationDate", self.creation_date)
         })
@@ -668,6 +674,88 @@ mod tests {
 
         let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
         assert!(json.contains("\"shmSize\":null"));
+    }
+
+    #[test]
+    fn masked_readonly_paths_are_null_by_default_in_container_cfg_json() {
+        // 未指定時は maskedPaths / readonlyPaths が null で出力されること。
+        let req: ContainerRequest<GenericImage> =
+            GenericImage::new("alpine", "latest").with_cmd(["sleep", "1"]);
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+        )
+        .expect("build_config が成功すること");
+        assert_eq!(cfg.masked_paths, None);
+        assert_eq!(cfg.readonly_paths, None);
+
+        let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
+        assert!(json.contains("\"maskedPaths\":null"));
+        assert!(json.contains("\"readonlyPaths\":null"));
+    }
+
+    #[test]
+    fn masked_readonly_paths_are_reflected_in_container_cfg_json() {
+        // 空リストは []、明示リストは配列として出力されること (None との区別)。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_masked_paths(std::iter::empty::<String>())
+            .with_readonly_paths(["/etc", "/proc"]);
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+        )
+        .expect("build_config が成功すること");
+        assert_eq!(cfg.masked_paths, Some(vec![]));
+        assert_eq!(
+            cfg.readonly_paths,
+            Some(vec!["/etc".to_string(), "/proc".to_string()])
+        );
+
+        let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
+        assert!(json.contains("\"maskedPaths\":[]"));
+        assert!(json.contains("\"readonlyPaths\":[\"/etc\",\"/proc\"]"));
+    }
+
+    #[test]
+    fn masked_readonly_paths_setters_overwrite_on_repeat_calls() {
+        // 複数回呼び出しは上書きされること (with_ready_conditions と同じパターン)。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_masked_paths(["/a"])
+            .with_masked_paths(["/b", "/c"]);
+        assert_eq!(
+            req.masked_paths(),
+            Some(&vec!["/b".to_string(), "/c".to_string()])
+        );
+
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_readonly_paths(["/a"])
+            .with_readonly_paths(std::iter::empty::<String>());
+        assert_eq!(req.readonly_paths(), Some(&vec![]));
+    }
+
+    #[test]
+    fn masked_paths_explicit_list_is_emitted_as_array() {
+        // 明示リストの maskedPaths が配列として出力されること ([] との区別)。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_masked_paths(["/tmp/sensitive", "/proc/kcore"]);
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+        )
+        .expect("build_config が成功すること");
+
+        let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
+        assert!(json.contains("\"maskedPaths\":[\"/tmp/sensitive\",\"/proc/kcore\"]"));
     }
 
     #[test]
