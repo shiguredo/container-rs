@@ -94,7 +94,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `exit_code()` | 部分対応 (バックグラウンド wait の観測済みキャッシュのみ) | 部分対応 (バックグラウンド wait の観測済みキャッシュのみ) |
 | `copy_file_from(path, target)` | 対応 (`Vec<u8>` / `PathBuf` を target にできる) | 対応 (`GET /containers/{id}/archive` + 自前 ustar パーサ。source は絶対パス必須・ファイル専用) |
 | `stdout(follow)`, `stderr(follow)`, `stdout_to_vec()`, `stderr_to_vec()` | 対応 (`follow=true` は追記ポーリング) | 対応 (demux 済み共有バッファ。ストリームあたり 8 MiB・drop-oldest。`follow=false` は呼び出しごとに新規 HTTP セッションで全ログ取得) |
-| `Drop` | 対応 (削除。Keep ゲートあり) | 対応 |
+| `Drop` | 対応 (削除。`keep` ゲートあり) | 対応 |
 
 `pause` / `unpause` は macOS (XPC) には route が無いためシグネチャごと存在しない。Linux (Docker) では `#[cfg(target_os = "linux")]` で対応済み。
 
@@ -243,7 +243,7 @@ let container = GenericImage::new("nginx", "latest")
   - Runtime 外 Drop: 呼び出しスレッドで削除試行が終わるまで待つ (成功は保証しない。失敗は `tracing::error` に記録するのみで呼び出し側には届かない)
 - 削除の完了待ち、または成否の `Result` が必要なら明示 `rm()` を使う (async は `rm().await`、sync は `rm()`)。同期コンテキスト (Runtime 内の Drop ガードや `spawn_blocking` 内) から削除完了を待ちたい場合は `rm_blocking()` を使う (`block_on` を使わないため Runtime 内から呼んでも deadlock しない)。明示 `rm()` / `rm_blocking()` は `TESTCONTAINERS_COMMAND=keep` でも削除する (Drop の `keep` ゲートとは非対称)
 - `TESTCONTAINERS_COMMAND=keep` のときは Drop で削除しない (調査用に残す)
-- `stop()` は LogConsumer 配信を止める。明示的な `rm()` を呼ばなくても Drop で削除される (keep 除く)
+- `stop()` は LogConsumer 配信を止める。明示的な `rm()` を呼ばなくても Drop で削除される (`keep` 除く)
 - `watchdog` feature (macOS): 外部 reaper プロセス方式。テストプロセスが SIGKILL / SIGSEGV で死んでも pipe EOF を検知して登録済みコンテナを `container rm --force` する。`keep` 指定時は登録しない
 
 ## 環境変数
