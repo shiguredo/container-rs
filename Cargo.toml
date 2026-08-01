@@ -6,6 +6,8 @@ rust-version = "1.93.0"
 description = "Runtime-agnostic container library for Rust on macOS and Linux"
 repository = "https://github.com/shiguredo/container-rs"
 license = "Apache-2.0"
+keywords = ["container", "docker", "integration-test", "macos", "testing"]
+categories = ["development-tools::testing"]
 include = ["/LICENSE", "/README.md", "/build.rs", "/src/**"]
 
 [package.metadata.docs.rs]
@@ -28,22 +30,23 @@ libc = "0.2"
 nojson = "0.3"
 # HTTP/1.1 クライアント。Linux: Docker Engine API、macOS: http_wait_plain で使用
 shiguredo_http11 = "2026.6"
-# 非同期ランタイム
-tokio = {
-  version = "1.53",
-  features = [
-    "fs",
-    "io-util",
-    "macros",
-    "net",
-    "rt",
-    "rt-multi-thread",
-    "sync",
-    "time",
-  ]
-}
 # ログ出力
 tracing = "0.1"
+
+# 非同期ランタイム
+# MSRV 1.93.0 の TOML パーサがインラインテーブルの改行を未サポートのため、テーブル形式で記述する。
+[dependencies.tokio]
+version = "1.53"
+features = [
+  "fs",
+  "io-util",
+  "macros",
+  "net",
+  "rt",
+  "rt-multi-thread",
+  "sync",
+  "time"
+]
 
 [dev-dependencies]
 # docker_tar の PBT (プロパティベーステスト) に使用
