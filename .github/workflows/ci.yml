@@ -30,6 +30,18 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
+  # MSRV (rust-version) でコンパイルできることを検証する。
+  msrv:
+    name: msrv
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - run: rustup toolchain install 1.93.0 --profile minimal
+      - run: cargo +1.93.0 check --all-features
+
   # Linux 側 (target_os = "linux" の分岐) は self-hosted (macOS) ではコンパイルされないため、
   # ビルドと単体・統合テストをここで確認する。
   test-linux-docker:

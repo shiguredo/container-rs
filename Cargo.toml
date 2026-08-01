@@ -6,6 +6,8 @@ rust-version = "1.93.0"
 description = "Runtime-agnostic container library for Rust on macOS and Linux"
 repository = "https://github.com/shiguredo/container-rs"
 license = "Apache-2.0"
+keywords = ["container", "docker", "integration-test", "macos", "testing"]
+categories = ["development-tools::testing"]
 include = ["/LICENSE", "/README.md", "/build.rs", "/src/**"]
 
 [package.metadata.docs.rs]
