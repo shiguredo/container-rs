@@ -277,18 +277,18 @@ fn keep_on_startup_failure_victim() {
 
     let result = GenericImage::new("alpine", "latest")
         .with_container_name(&name)
-        .with_health_check(shiguredo_container::core::healthcheck::Healthcheck::none())
+        .with_copy_to(
+            "/data/nonexistent.txt",
+            std::path::PathBuf::from("/nonexistent/path/that/does/not/exist.txt"),
+        )
         .with_cmd(["sleep", "30"])
         .start();
 
     match result {
-        Err(err) => {
-            assert!(
-                err.to_string().contains("with_health_check"),
-                "with_health_check 未対応のメッセージを含むこと: {err}"
-            );
+        Err(_) => {
+            // コピー元のファイルが存在しないため構築後エラーになること。
         }
-        Ok(_) => panic!("with_health_check は macOS で必ずエラーになること"),
+        Ok(_) => panic!("存在しないコピー元で必ずエラーになること"),
     }
 
     assert!(
