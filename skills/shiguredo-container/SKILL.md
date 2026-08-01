@@ -76,6 +76,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `with_user` | 部分対応 (環境により非 root UID が機能しないことがある) | 対応 |
 | `with_init` | **shiguredo 拡張** (XPC `useInit`) | 対応 (HostConfig.Init) |
 | `with_ssh` | **shiguredo 拡張** (XPC `ssh`) | start 時に明示エラー |
+| `with_masked_paths`, `with_readonly_paths` | **shiguredo 拡張** (XPC `ContainerCfg` の `maskedPaths` / `readonlyPaths` に反映。Apple container 1.2.0 以上) | start 時に明示エラー |
 | `with_health_check` | 未実装 (XPC 制約)。start 時に明示エラー | 対応 (Config.Healthcheck)。`WaitFor::healthcheck` と併用可 |
 
 本家にあって存在しないもの: `with_ulimit` / `with_cgroupns_mode` / `with_userns_mode` / `with_security_opt` / `with_host_config_modifier` / `with_reuse` / `with_exposed_host_port(s)` / `with_device_requests` (XPC に設定口が無い、または方針で未対応)。
@@ -267,11 +268,11 @@ let container = GenericImage::new("nginx", "latest")
 - **macOS のコンテナ ID 制約**: コンテナ ID (`with_container_name` の値) は Apple container 1.2.0 の `nameValid` と同じ制約 (先頭は英数字・実質 2 文字以上・63 文字以下・文字種は英数字 / `_` / `.` / `-`) を持つ。違反すると `AsyncRunner::start` が pull / resolve より前に明示エラーを返す
 - **macOS の Local Network Privacy (LNP)**: `HttpWaitStrategy` や published port への接続は macOS 15+ の LNP にブロックされ得る。LNP は TCC / MDM で事前付与できない。CI ではコンテナ IP 直結テストを基本とし、published port 依存テストは許可済み環境でのみ実行する
 - **blocking の再入 deadlock**: `LogConsumer` コールバック内や既存の tokio ランタイムコンテキストから `SyncRunner::start` 等の同期 API を呼ぶと共有 Runtime への再入で deadlock する。ライブラリは再入を検出して即エラーにするが、コールバック内での同期 API 呼び出しは避けること。共有 Runtime ワーカースレッド上で最後の同期 `Container` を drop するとハングし得る既知の限界もある
-- **Linux の残ギャップ**: `with_ssh` とネットワークの自動作成・自動削除が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
+- **Linux の残ギャップ**: `with_ssh` / `with_masked_paths` / `with_readonly_paths` とネットワークの自動作成・自動削除が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
 - **イメージビルド未対応**: `GenericBuildableImage` / `BuildableImage` 等の build 系 API は無い
 - **reuse 未対応**: `reusable-containers` 相当の feature・型は無い
 - **本家との型不整合**: `CopyFromContainerError::UnsupportedEntry` は `&'static str` (本家 `tokio_tar::EntryType`)、`WaitLogError::EndOfStream` は `Vec<Vec<u8>>` (本家 `Vec<Bytes>`)、`WaitContainerError::Unhealthy` は `Unhealthy(String)` (本家はユニットバリアント)。いずれも依存最小方針による意図的差分
 
 ## 参考資料
 
-- 本家 testcontainers-rs との API 対応表 (409 API の判定一覧): `docs/TESTCONTAINERS.md`
+- 本家 testcontainers-rs との API 対応表 (413 API の判定一覧): `docs/TESTCONTAINERS.md`

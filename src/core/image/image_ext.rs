@@ -133,6 +133,30 @@ pub trait ImageExt<I: Image> {
     fn with_init(self) -> ContainerRequest<I>;
     /// SSH 転送を有効にする (shiguredo 拡張)。
     fn with_ssh(self) -> ContainerRequest<I>;
+
+    /// OCI `maskedPaths` を設定する (shiguredo 拡張、Apple container 1.2.0 以上)。
+    ///
+    /// 未指定 (`None`) はランタイム既定セット、空リストは既定の無効化、
+    /// 明示リストは既定を完全に上書きする。複数回呼び出しは上書きされる。
+    /// macOS のみ対応で、Linux (Docker) では start 時に明示エラーを返す。
+    ///
+    /// 例: `with_masked_paths(std::iter::empty::<String>())` で既定マスクを無効化する。
+    fn with_masked_paths(
+        self,
+        paths: impl IntoIterator<Item = impl Into<String>>,
+    ) -> ContainerRequest<I>;
+
+    /// OCI `readonlyPaths` を設定する (shiguredo 拡張、Apple container 1.2.0 以上)。
+    ///
+    /// 指定したパスを読み取り専用にする。OCI の個別パス読み取り専用化であり、
+    /// ルート FS 全体の `with_readonly_rootfs` や `Mount` の `AccessMode::ReadOnly` とは別物。
+    /// 未指定 (`None`) はランタイム既定、空リストは既定の無効化、
+    /// 明示リストは既定を完全に上書きする。複数回呼び出しは上書きされる。
+    /// macOS のみ対応で、Linux (Docker) では start 時に明示エラーを返す。
+    fn with_readonly_paths(
+        self,
+        paths: impl IntoIterator<Item = impl Into<String>>,
+    ) -> ContainerRequest<I>;
 }
 
 impl<RI: Into<ContainerRequest<I>>, I: Image> ImageExt<I> for RI {
@@ -366,6 +390,28 @@ impl<RI: Into<ContainerRequest<I>>, I: Image> ImageExt<I> for RI {
         let container_req = self.into();
         ContainerRequest {
             ssh: true,
+            ..container_req
+        }
+    }
+
+    fn with_masked_paths(
+        self,
+        paths: impl IntoIterator<Item = impl Into<String>>,
+    ) -> ContainerRequest<I> {
+        let container_req = self.into();
+        ContainerRequest {
+            masked_paths: Some(paths.into_iter().map(Into::into).collect()),
+            ..container_req
+        }
+    }
+
+    fn with_readonly_paths(
+        self,
+        paths: impl IntoIterator<Item = impl Into<String>>,
+    ) -> ContainerRequest<I> {
+        let container_req = self.into();
+        ContainerRequest {
+            readonly_paths: Some(paths.into_iter().map(Into::into).collect()),
             ..container_req
         }
     }

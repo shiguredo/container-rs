@@ -48,6 +48,8 @@ pub struct ContainerRequest<I: Image> {
     pub(crate) init: bool,
     pub(crate) platform: Option<String>,
     pub(crate) ssh: bool,
+    pub(crate) masked_paths: Option<Vec<String>>,
+    pub(crate) readonly_paths: Option<Vec<String>>,
 }
 
 /// ポートマッピング。
@@ -258,6 +260,22 @@ impl<I: Image> ContainerRequest<I> {
     pub fn ssh(&self) -> bool {
         self.ssh
     }
+
+    /// OCI `maskedPaths` (Apple container 1.2.0 以上) を返す。
+    ///
+    /// `None` はランタイム既定セット、`Some(vec![])` は既定の無効化、
+    /// 明示リストは既定を完全に上書きする。
+    pub fn masked_paths(&self) -> Option<&Vec<String>> {
+        self.masked_paths.as_ref()
+    }
+
+    /// OCI `readonlyPaths` (Apple container 1.2.0 以上) を返す。
+    ///
+    /// `None` はランタイム既定、`Some(vec![])` は既定の無効化、
+    /// 明示リストは既定を完全に上書きする。
+    pub fn readonly_paths(&self) -> Option<&Vec<String>> {
+        self.readonly_paths.as_ref()
+    }
 }
 
 impl<I: Image> From<I> for ContainerRequest<I> {
@@ -291,6 +309,8 @@ impl<I: Image> From<I> for ContainerRequest<I> {
             init: false,
             platform: None,
             ssh: false,
+            masked_paths: None,
+            readonly_paths: None,
         }
     }
 }
@@ -341,7 +361,9 @@ impl<I: Image + Debug> Debug for ContainerRequest<I> {
             .field("open_stdin", &self.open_stdin)
             .field("init", &self.init)
             .field("platform", &self.platform)
-            .field("ssh", &self.ssh);
+            .field("ssh", &self.ssh)
+            .field("masked_paths", &self.masked_paths)
+            .field("readonly_paths", &self.readonly_paths);
         repr.finish()
     }
 }
