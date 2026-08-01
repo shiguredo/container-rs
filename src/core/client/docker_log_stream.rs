@@ -38,6 +38,10 @@ const FRAME_HEADER_LEN: usize = 8;
 /// 1 回の poll / read で共有バッファから引き出す上限バイト数。
 const READ_CHUNK: usize = 8192;
 
+/// ログセッションの起動 (接続・リクエスト送信・ヘッダ検証) に適用するタイムアウト。
+/// デーモン無応答時の無限ブロックを抑止する。起動成功後は解除する。
+const LOG_SESSION_TIMEOUT: Option<Duration> = Some(Duration::from_secs(30));
+
 /// `std::io::Error::other` の短縮形。内部エラーを Read エラーとして上位に包む。
 fn io_other(msg: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> std::io::Error {
     std::io::Error::other(msg)
@@ -441,6 +445,14 @@ fn start_and_demux(
     started: &mut Option<tokio::sync::oneshot::Sender<crate::core::error::Result<()>>>,
 ) -> crate::core::error::Result<()> {
     let mut stream = UnixStream::connect(socket_path)?;
+    // デーモン無応答時の無限ブロックを抑止するため起動検証にタイムアウトを設定する。
+    // demux_loop 移行前に解除する (follow ストリームは legitimately 長時間無ログになり得る)。
+    stream
+        .set_read_timeout(LOG_SESSION_TIMEOUT)
+        .map_err(|e| crate::core::error::Error::other(e.to_string()))?;
+    stream
+        .set_write_timeout(LOG_SESSION_TIMEOUT)
+        .map_err(|e| crate::core::error::Error::other(e.to_string()))?;
     // 外部から閉じられるよう複製をハンドルに保持する。try_clone 失敗時は
     // log_stop フラグと後続の remove (デーモン側が接続を閉じる) による停止に頼る。
     if let Ok(clone) = stream.try_clone() {
@@ -470,6 +482,15 @@ fn start_and_demux(
     {
         return Ok(());
     }
+
+    // 起動検証が完了したためタイムアウトを解除する。
+    // follow ストリームは legitimately 長時間無ログになり得る。
+    stream
+        .set_read_timeout(None)
+        .map_err(|e| crate::core::error::Error::other(e.to_string()))?;
+    stream
+        .set_write_timeout(None)
+        .map_err(|e| crate::core::error::Error::other(e.to_string()))?;
 
     demux_loop(&mut stream, &mut decoder, handle)
 }
@@ -627,6 +648,9 @@ fn demux_loop(
 /// セッションを張って決定的に全ログを取得するための経路。
 fn fetch_logs_oneshot_blocking(socket_path: &str, id: &str) -> std::io::Result<(Vec<u8>, Vec<u8>)> {
     let mut stream = UnixStream::connect(socket_path)?;
+    // デーモン無応答時の無限ブロックを抑止するためタイムアウトを設定する。
+    stream.set_read_timeout(LOG_SESSION_TIMEOUT)?;
+    stream.set_write_timeout(LOG_SESSION_TIMEOUT)?;
     let path = format!(
         "/containers/{}/logs?stdout=1&stderr=1&follow=false&tail=all",
         crate::core::client::docker_client::percent_encode_path_segment(id)

@@ -65,6 +65,8 @@
   - @voluntas
 - [ADD] macOS で `with_copy_to` の `uid` / `gid` を chown で反映する
   - @voluntas
+- [ADD] Linux ログセッションの起動経路にタイムアウト (30 秒) を導入する
+  - @voluntas
 - [FIX] Linux で `with_exposed_port` / `Image::expose_ports` がホストポート公開に反映されないのを修正する
   - @voluntas
 - [FIX] manifest 選択フォールバックで attestation manifest (`architecture: "unknown"`) を除外する
