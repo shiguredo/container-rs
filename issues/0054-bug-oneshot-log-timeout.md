@@ -1,7 +1,7 @@
 # バグ: fetch_logs_oneshot_blocking の UnixStream にタイムアウトが無い
 
 - Created: 2026-07-31
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-01
 - Branch: feature/fix-oneshot-log-timeout
 - Polished: {YYYY-MM-DD}
 
@@ -23,3 +23,9 @@
 
 - [ ] `fetch_logs_oneshot_blocking` の UnixStream にタイムアウトが設定されること
 - [ ] `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+コミット f9dd9f1（「ログセッションにタイムアウトを導入する」PR #41、closed issue 0039）で解決済みのため closed にする。
+
+`fetch_logs_oneshot_blocking` (`src/core/client/docker_log_stream.rs`) は `UnixStream::connect` 直後に `set_read_timeout(LOG_SESSION_TIMEOUT)` / `set_write_timeout(LOG_SESSION_TIMEOUT)` を設定済みであり、本 issue の完了条件は既に満たされている。`LOG_SESSION_TIMEOUT` は 30 秒 (同ファイルの定数)。本 issue (Created: 2026-07-31) は 0039 の実装完了 (2026-08-01) 前に並行起票された重複であり、デーモン無応答時の恒久ブロックは 0039 の修正で解消されている。
