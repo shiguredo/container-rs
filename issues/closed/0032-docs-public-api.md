@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-22
-- Completed:
+- Completed: 2026-08-01
 - Model: Claude Sonnet 4
 - Branch: feature/update-docs-public-api
 - Polished: 2026-07-29
@@ -43,3 +43,10 @@ docs.rs で公開 API が裸のシグネチャだけで表示されないよう�
 - [ ] 古いモジュール doc の bollard / reqwest 言及が整理されていること
 - [ ] `cargo doc --all-features --no-deps` が警告なしでビルドできること
 - [ ] `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- crate レベル doc にクイックスタート例・feature 一覧・プラットフォーム差・環境変数を追加した
+- 全公開アイテムに doc コメントを付与した (23 ファイル、330 行追加)
+- `#![warn(missing_docs)]` を有効化し、警告ゼロでビルドできることを確認した
+- 古いモジュール doc の bollard / reqwest 言及を「本家 testcontainers-rs」への参照に言い換えた

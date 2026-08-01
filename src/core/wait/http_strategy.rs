@@ -1,8 +1,8 @@
-//! HTTP 待機戦略。元の 0.27 の `core::wait::http_strategy` に相当。
+//! HTTP 待機戦略。本家 testcontainers-rs 0.27 の `core::wait::http_strategy` に相当。
 //!
-//! 本家は reqwest を使うが、shiguredo は依存最小方針のため
+//! 本家 testcontainers-rs は reqwest を使うが、shiguredo は依存最小方針のため
 //! `shiguredo_http11` + `tokio::net::TcpStream` で plain HTTP のみ対応する (TLS 非対応)。
-//! そのため reqwest の型を受け取る API (`with_client` / `with_method(reqwest::Method)` /
+//! そのため本家の reqwest 型を受け取る API (`with_client` / `with_method(reqwest::Method)` /
 //! `with_response_matcher(reqwest::Response)`) は shiguredo 独自の型に置き換えている。
 
 use std::{fmt, sync::Arc, time::Duration};

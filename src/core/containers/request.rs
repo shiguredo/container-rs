@@ -60,7 +60,9 @@ pub struct PortMapping {
 /// extra_hosts 用のホスト指定。
 #[derive(Debug, Clone, Copy)]
 pub enum ExtraHost {
+    /// 固定の IP アドレス。
     Addr(IpAddr),
+    /// ホストのゲートウェイアドレス (Docker の `host-gateway` 相当)。
     HostGateway,
 }
 
@@ -76,26 +78,32 @@ impl std::fmt::Display for ExtraHost {
 }
 
 impl<I: Image> ContainerRequest<I> {
+    /// イメージを返す。
     pub fn image(&self) -> &I {
         &self.image
     }
 
+    /// ネットワーク名を返す。
     pub fn network(&self) -> &Option<String> {
         &self.network
     }
 
+    /// ラベル一覧を返す。
     pub fn labels(&self) -> &BTreeMap<String, String> {
         &self.labels
     }
 
+    /// コンテナ名を返す。
     pub fn container_name(&self) -> &Option<String> {
         &self.container_name
     }
 
+    /// ホスト名を返す。
     pub fn hostname(&self) -> Option<&str> {
         self.hostname.as_deref()
     }
 
+    /// 環境変数を返す。`Image::env_vars` とリクエスト側の設定をマージした結果。
     pub fn env_vars(&self) -> impl Iterator<Item = (Cow<'_, str>, Cow<'_, str>)> {
         self.image
             .env_vars()
@@ -108,18 +116,22 @@ impl<I: Image> ContainerRequest<I> {
             )
     }
 
+    /// extra_hosts エントリを返す。
     pub fn hosts(&self) -> impl Iterator<Item = (Cow<'_, str>, &ExtraHost)> {
         self.hosts.iter().map(|(name, host)| (name.into(), host))
     }
 
+    /// マウント一覧を返す。`Image::mounts` とリクエスト側の設定を連結した結果。
     pub fn mounts(&self) -> impl Iterator<Item = &Mount> {
         self.image.mounts().into_iter().chain(self.mounts.iter())
     }
 
+    /// ヘルスチェック設定を返す。
     pub fn health_check(&self) -> Option<&Healthcheck> {
         self.health_check.as_ref()
     }
 
+    /// コンテナへコピーするファイル一覧を返す。
     pub fn copy_to_sources(&self) -> impl Iterator<Item = &CopyToContainer> {
         self.image
             .copy_to_sources()
@@ -127,34 +139,42 @@ impl<I: Image> ContainerRequest<I> {
             .chain(self.copy_to_sources.iter())
     }
 
+    /// ポートマッピング一覧を返す。
     pub fn ports(&self) -> Option<&Vec<PortMapping>> {
         self.ports.as_ref()
     }
 
+    /// privileged モードかどうかを返す。
     pub fn privileged(&self) -> bool {
         self.privileged
     }
 
+    /// ルートファイルシステムが読み取り専用かどうかを返す。
     pub fn readonly_rootfs(&self) -> bool {
         self.readonly_rootfs
     }
 
+    /// 追加する Linux capability 一覧を返す。
     pub fn cap_add(&self) -> Option<&Vec<String>> {
         self.cap_add.as_ref()
     }
 
+    /// 削除する Linux capability 一覧を返す。
     pub fn cap_drop(&self) -> Option<&Vec<String>> {
         self.cap_drop.as_ref()
     }
 
+    /// /dev/shm のサイズ (バイト) を返す。
     pub fn shm_size(&self) -> Option<u64> {
         self.shm_size
     }
 
+    /// entrypoint を返す。
     pub fn entrypoint(&self) -> Option<&str> {
         self.image.entrypoint()
     }
 
+    /// CMD を返す。`overridden_cmd` が非空ならそれを、空なら `Image::cmd` を返す。
     pub fn cmd(&self) -> impl Iterator<Item = Cow<'_, str>> {
         // `either` クレートに依存せず、自前で切り替える。
         // `overridden_cmd` が空なら `image.cmd()` を使う。
@@ -173,6 +193,7 @@ impl<I: Image> ContainerRequest<I> {
         }
     }
 
+    /// イメージの descriptor (`name:tag` 形式) を返す。
     pub fn descriptor(&self) -> String {
         let original_name = self.image.name();
         let original_tag = self.image.tag();
@@ -183,16 +204,19 @@ impl<I: Image> ContainerRequest<I> {
         format!("{name}:{tag}")
     }
 
+    /// 準備完了条件を返す。リクエスト側の設定が優先、未設定なら `Image::ready_conditions`。
     pub fn ready_conditions(&self) -> Vec<WaitFor> {
         self.ready_conditions
             .clone()
             .unwrap_or_else(|| self.image.ready_conditions())
     }
 
+    /// 公開ポート一覧を返す。
     pub fn expose_ports(&self) -> &[ContainerPort] {
         self.image.expose_ports()
     }
 
+    /// 起動後に実行するコマンドを返す。
     pub fn exec_after_start(
         &self,
         cs: ContainerState,
@@ -200,30 +224,37 @@ impl<I: Image> ContainerRequest<I> {
         self.image.exec_after_start(cs)
     }
 
+    /// 起動タイムアウトを返す。
     pub fn startup_timeout(&self) -> Option<Duration> {
         self.startup_timeout
     }
 
+    /// 作業ディレクトリを返す。
     pub fn working_dir(&self) -> Option<&str> {
         self.working_dir.as_deref()
     }
 
+    /// 実行ユーザーを返す。
     pub fn user(&self) -> Option<&str> {
         self.user.as_deref()
     }
 
+    /// stdin を開くかどうかを返す。
     pub fn open_stdin(&self) -> Option<bool> {
         self.open_stdin
     }
 
+    /// init プロセスが有効かどうかを返す。
     pub fn init(&self) -> bool {
         self.init
     }
 
+    /// プラットフォーム指定を返す。
     pub fn platform(&self) -> &Option<String> {
         &self.platform
     }
 
+    /// SSH 転送が有効かどうかを返す。
     pub fn ssh(&self) -> bool {
         self.ssh
     }
@@ -272,10 +303,12 @@ impl PortMapping {
         }
     }
 
+    /// ホスト側のポート番号を返す。
     pub fn host_port(&self) -> u16 {
         self.host_port
     }
 
+    /// コンテナ側のポートを返す。
     pub fn container_port(&self) -> ContainerPort {
         self.container_port
     }

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::core::{WaitFor, wait::CmdWaitFor};
 
+/// コンテナ内で実行するコマンドの設定。
 #[derive(Debug)]
 pub struct ExecCommand {
     pub(crate) cmd: Vec<String>,
@@ -13,6 +14,7 @@ pub struct ExecCommand {
 }
 
 impl ExecCommand {
+    /// 実行するコマンドを指定して新しいインスタンスを作る。
     pub fn new(cmd: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             cmd: cmd.into_iter().map(Into::into).collect(),
@@ -22,11 +24,13 @@ impl ExecCommand {
         }
     }
 
+    /// exec 実行後にコンテナが準備完了と見なす条件を設定する。
     pub fn with_container_ready_conditions(mut self, ready_conditions: Vec<WaitFor>) -> Self {
         self.container_ready_conditions = ready_conditions;
         self
     }
 
+    /// コマンドが完了したと見なす条件を設定する。
     pub fn with_cmd_ready_condition(mut self, ready_condition: impl Into<CmdWaitFor>) -> Self {
         self.cmd_ready_condition = ready_condition.into();
         self

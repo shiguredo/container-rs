@@ -1,6 +1,6 @@
 //! `XpcClient` — Apple Container の XPC API を叩くクライアント。
 //!
-//! 元の crate の `Client`（bollard ラッパ）に相当する。
+//! 本家 testcontainers-rs の `Client`（Docker Engine API ラッパ）に相当する。
 //! `ContainerAsync` / `AsyncRunner` / `WaitStrategy` から利用される。
 //!
 //! macOS バックエンドが必要とする XPC 操作を実装する。

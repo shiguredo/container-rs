@@ -34,8 +34,11 @@ impl MountTmpfsOptions {
 /// マウントの種類。
 #[derive(Debug, Copy, Clone)]
 pub enum MountType {
+    /// ホストディレクトリのバインドマウント。
     Bind,
+    /// 名前付きボリュームマウント。
     Volume,
+    /// tmpfs マウント。
     Tmpfs,
 }
 
@@ -54,7 +57,9 @@ impl std::fmt::Display for MountType {
 /// アクセスモード。
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AccessMode {
+    /// 読み取り専用。
     ReadOnly,
+    /// 読み書き可能。
     ReadWrite,
 }
 
@@ -107,18 +112,22 @@ impl Mount {
         self
     }
 
+    /// アクセスモードを返す。
     pub fn access_mode(&self) -> AccessMode {
         self.access_mode
     }
 
+    /// マウントの種類を返す。
     pub fn mount_type(&self) -> MountType {
         self.mount_type
     }
 
+    /// マウント元のパスまたはボリューム名を返す。
     pub fn source(&self) -> Option<&str> {
         self.source.as_deref()
     }
 
+    /// コンテナ内のマウント先パスを返す。
     pub fn target(&self) -> Option<&str> {
         self.target.as_deref()
     }

@@ -17,6 +17,7 @@ pub struct GenericImage {
 }
 
 impl GenericImage {
+    /// イメージ名とタグを指定して汎用イメージを作る。
     pub fn new<S: Into<String>>(name: S, tag: S) -> GenericImage {
         Self {
             name: name.into(),
@@ -27,16 +28,19 @@ impl GenericImage {
         }
     }
 
+    /// 準備完了条件を追加する。
     pub fn with_wait_for(mut self, wait_for: WaitFor) -> Self {
         self.wait_for.push(wait_for);
         self
     }
 
+    /// entrypoint を設定する。
     pub fn with_entrypoint(mut self, entrypoint: &str) -> Self {
         self.entrypoint = Some(entrypoint.to_string());
         self
     }
 
+    /// 公開ポートを追加する。
     pub fn with_exposed_port(mut self, port: ContainerPort) -> Self {
         self.exposed_ports.push(port);
         self

@@ -1,5 +1,5 @@
-//! 環境設定。元の 0.27 の `core::env` に相当するが、
-//! macOS (XPC) では bollard を使わないため最小限の実装にとどめる。
+//! 環境設定。本家 testcontainers-rs 0.27 の `core::env` に相当するが、
+//! macOS (XPC) バックエンドでは最小限の実装にとどめる。
 
 /// コンテナ終了時のコマンド。本家と同じ。
 #[derive(Debug, Clone, Copy, Default)]

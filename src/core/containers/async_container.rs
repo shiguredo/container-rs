@@ -223,14 +223,17 @@ impl<I: Image> ContainerAsync<I> {
         }
     }
 
+    /// コンテナ ID を返す。
     pub fn id(&self) -> &str {
         &self.id
     }
 
+    /// イメージを返す。
     pub fn image(&self) -> &I {
         self.image.image()
     }
 
+    /// コンテナの公開ポートマッピングを取得する。
     pub async fn ports(&self) -> Result<Ports> {
         match &self.client {
             #[cfg(target_os = "macos")]
@@ -240,6 +243,7 @@ impl<I: Image> ContainerAsync<I> {
         }
     }
 
+    /// コンテナポートに対応するホストの IPv4 ポートを取得する。
     pub async fn get_host_port_ipv4(&self, internal_port: impl Into<ContainerPort>) -> Result<u16> {
         let internal_port = internal_port.into();
         self.ports()
@@ -251,6 +255,7 @@ impl<I: Image> ContainerAsync<I> {
             })
     }
 
+    /// コンテナポートに対応するホストの IPv6 ポートを取得する。
     pub async fn get_host_port_ipv6(&self, internal_port: impl Into<ContainerPort>) -> Result<u16> {
         let internal_port = internal_port.into();
         self.ports()
@@ -262,6 +267,7 @@ impl<I: Image> ContainerAsync<I> {
             })
     }
 
+    /// コンテナのブリッジ IP アドレスを取得する。
     pub async fn get_bridge_ip_address(&self) -> Result<IpAddr> {
         match &self.client {
             #[cfg(target_os = "macos")]
@@ -338,6 +344,7 @@ impl<I: Image> ContainerAsync<I> {
         }
     }
 
+    /// コンテナに接続するためのホストを返す。
     pub async fn get_host(&self) -> Result<Host> {
         // macOS / Linux ともホストは localhost。
         Ok(Host::parse("localhost"))
@@ -677,10 +684,15 @@ impl<I: Image> ContainerAsync<I> {
         Ok(())
     }
 
+    /// コンテナを停止する。デフォルトのタイムアウトで SIGTERM を送信する。
     pub async fn stop(&self) -> Result<()> {
         self.stop_with_timeout(None).await
     }
 
+    /// タイムアウトを指定してコンテナを停止する。
+    ///
+    /// `timeout_seconds` が `None` の場合はデフォルト (SIGTERM + 30 秒)、
+    /// `Some(0)` の場合は即時 SIGKILL、負値の場合は無限待ちに近いタイムアウトで SIGTERM。
     pub async fn stop_with_timeout(&self, timeout_seconds: Option<i32>) -> Result<()> {
         // LogConsumer 配信 / ログストリームを止める (Drop を待たない)。
         self.stop_log_delivery();
@@ -732,6 +744,7 @@ impl<I: Image> ContainerAsync<I> {
         }
     }
 
+    /// コンテナが実行中かどうかを返す。
     pub async fn is_running(&self) -> Result<bool> {
         match &self.client {
             #[cfg(target_os = "macos")]
@@ -1087,12 +1100,14 @@ impl<I: Image> ContainerAsync<I> {
             .clone()
     }
 
+    /// stdout を全量読み出して `Vec<u8>` で返す (follow なし)。
     pub async fn stdout_to_vec(&self) -> Result<Vec<u8>> {
         let mut stdout = Vec::new();
         self.stdout(false).read_to_end(&mut stdout).await?;
         Ok(stdout)
     }
 
+    /// stderr を全量読み出して `Vec<u8>` で返す (follow なし)。
     pub async fn stderr_to_vec(&self) -> Result<Vec<u8>> {
         let mut stderr = Vec::new();
         self.stderr(false).read_to_end(&mut stderr).await?;

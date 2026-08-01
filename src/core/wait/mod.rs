@@ -37,7 +37,10 @@ pub enum WaitFor {
     /// ログに特定メッセージが出るまで。
     Log(LogWaitStrategy),
     /// 指定時間待機。
-    Duration { length: Duration },
+    Duration {
+        /// 待機時間。
+        length: Duration,
+    },
     /// ヘルスチェックが通過するまで。
     Healthcheck(HealthWaitStrategy),
     /// HTTP レスポンスが条件を満たすまで。
@@ -48,6 +51,7 @@ pub enum WaitFor {
 }
 
 impl WaitFor {
+    /// stdout に指定メッセージが出るまで待機する条件を作る。
     pub fn message_on_stdout(message: impl AsRef<[u8]>) -> WaitFor {
         Self::log(LogWaitStrategy::new(
             crate::core::logs::LogSource::StdOut,
@@ -55,6 +59,7 @@ impl WaitFor {
         ))
     }
 
+    /// stderr に指定メッセージが出るまで待機する条件を作る。
     pub fn message_on_stderr(message: impl AsRef<[u8]>) -> WaitFor {
         Self::log(LogWaitStrategy::new(
             crate::core::logs::LogSource::StdErr,
@@ -70,36 +75,51 @@ impl WaitFor {
         ))
     }
 
+    /// ログ待機戦略から条件を作る。
     pub fn log(log_strategy: LogWaitStrategy) -> WaitFor {
         WaitFor::Log(log_strategy)
     }
 
     /// HTTP レスポンスが条件を満たすまで待機する。
+    ///
+    /// # Feature
+    ///
+    /// この API は `http_wait_plain` feature が必要です。
     #[cfg(feature = "http_wait_plain")]
     pub fn http(http_strategy: HttpWaitStrategy) -> WaitFor {
         WaitFor::Http(Box::new(http_strategy))
     }
 
+    /// ヘルスチェックが通過するまで待機する条件を作る。
+    ///
+    /// macOS (Apple container) は Docker HEALTHCHECK 相当を実装していないため、
+    /// 常に `HealthCheckNotConfigured` エラーを返す。
     pub fn healthcheck() -> WaitFor {
         WaitFor::Healthcheck(HealthWaitStrategy::default())
     }
 
+    /// コンテナが終了するまで待機する条件を作る。
     pub fn exit(exit_strategy: ExitWaitStrategy) -> WaitFor {
         WaitFor::Exit(exit_strategy)
     }
 
+    /// 指定秒数だけ待機する条件を作る。
     pub fn seconds(length: u64) -> WaitFor {
         WaitFor::Duration {
             length: Duration::from_secs(length),
         }
     }
 
+    /// 指定ミリ秒だけ待機する条件を作る。
     pub fn millis(length: u64) -> WaitFor {
         WaitFor::Duration {
             length: Duration::from_millis(length),
         }
     }
 
+    /// 環境変数からミリ秒を読み取り、その時間だけ待機する条件を作る。
+    ///
+    /// 環境変数が未設定または不正値の場合は `WaitFor::Nothing` を返す。
     pub fn millis_in_env_var(name: &'static str) -> WaitFor {
         let additional_sleep_period = std::env::var(name).map(|value| value.parse());
 

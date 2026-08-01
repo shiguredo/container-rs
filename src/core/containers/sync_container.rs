@@ -94,18 +94,38 @@ impl<I: Image> Container<I> {
         self.inner.as_ref().expect("container already removed")
     }
 
+    /// コンテナ ID を返す。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn id(&self) -> &str {
         self.inner().id()
     }
 
+    /// イメージを返す。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn image(&self) -> &I {
         self.inner().image()
     }
 
+    /// コンテナを停止する。デフォルトのタイムアウトで SIGTERM を送信する。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn stop(&self) -> Result<()> {
         self.stop_with_timeout(None)
     }
 
+    /// タイムアウトを指定してコンテナを停止する。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn stop_with_timeout(&self, timeout_seconds: Option<i32>) -> Result<()> {
         block_on_runtime(
             self.runtime(),
@@ -113,10 +133,20 @@ impl<I: Image> Container<I> {
         )?
     }
 
+    /// コンテナが実行中かどうかを返す。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn is_running(&self) -> Result<bool> {
         block_on_runtime(self.runtime(), self.inner().is_running())?
     }
 
+    /// コンテナの exit code を返す (未終了なら `None`)。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn exit_code(&self) -> Result<Option<i64>> {
         block_on_runtime(self.runtime(), self.inner().exit_code())?
     }
@@ -169,10 +199,20 @@ impl<I: Image> Container<I> {
         Ok(())
     }
 
+    /// コンテナの公開ポートマッピングを取得する。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn ports(&self) -> Result<crate::core::ports::Ports> {
         block_on_runtime(self.runtime(), self.inner().ports())?
     }
 
+    /// コンテナポートに対応するホストの IPv4 ポートを取得する。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn get_host_port_ipv4(
         &self,
         internal_port: impl Into<crate::core::ports::ContainerPort>,
@@ -181,6 +221,11 @@ impl<I: Image> Container<I> {
         block_on_runtime(self.runtime(), self.inner().get_host_port_ipv4(port))?
     }
 
+    /// コンテナポートに対応するホストの IPv6 ポートを取得する。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn get_host_port_ipv6(
         &self,
         internal_port: impl Into<crate::core::ports::ContainerPort>,
@@ -189,10 +234,20 @@ impl<I: Image> Container<I> {
         block_on_runtime(self.runtime(), self.inner().get_host_port_ipv6(port))?
     }
 
+    /// stdout を全量読み出して `Vec<u8>` で返す (follow なし)。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn stdout_to_vec(&self) -> Result<Vec<u8>> {
         block_on_runtime(self.runtime(), self.inner().stdout_to_vec())?
     }
 
+    /// stderr を全量読み出して `Vec<u8>` で返す (follow なし)。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn stderr_to_vec(&self) -> Result<Vec<u8>> {
         block_on_runtime(self.runtime(), self.inner().stderr_to_vec())?
     }
@@ -241,10 +296,20 @@ impl<I: Image> Container<I> {
         self.inner().stderr_sync(follow)
     }
 
+    /// 停止済みなら再起動し、`Image::exec_after_start` を実行する。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn start(&self) -> Result<()> {
         block_on_runtime(self.runtime(), self.inner().start())?
     }
 
+    /// コンテナ内でコマンドを実行する。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn exec(&self, cmd: crate::core::ExecCommand) -> Result<SyncExecResult> {
         match block_on_runtime(self.runtime(), self.inner().exec(cmd)) {
             Ok(Ok(inner)) => Ok(SyncExecResult { inner }),
@@ -252,14 +317,29 @@ impl<I: Image> Container<I> {
         }
     }
 
+    /// コンテナのブリッジ IP アドレスを取得する。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn get_bridge_ip_address(&self) -> Result<IpAddr> {
         block_on_runtime(self.runtime(), self.inner().get_bridge_ip_address())?
     }
 
+    /// コンテナに接続するためのホストを返す。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn get_host(&self) -> Result<crate::core::Host> {
         block_on_runtime(self.runtime(), self.inner().get_host())?
     }
 
+    /// コンテナからホストへファイルをコピーする。
+    ///
+    /// # Feature
+    ///
+    /// この API は `blocking` feature が必要です。
     pub fn copy_file_from<T: crate::core::copy::CopyFileFromContainer>(
         &self,
         source: impl Into<String> + Send,
