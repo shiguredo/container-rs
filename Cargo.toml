@@ -20,8 +20,8 @@ all-features = true
 members = ["pbt"]
 
 [dependencies]
-# Basic 認証ヘッダ用の base64 エンコード (http_wait_plain)
-base64ct = { version = "1.8", features = ["alloc"], optional = true }
+# base64 エンコード / デコード (レジストリ認証・http_wait_plain)
+base64ct = { version = "1.8", features = ["alloc"] }
 # XPC bridge で確保したネイティブメモリを解放するため
 libc = "0.2"
 # JSON 処理
@@ -57,6 +57,6 @@ cc = "1.2"
 # 同期 API (Container / SyncRunner など) を有効化する
 blocking = []
 # WaitFor::http (HttpWaitStrategy) を有効化する。plain HTTP のみ (TLS 非対応)
-http_wait_plain = ["dep:base64ct"]
+http_wait_plain = []
 # テストプロセスのクラッシュ (SIGKILL 含む) 時に孤立コンテナを掃除する (macOS のみ)
 watchdog = []

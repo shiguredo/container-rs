@@ -60,7 +60,14 @@ impl DockerClient {
         if let Some(platform) = platform {
             path.push_str(&format!("&platform={}", percent_encode_component(platform)));
         }
-        let response = self.request("POST", &path, None).await?;
+        // プライベートレジストリ認証があれば X-Registry-Auth ヘッダを付与する。
+        let auth_header = super::registry_auth::x_registry_auth(descriptor);
+        let extra_headers: Vec<(&'static str, String)> = auth_header
+            .map(|v| vec![("X-Registry-Auth", v)])
+            .unwrap_or_default();
+        let response = self
+            .request_with_extra_headers("POST", &path, None, extra_headers)
+            .await?;
         if response.status_code() >= 400 {
             return Err(ClientError::Other(format!(
                 "failed to pull image {descriptor}: {}",
@@ -674,6 +681,34 @@ impl DockerClient {
         .map_err(|e| ClientError::Other(format!("spawn_blocking failed: {e}")))?
     }
 
+    /// 追加ヘッダ付きの HTTP リクエスト (レジストリ認証用)。
+    async fn request_with_extra_headers(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+        extra_headers: Vec<(&'static str, String)>,
+    ) -> Result<Response> {
+        let socket_path = self.socket_path.clone();
+        let method = method.to_string();
+        let path = path.to_string();
+
+        tokio::task::spawn_blocking(move || -> Result<Response> {
+            let request_bytes = encode_docker_api_request_with_headers(
+                &method,
+                &path,
+                body.as_deref().map(|b| (b, "application/json")),
+                &extra_headers,
+            )?;
+
+            let mut stream = UnixStream::connect(&socket_path)?;
+            stream.write_all(&request_bytes)?;
+            read_http11_response(&mut stream, &method)
+        })
+        .await
+        .map_err(|e| ClientError::Other(format!("spawn_blocking failed: {e}")))?
+    }
+
     /// 任意の Content-Type でボディを送る HTTP リクエスト (tar 送信用)。
     ///
     /// 既存の JSON 固定 `request` は変更せず、`copy_to` 専用に分ける (既存呼び出しへの影響を最小化)。
@@ -769,6 +804,35 @@ pub(crate) fn encode_docker_api_request(
         // keep-alive で対向が接続を保持しないよう明示的に閉じる。
         .header("Connection", "close")
         .map_err(http11_err)?;
+    if let Some((body, content_type)) = body {
+        request = request
+            .header("Content-Type", content_type)
+            .map_err(http11_err)?;
+        request = request
+            .header("Content-Length", &body.len().to_string())
+            .map_err(http11_err)?;
+        request = request.body(body.to_vec());
+    }
+    request.encode().map_err(http11_err)
+}
+
+/// 追加ヘッダ付きで Docker Engine API 向け HTTP/1.1 リクエストをエンコードする。
+fn encode_docker_api_request_with_headers(
+    method: &str,
+    path: &str,
+    body: Option<(&[u8], &'static str)>,
+    extra_headers: &[(&'static str, String)],
+) -> Result<Vec<u8>> {
+    let method_obj = shiguredo_http11::Method::new(method).map_err(http11_err)?;
+    let mut request = Request::new(method_obj, path)
+        .map_err(http11_err)?
+        .header("Host", "localhost")
+        .map_err(http11_err)?
+        .header("Connection", "close")
+        .map_err(http11_err)?;
+    for (name, value) in extra_headers {
+        request = request.header(*name, value.as_str()).map_err(http11_err)?;
+    }
     if let Some((body, content_type)) = body {
         request = request
             .header("Content-Type", content_type)
