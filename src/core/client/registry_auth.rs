@@ -31,10 +31,10 @@ pub(crate) fn x_registry_auth(descriptor: &str) -> Option<String> {
 /// 優先順: DOCKER_AUTH_CONFIG > DOCKER_CONFIG/config.json > ~/.docker/config.json
 fn load_config_json() -> Option<String> {
     // 環境変数 DOCKER_AUTH_CONFIG (config.json 相当の JSON 文字列)
-    if let Ok(json) = std::env::var("DOCKER_AUTH_CONFIG") {
-        if !json.is_empty() {
-            return Some(json);
-        }
+    if let Ok(json) = std::env::var("DOCKER_AUTH_CONFIG")
+        && !json.is_empty()
+    {
+        return Some(json);
     }
 
     // DOCKER_CONFIG ディレクトリ配下の config.json
@@ -77,21 +77,18 @@ fn extract_auth_entry(config_json: &str, key: &str) -> Option<String> {
     let entry_value = auths_value.to_member(key).and_then(|m| m.required()).ok()?;
 
     // identitytoken がある場合はそれを優先する。
-    if let Some(token_value) = entry_value
+    if let Ok(token_value) = entry_value
         .to_member("identitytoken")
         .and_then(|m| m.required())
-        .ok()
+        && let Ok(token_str) = TryInto::<String>::try_into(token_value)
+        && !token_str.is_empty()
     {
-        if let Ok(token_str) = TryInto::<String>::try_into(token_value)
-            && !token_str.is_empty()
-        {
-            let header_json = format!(
-                "{{\"identitytoken\":\"{}\"}}",
-                escape_json_value(&token_str)
-            );
-            let encoded = Base64::encode_string(header_json.as_bytes());
-            return Some(encoded);
-        }
+        let header_json = format!(
+            "{{\"identitytoken\":\"{}\"}}",
+            escape_json_value(&token_str)
+        );
+        let encoded = Base64::encode_string(header_json.as_bytes());
+        return Some(encoded);
     }
 
     // auth フィールド (base64 エンコードされた username:password)
