@@ -765,6 +765,7 @@ async fn copy_to_sources<I: Image>(
 ///
 /// `uid == 0 && gid == 0` の場合はスキップする。
 /// 失敗時は warn ログのみでエラーにしない (権限不足で失敗し得るため)。
+#[cfg(target_os = "macos")]
 async fn chown_after_copy(
     client: &crate::core::client::xpc_client::XpcClient,
     id: &str,
