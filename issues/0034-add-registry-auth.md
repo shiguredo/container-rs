@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-22
-- Completed:
+- Completed: 2026-08-01
 - Model: Cursor Grok 4.5
 - Branch: feature/add-registry-auth
 - Polished: 2026-07-29
@@ -52,3 +52,12 @@ Linux (Docker Engine API) でプライベートレジストリ (例: プライ�
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+- `src/core/client/registry_auth.rs` を新規作成し、Docker 認証設定の読み込み・レジストリ判定・X-Registry-Auth ヘッダ構築を実装した
+- `DockerClient::pull_image` に認証ヘッダ付与を追加した
+- `request_with_extra_headers` / `encode_docker_api_request_with_headers` を追加した
+- `base64ct` を non-optional 依存に昇格した
+- 単体テストで auths キー抽出・base64 デコード・ヘッダ構築を検証した
+- CHANGES.md に [ADD] エントリを追加した
