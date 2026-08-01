@@ -9,6 +9,7 @@ use std::os::unix::net::UnixStream;
 
 use shiguredo_http11::{Request, Response};
 
+use crate::core::client::http_decode::BodyLimit;
 use crate::core::client::{ContainerConfig, ContainerSnapshot, HealthProbe, HealthStatus};
 use crate::core::containers::request::PortMapping;
 use crate::core::error::{ClientError, Result};
@@ -21,6 +22,15 @@ const DEFAULT_DOCKER_SOCKET: &str = "/var/run/docker.sock";
 /// Drop 経路から呼ばれるため、デーモン無応答時に呼び出しスレッドが恒久ブロックするのを防ぐ。
 /// exec start や stop?t=N 等、正当に長時間ブロックする経路には適用しない。
 const DOCKER_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Docker exec のレスポンスボディ蓄積上限。macOS 経路 (`read_file_to_vec`) と同じ 64 MiB の値。
+///
+/// 適用対象は demux 前の multiplexed stream 全体 (stdout + stderr の合計、フレームヘッダ込み) で、
+/// macOS の stdout / stderr 各ストリーム別 64 MiB より実効上限が厳しい (この非対称は許容する)。
+/// 超過時は切り詰めずエラーにする。multiplexed stream を切り詰めるとフレーム途中で
+/// 切断され `demux_exec_stream` が不完全フレームを静かに捨てて出力が欠損するため。
+/// 判定は macOS 側と同じ `>` 境界 (ちょうど 64 MiB は成功)。
+const EXEC_OUTPUT_BODY_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Docker exec の生結果。
 pub(crate) struct DockerExecResult {
@@ -268,7 +278,7 @@ impl DockerClient {
         stream.write_all(&request_bytes)?;
         // 書き込み半閉じは dockerd / Docker Desktop が 500 を返すため行わない。
         // 対向の接続保持は `Connection: close` とボディ完了時の即リターンで防ぐ。
-        let response = read_http11_response(&mut stream, "DELETE")?;
+        let response = read_http11_response(&mut stream, "DELETE", BodyLimit::Unlimited)?;
         if response.status_code() == 404 {
             return Ok(());
         }
@@ -296,7 +306,7 @@ impl DockerClient {
         let request_bytes = encode_docker_api_request("POST", &path, None)?;
         let mut stream = UnixStream::connect(&self.socket_path)?;
         stream.write_all(&request_bytes)?;
-        let response = read_http11_response(&mut stream, "POST")?;
+        let response = read_http11_response(&mut stream, "POST", BodyLimit::Unlimited)?;
         if response.status_code() >= 400 {
             return Err(ClientError::Other(format!(
                 "failed to wait for container: {}",
@@ -369,8 +379,9 @@ impl DockerClient {
             .map_err(|e: nojson::JsonParseError| ClientError::Json(e.to_string()))?;
 
         // Detach=false で起動し、レスポンスボディの multiplexed stream を全蓄積する。
-        // exec の出力はプロセス終了で EOF する。テスト用途では出力は小さい前提のため
-        // 全蓄積で十分 (ログの FrameDemuxer と異なり OOM 回避の增量処理はしない)。
+        // exec の出力はプロセス終了で EOF するが、任意のコマンドが実行可能なため
+        // 大量出力 (例: `yes | head -c 1G`) で OOM になり得る。蓄積上限は 64 MiB で、
+        // 超過時は切り詰めずエラーにする (フレーム途中切断で出力欠損するため)。
         let start_path = format!("/exec/{}/start", percent_encode_path_segment(&exec_id));
         let start_config = ExecStartConfig {
             detach: false,
@@ -378,7 +389,12 @@ impl DockerClient {
         };
         let start_json = start_config.to_json_string()?;
         let response = self
-            .request("POST", &start_path, Some(start_json.into_bytes()))
+            .request_with_body_limit(
+                "POST",
+                &start_path,
+                Some(start_json.into_bytes()),
+                BodyLimit::Error(EXEC_OUTPUT_BODY_LIMIT),
+            )
             .await?;
         if response.status_code() >= 400 {
             return Err(ClientError::Other(format!(
@@ -654,6 +670,21 @@ impl DockerClient {
 
     /// Docker Engine API に HTTP リクエストを送信する。
     async fn request(&self, method: &str, path: &str, body: Option<Vec<u8>>) -> Result<Response> {
+        self.request_with_body_limit(method, path, body, BodyLimit::Unlimited)
+            .await
+    }
+
+    /// ボディ蓄積上限を指定して Docker Engine API に HTTP リクエストを送信する。
+    ///
+    /// ボディ上限は exec start の出力読み出し専用 (早期アボート用)。
+    /// その他の経路は `request` 経由で `BodyLimit::Unlimited` を使い、挙動を変えない。
+    async fn request_with_body_limit(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Vec<u8>>,
+        body_limit: BodyLimit,
+    ) -> Result<Response> {
         let socket_path = self.socket_path.clone();
         let method = method.to_string();
         let path = path.to_string();
@@ -675,7 +706,7 @@ impl DockerClient {
             // この共有メソッドにはタイムアウトを設定しない。タイムアウトは remove_blocking 等、
             // 短時間で完了すべき同期専用経路に個別に設定する。
 
-            read_http11_response(&mut stream, &method)
+            read_http11_response(&mut stream, &method, body_limit)
         })
         .await
         .map_err(|e| ClientError::Other(format!("spawn_blocking failed: {e}")))?
@@ -703,7 +734,7 @@ impl DockerClient {
 
             let mut stream = UnixStream::connect(&socket_path)?;
             stream.write_all(&request_bytes)?;
-            read_http11_response(&mut stream, &method)
+            read_http11_response(&mut stream, &method, BodyLimit::Unlimited)
         })
         .await
         .map_err(|e| ClientError::Other(format!("spawn_blocking failed: {e}")))?
@@ -729,7 +760,7 @@ impl DockerClient {
 
             let mut stream = UnixStream::connect(&socket_path)?;
             stream.write_all(&request_bytes)?;
-            read_http11_response(&mut stream, &method)
+            read_http11_response(&mut stream, &method, BodyLimit::Unlimited)
         })
         .await
         .map_err(|e| ClientError::Other(format!("spawn_blocking failed: {e}")))?
@@ -846,10 +877,14 @@ fn encode_docker_api_request_with_headers(
 }
 
 /// ソケットから HTTP/1.1 レスポンスを読み取りデコードする。
-fn read_http11_response(stream: &mut impl Read, method: &str) -> Result<Response> {
+fn read_http11_response(
+    stream: &mut impl Read,
+    method: &str,
+    body_limit: BodyLimit,
+) -> Result<Response> {
     use crate::core::client::http_decode::ResponseAccumulator;
 
-    let mut acc = ResponseAccumulator::new(method, None);
+    let mut acc = ResponseAccumulator::new(method, body_limit);
 
     loop {
         let want = acc.read_buf_size();
@@ -1877,7 +1912,7 @@ mod tests {
 
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = read_http11_response(&mut reader, "GET");
+            let result = read_http11_response(&mut reader, "GET", BodyLimit::Unlimited);
             let _ = tx.send(result);
         });
 

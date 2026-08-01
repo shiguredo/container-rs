@@ -77,6 +77,8 @@
   - @voluntas
 - [FIX] Linux ログストリームの fallback fd の use-after-close 競合をフォールバック廃止で解消する
   - @voluntas
+- [FIX] Linux exec の出力読み出しに 64 MiB のサイズ上限を設定し、超過時に切り詰めずエラーを返すようにする
+  - @voluntas
 
 ### misc
 
