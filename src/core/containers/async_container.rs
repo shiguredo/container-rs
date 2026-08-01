@@ -271,6 +271,16 @@ impl<I: Image> ContainerAsync<I> {
         }
     }
 
+    /// コンテナのネットワークゲートウェイ IP を取得する (macOS のみ)。
+    ///
+    /// `ExtraHost::HostGateway` の解決に使う。
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn gateway_ip_address(&self) -> Result<IpAddr> {
+        match &self.client {
+            Client::MacOs(c) => c.gateway_ip_address(&self.id).await,
+        }
+    }
+
     /// コンテナからホストへファイルをコピーする。
     ///
     /// apple/container の `containerCopyOut` はディレクトリもコピーできるが、

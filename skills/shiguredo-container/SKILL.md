@@ -72,7 +72,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `with_privileged` | 部分対応 (`capAdd: ["ALL"]` 相当) | 対応 |
 | `with_cap_add`, `with_cap_drop`, `with_shm_size`, `with_readonly_rootfs` | 対応 | 対応 |
 | `with_hostname`, `with_open_stdin` | 対応 | 対応 |
-| `with_host` | 部分対応 (`ExtraHost::Addr` は exec で `/etc/hosts` 追記。`HostGateway` はエラー) | 対応 (HostConfig.ExtraHosts に反映。`HostGateway` 含む) |
+| `with_host` | 対応 (exec で `/etc/hosts` 追記。`HostGateway` は `ipv4Gateway` から解決) | 対応 (HostConfig.ExtraHosts に反映) |
 | `with_user` | 部分対応 (環境により非 root UID が機能しないことがある) | 対応 |
 | `with_init` | **shiguredo 拡張** (XPC `useInit`) | 対応 (HostConfig.Init) |
 | `with_ssh` | **shiguredo 拡張** (XPC `ssh`) | start 時に明示エラー |

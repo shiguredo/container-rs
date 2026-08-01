@@ -615,7 +615,7 @@ fn linux_unsupported_request_reason<I: Image>(req: &ContainerRequest<I>) -> Opti
 ///
 /// Apple container の XPC API には Docker の `extra_hosts` に相当する設定が無いため、
 /// コンテナ起動後に `exec` で `/etc/hosts` へエントリを追記する。
-/// `HostGateway` はホストゲートウェイ IP が環境依存なため未対応とする。
+/// `HostGateway` は `containerList` の `networks[0].ipv4Gateway` から解決する。
 #[cfg(target_os = "macos")]
 async fn apply_extra_hosts<I: Image>(
     container: &ContainerAsync<I>,
@@ -625,9 +625,12 @@ async fn apply_extra_hosts<I: Image>(
         let ip = match host {
             ExtraHost::Addr(ip) => ip.to_string(),
             ExtraHost::HostGateway => {
-                return Err(crate::Error::other(
-                    "with_host(..., HostGateway) is not supported on macOS",
-                ));
+                let gw = container.gateway_ip_address().await.map_err(|e| {
+                    crate::Error::other(format!(
+                        "failed to resolve host gateway IP for with_host(..., HostGateway): {e}"
+                    ))
+                })?;
+                gw.to_string()
             }
         };
 

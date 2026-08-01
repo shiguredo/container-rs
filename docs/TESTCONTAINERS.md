@@ -121,7 +121,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_label(self, k, v)` | あり | 対応 | 対応 |  |
 | `with_labels(self, labels)` | あり | 対応 | 対応 |  |
 | `with_env_var(self, k, v)` | あり | 対応 | 対応 |  |
-| `with_host(self, key, value)` | あり | 部分対応 | 対応 | macOS: `ExtraHost::Addr` は exec で `/etc/hosts` へ追記、`HostGateway` は明示エラー / Docker: HostConfig.ExtraHosts に反映 (`HostGateway` 含む) |
+| `with_host(self, key, value)` | あり | 対応 | 対応 | macOS: exec で `/etc/hosts` へ追記 (`HostGateway` は `ipv4Gateway` から解決) / Docker: HostConfig.ExtraHosts に反映 |
 | `with_hostname(self, hostname)` | あり | 対応 | 対応 | macOS: 明示 hostname → container_name → id の優先で `networks[0].options.hostname` に反映 / Docker: Config.Hostname に反映 |
 | `with_mount(self, mount)` | あり | 対応 | 対応 | Bind/Volume/Tmpfs を XPC の `virtiofs/volume/tmpfs` にマップ / Docker: Bind は HostConfig.Binds、Volume/Tmpfs は HostConfig.Mounts に反映 |
 | `with_copy_to(self, target, source)` | あり | 対応 | 対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` は XPC 非反映。投入は start_process 後（起動前契約なし）。親作成は `createParents`。ホストディレクトリの再帰投入可（Apple container 1.1.0 で実測） / Docker: create 後・start 前に自前 ustar で `path=/` へ投入。親ディレクトリ自動作成・ディレクトリ一括投入対応。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で regular file に反映（中間 directory の mode は `0o755`）。コピー後 mtime は epoch。起動前投入は Linux のみの公開契約 |
