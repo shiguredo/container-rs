@@ -40,7 +40,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 
 | OS | ランタイム | 備考 |
 |:--|:--|:--|
-| macOS 26 (Apple Silicon) | `container` (`brew install container`) | macOS 26 必須 |
+| macOS 26 (Apple Silicon) | `container` (`brew install container`) | macOS 26・Apple container 1.2.0 以上必須 |
 | Linux | Docker Engine (Docker Engine API 互換) | Podman 等 API 互換ランタイムも可 |
 
 ## インストール

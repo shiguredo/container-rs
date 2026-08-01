@@ -42,6 +42,12 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 
 `containerLogs` レスポンス: `logs: [FileHandle]` (stdin/stdout/stderr の FD)。
 
+### Apple container 1.2.0 前提とコンテナ ID の制約
+
+- macOS ランタイムは Apple container **1.2.0 以上**を前提とする (1.2.0 で追加された `maskedPaths` / `readonlyPaths` や ID 検証の強化に対応するため)
+- コンテナ ID (`with_container_name` の値、未指定時は自動生成 `c-{pid}-{nanos}-{count}`) は Apple container 1.2.0 の `nameValid` と同じ制約を持つ: 先頭は英数字・実質 2 文字以上・63 文字以下・文字種は英数字 / `_` / `.` / `-`
+- 制約を満たさない名前は macOS の `AsyncRunner::start` が pull / resolve より前に明示エラーを返す (create 直前ではなく fail-fast する)
+
 ## Docker Engine API (Linux) の現状
 
 `DockerClient` (`src/core/client/docker_client.rs`) は `/var/run/docker.sock` 向けに pull (プライベートレジストリ認証 `X-Registry-Auth` 対応) / create / start / stop / remove / exec / inspect / logs / archive (copy) を実装済みである。`ContainerAsync` の Linux 分岐はライフサイクル系 (`ports` / `exec` / `stop` / `is_running` / `rm` / Drop / `start` 再起動 / `container_state`)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `with_log_consumer`)、copy (`copy_file_from` / `with_copy_to`)、ヘルスチェック (`with_health_check` / `WaitFor::Healthcheck`) を配線済みである。
@@ -115,7 +121,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_cmd(self, cmd)` | あり | 対応 | 対応 |  |
 | `with_name(self, name)` | あり | 対応 | 対応 |  |
 | `with_tag(self, tag)` | あり | 対応 | 対応 |  |
-| `with_container_name(self, name)` | あり | 対応 | 対応 |  |
+| `with_container_name(self, name)` | あり | 対応 | 対応 | 設定値がコンテナ ID になる。macOS は Apple container 1.2.0 の `nameValid` 相当の制約で検証し、違反は start 時に明示エラー (制約の詳細は上記「Apple container 1.2.0 前提とコンテナ ID の制約」参照) |
 | `with_platform(self, platform)` | あり | 対応 | 対応 | macOS: XPC `rosetta`・`ociPlatform`・`platform.architecture` に反映 / Docker: pull / create の `platform` クエリパラメータに反映 |
 | `with_network(self, network)` | あり | 部分対応 | 対応 | XPC `containerCreate` の `networks[0].network` に反映 / Docker: NetworkingConfig.EndpointsConfig に反映。ネットワークの自動作成は行わない |
 | `with_label(self, k, v)` | あり | 対応 | 対応 |  |

@@ -19,7 +19,7 @@ use crate::{
 #[cfg(target_os = "macos")]
 use crate::core::error::ClientError;
 #[cfg(target_os = "macos")]
-use crate::core::util::unique_suffix;
+use crate::core::util::{is_valid_container_id, unique_suffix};
 
 #[cfg(target_os = "macos")]
 use crate::core::{
@@ -71,6 +71,24 @@ where
                 ));
             }
 
+            // コンテナ ID。名前が指定されていればそれを使い、無ければタイムスタンプベースで生成。
+            let id = container_req
+                .container_name()
+                .clone()
+                .unwrap_or_else(|| format!("c-{}", unique_suffix()));
+
+            // Apple container 1.2.0 は bootstrap / create / delete / diskUsage / logs / export の
+            // ID に `nameValid` (63 文字以下・`^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`) を enforce する。
+            // 不正 ID はロールバックの containerDelete も同じ検証で拒否されるため、
+            // pull / resolve などのネットワーク I/O より前に fail-fast して一括で防ぐ。
+            if !is_valid_container_id(&id) {
+                // ID は任意のユーザー入力のため、制御文字をエスケープして埋め込む
+                // ({:?} は通常の ID では `"..."` 形式で issue の例示と同じ)。
+                return Err(crate::Error::other(format!(
+                    "invalid container id {id:?}: must match ^[a-zA-Z0-9][a-zA-Z0-9_.-]+$ and be at most 63 characters"
+                )));
+            }
+
             let descriptor = container_req.descriptor();
 
             // platform を正規化する。許可外文字列は resolve / pull / create に渡さない。
@@ -91,12 +109,6 @@ where
                 resolve_platform,
             )
             .await?;
-
-            // コンテナ ID。名前が指定されていればそれを使い、無ければタイムスタンプベースで生成。
-            let id = container_req
-                .container_name()
-                .clone()
-                .unwrap_or_else(|| format!("c-{}", unique_suffix()));
 
             // デフォルトカーネルを取得する。
             // amd64 (Rosetta) ゲストでも arm64 カーネルを使う (CLI と同方針)。
