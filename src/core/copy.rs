@@ -43,11 +43,11 @@ pub struct CopyTargetOptions {
     pub(crate) mode: u32,
     /// コピー先のオーナー UID。
     ///
-    /// macOS (XPC) では非対応。
+    /// macOS (XPC) ではコピー後に exec で chown を実行して反映する。
     pub(crate) uid: u32,
     /// コピー先のグループ GID。
     ///
-    /// macOS (XPC) では非対応。
+    /// macOS (XPC) ではコピー後に exec で chown を実行して反映する。
     pub(crate) gid: u32,
 }
 
