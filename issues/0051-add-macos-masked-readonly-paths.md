@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-31
-- Completed:
+- Completed: 2026-08-01
 - Branch: feature/add-macos-masked-readonly-paths
 - Polished: 2026-08-01
 
@@ -46,3 +46,19 @@ Apple container 1.2.0 で `ContainerConfiguration` に追加された OCI `maske
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+`src/core/image/image_ext.rs` の `ImageExt` に shiguredo 拡張として `with_masked_paths` / `with_readonly_paths` (引数 `impl IntoIterator<Item = impl Into<String>>`) を追加した。複数回呼び出しは上書き (`with_ready_conditions` と同じパターン)。rustdoc には「個別パスの読み取り専用化であり、`with_readonly_rootfs` (ルート FS 全体の `readOnly`) や `Mount` の `AccessMode::ReadOnly` とは別物」を明記した。
+
+`src/core/containers/request.rs` の `ContainerRequest` に `masked_paths` / `readonly_paths` を `Option<Vec<String>>` で追加し、`masked_paths()` / `readonly_paths()` accessor を実装した。未指定 (`None`) と空リスト (`Some(vec![])`) を区別する。
+
+`src/core/client/container_cfg.rs` の `ContainerCfg` に両フィールドを追加し、`DisplayJson` で `maskedPaths` / `readonlyPaths` として出力する。`None` は null、`Some(list)` は配列 (空配列も出力) で、既存の `shmSize` / `stopSignal` と同じ Option パターン。
+
+Linux では `src/runners/async_runner.rs` の `linux_unsupported_request_reason` に追加し、`with_ssh` と同じ扱いで start 時に明示エラー (`with_masked_paths() is not implemented on Linux` / `with_readonly_paths() is not implemented on Linux`) を返す。
+
+テストは次を追加した: `container_cfg.rs` の JSON 単体テスト (既定 null・空リスト `[]`・明示配列・上書き意味論)、`src/runners/async_runner.rs` の Linux 単体テスト (空リスト含む `Some` 時に明示エラー)、`tests/container_macos.rs` の統合テスト (`readonlyPaths` で `/etc` への touch が失敗し `/tmp` への touch が成功する対比・`maskedPaths` 空リストで既定マスク解除・明示リストで既定マスクの上書き)。
+
+ドキュメントは次を更新した: `docs/TESTCONTAINERS.md` (ImageExt 対応表・accessor 一覧・Linux fail-fast 記述・shiguredo 拡張の件数 16 → 20 と API 集計 409 → 413・フィールド一覧)、`skills/shiguredo-container/SKILL.md` (ImageExt 表・既知の制限事項・API 件数)、`README.md` の Linux 注意書き。
+
+`CHANGES.md` に `[ADD]` エントリを追加した。
