@@ -1,7 +1,7 @@
 # ドキュメント: macOS で起動前にファイルを見せる場合は `Mount::bind_mount` を使うことを明記する
 
 - Created: 2026-08-01
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-02
 - Branch: feature/update-macos-copy-to-doc-with-bind-mount
 - Polished: 2026-08-02
 
@@ -41,3 +41,9 @@ macOS (Apple container) で初期プロセスが起動時に読むファイル�
 - [ ] `docs/TESTCONTAINERS.md` の `with_copy_to` 行 / `skills/shiguredo-container/SKILL.md` の copy 説明節に誘導と要点が、`README.md` の macOS 注意書きに誘導と絶対パス必須の要点が追記されていること
 - [ ] 設計方針の「明記する内容」が `with_copy_to` の rustdoc に完全形で明記されていること
 - [ ] 回帰検証のみとして、`cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること (新規テストの追加はしない)
+
+## 解決方法
+
+- `with_copy_to` の rustdoc (`src/core/image/image_ext.rs`) の macOS の節に、起動前にファイルを見せたい場合は `with_mount(Mount::bind_mount(host_path, container_path))` を使うこと (virtiofs として起動前に見えるようになる) と、制約の完全形 (host_path は絶対パスかつ実ファイル / 実ディレクトリ前提、`CopyDataSource::Data` の起動前投入は対象外で tempfile が必要かつコンテナ稼働中の unlink 禁止、virtiofs の共有意味論と `with_access_mode(AccessMode::ReadOnly)` 指定) を追記した
+- `docs/TESTCONTAINERS.md` の `with_copy_to` 行の備考欄に誘導と要点 (`with_copy_to` の rustdoc 参照つき)、`skills/shiguredo-container/SKILL.md` の copy 説明節に誘導と要点、`README.md` の macOS 注意書きに誘導と絶対パス必須の要点のみを追記した
+- 設計方針の「`CHANGES.md` には反映しない」は規約解釈の誤りだった。`.md` ファイルの変更分は非対象だが、rustdoc 追記はコード内のドキュメント追加であり `### misc` に記載する対象のため、`[UPDATE]` エントリを追加した (0056 と同じ扱い)
