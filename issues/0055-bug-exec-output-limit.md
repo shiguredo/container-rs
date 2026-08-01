@@ -1,7 +1,7 @@
 # バグ: Linux exec の出力読み出しにサイズ上限が無い
 
 - Created: 2026-07-31
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-01
 - Branch: feature/fix-exec-output-limit
 - Polished: 2026-08-01
 
@@ -39,3 +39,15 @@ macOS (XPC) 経路の `read_file_to_vec` には 64 MiB の上限が設定済み�
 - [ ] 他の `read_http11_response` 呼び出し経路 (pull / copy / create 等) の挙動が変わらないこと
 - [ ] `CHANGES.md` に `[FIX]` エントリが記載されること
 - [ ] `cargo test --all-features` と `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+`src/core/client/http_decode.rs` の `ResponseAccumulator` にボディ蓄積上限の `BodyLimit` 列挙型 (`Unlimited` / `Truncate` / `Error`) を追加した。`Truncate` は既存の HTTP 待機戦略の 1 MiB 切り詰め挙動を維持し、`Error` は exec 出力専用の「上限超過時に即座にエラーを返す (早期アボート)」モードとした。
+
+`src/core/client/docker_client.rs` の `DockerClient::exec` は `POST /exec/{id}/start` のレスポンス読み出しに `BodyLimit::Error(EXEC_OUTPUT_BODY_LIMIT)` (64 MiB) を適用した。蓄積が 64 MiB を超えた時点で `output exceeds 67108864 bytes limit` の `ClientError::Other` を返す。判定は macOS 側 `read_file_to_vec` と同じ `>` 境界 (ちょうど 64 MiB は成功)。切り詰めでなくエラーにする理由は、multiplexed stream を切り詰めるとフレーム途中で切断され `demux_exec_stream` が不完全フレームを静かに捨てて出力が欠損するため。
+
+デコーダ (`shiguredo_http11`) の既定上限 (10 MiB) が先に発動すると 64 MiB 境界に到達しないため、`BodyLimit::Error` ではデコーダの `max_body_size` を上限値に揃えて構築した。exec 以外の経路 (`request` / `remove_blocking` / `wait_blocking` 等) は `BodyLimit::Unlimited` のままで挙動を変えていない。
+
+テストは `http_decode.rs` の単体テストに追加した: ちょうど上限の成功・上限 + 1 の失敗・複数チャンクにまたがる蓄積判定・Content-Length ヘッダ時点の拒否・ボディ無し応答 (204) の成功。close-delimited (exec の実経路) で検証し、エラー文言が `output exceeds ... bytes limit` で一貫することを確認した。
+
+`CHANGES.md` に `[FIX]` エントリを追加した。
