@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-22
-- Completed:
+- Completed: 2026-08-01
 - Model: Opus 4.7
 - Branch: feature/update-unify-keep-notation
 - Polished: 2026-07-29
