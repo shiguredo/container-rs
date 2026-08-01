@@ -82,15 +82,15 @@ fn extract_auth_entry(config_json: &str, key: &str) -> Option<String> {
         .and_then(|m| m.required())
         .ok()
     {
-        if let Ok(token_str) = TryInto::<String>::try_into(token_value) {
-            if !token_str.is_empty() {
-                let header_json = format!(
-                    "{{\"identitytoken\":\"{}\"}}",
-                    escape_json_value(&token_str)
-                );
-                let encoded = Base64::encode_string(header_json.as_bytes());
-                return Some(encoded);
-            }
+        if let Ok(token_str) = TryInto::<String>::try_into(token_value)
+            && !token_str.is_empty()
+        {
+            let header_json = format!(
+                "{{\"identitytoken\":\"{}\"}}",
+                escape_json_value(&token_str)
+            );
+            let encoded = Base64::encode_string(header_json.as_bytes());
+            return Some(encoded);
         }
     }
 
