@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-23
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-01
 - Model: Cursor Grok 4.5
 - Branch: feature/debug-macos-prestart-file-visibility
 - Polished: 2026-08-01
@@ -172,10 +172,41 @@ Medium (Linux は 0041 で解消済みのため High にはしない。ただし
 
 （実測時に候補ごとに追記する。項目: 実施日、macOS バージョン、Apple container CLI / apiserver のバージョンと build（release / preview / self-built）、試した手順、成功/失敗、判定。XPC エラー全文は 4a の失敗時・その他候補でエラーが発生した場合に追記）
 
+### 候補 4a: 不成立 (Apple container 1.2.0 でも状態ゲートは緩和されず)
+
+- 実施日: 2026-08-01
+- macOS: 26.4 (BuildVersion 25E246)
+- Apple container: CLI 1.2.0 (build: release, commit: unspeci) / apiserver 1.2.0 (build: release, commit: unspeci)
+- 試した手順:
+  1. **シーケンス 1 (create 直後・bootstrap より前の `containerCopyIn`)**: CLI (`container create` → `container cp`) と、ライブラリの XPC 直接呼び出し PoC (`containerCreate` → `containerCopyIn`) の両方で確認した
+  2. **シーケンス 2 (bootstrap 後・start_process 前の `containerCopyIn`)**: ライブラリの XPC 直接呼び出し PoC (`containerCreate` → `containerBootstrap` → `containerCopyIn`) で確認した (CLI では bootstrap 後の状態を作れないため)
+- 結果: **両シーケンスとも失敗**
+  - シーケンス 1: `XPC error invalidState: container probe-4a-<id> is not running`
+  - シーケンス 2: `XPC error invalidState: container probe-4a-<id> is not running`
+- 判定: **候補 4a 不成立**。1.2.0 でも `containerCopyIn` は `startProcess` 後 (running) 必須のままで、状態ゲートは緩和されていない。候補 4b の緩和条件 (1.2 系で bootstrap 後・start 前の copyIn 成功) も満たさないため、4b の判定材料にもならない。候補 1 へ進む
+
+### 候補 1: 成立 (bind mount で起動前ファイル可視化が可能。既存パス子 bind 制約は誤り)
+
+- 実施日: 2026-08-01
+- macOS: 26.4 (BuildVersion 25E246)
+- Apple container: CLI 1.2.0 (build: release, commit: unspeci) / apiserver 1.2.0 (build: release, commit: unspeci)
+- 試した手順: `Mount::bind_mount` を使い、`WaitFor::message_on_stdout(marker)` パターンで「初期プロセスが起動時に bind mount 内容を読めた」ことを確認した (起動コマンドが `cat <path>` で marker を stdout に出す + ready 条件が成立すること)
+  1. **新規パスへの単一ファイル bind** (`host_file` → `/data/payload.txt`): 成立
+  2. **`/etc/mosquitto` 全体差し替え** (host dir → `/etc/mosquitto`): 成立
+  3. **`/etc/mosquitto/mosquitto.conf` 直接 bind** (host file → `/etc/mosquitto/mosquitto.conf`): 成立 (ただし alpine には `/etc/mosquitto` が存在しないため、実質新規パス)
+  4. **既存 non-empty ディレクトリ配下の既存ファイル bind** (host file → `/etc/motd`、`/etc` は既存): **成立**。`/etc/motd` がホストファイル内容に差し替わり、`/etc` はディレクトリのまま `/etc/passwd` も無傷 (etc-intact を確認)
+- 判定: **候補 1 成立**。`## 現状` の「virtiofs は既存 non-empty ディレクトリ配下の子だけを bind して差し替える形式ができない (未検証の仮定)」は **誤り** であり、mosquitto 要件 (既存パス単一 File 差し替え) は「部分成立」→「成立」に変わる。`CopyDataSource::Data` (インメモリ bytes) の起動前投入のみ候補 1 では対象外 (利用側で tempfile が必要)。Data 相当の受容可否は Reporter 確認待ち (候補 1 判定 step 4)
+
 ## 調査結果
 
-（実測完了時に、選定候補と起票した実装 issue の番号を記録する）
+- **候補 4a**: 不成立。Apple container 1.2.0 でも `containerCopyIn` は `startProcess` 後 (running) 必須のまま (create 直後・bootstrap 後とも `is not running` で失敗)
+- **候補 1: 選定**。`Mount::bind_mount` で起動前ファイル可視化が成立 (新規パス・ディレクトリ全体・既存パス配下の子ファイル bind のいずれも)。「virtiofs は既存 non-empty ディレクトリ配下の子だけを bind できない」という本 issue の仮定は誤りで、mosquitto 要件は「部分成立」→「成立」に変わった
+- **起票した実装 issue**: **0057** (ドキュメント: macOS で起動前にファイルを見せる場合は `Mount::bind_mount` を使うことを明記する)
 
 ## 解決方法
 
-（実測・実装 issue 起票が完了した時点で過去形に書き直す）
+4 候補のうち候補 4a を XPC 直接呼び出し PoC で実測し、Apple container 1.2.0 でも `containerCopyIn` は `startProcess` 後 (running) 必須のままで不成立と確認した (create 直後・bootstrap 後の両シーケンスで `XPC error invalidState: container ... is not running`)。候補 4b の緩和条件も満たさない。
+
+候補 1 (bind mount) を実測し、新規パス・ディレクトリ全体・既存パス配下の子ファイル bind (`/etc/motd` 差し替え + `/etc/passwd` 無傷) のいずれも、`WaitFor::message_on_stdout(marker)` パターンで初期プロセスが起動時に bind mount 内容を読めることを確認した。「既存 non-empty ディレクトリ配下の子だけを bind できない」という仮定は誤りで、mosquitto 要件は成立に変わった。
+
+Reporter が `CopyDataSource::Data` (インメモリ bytes) の起動前投入が候補 1 の対象外 (利用側で tempfile が必要) であることを受容したため、候補 1 を選定した。ドキュメント修正の実装 issue 0057 を `create-issue` 経由で起票し、本 issue は closed とした。PoC 用の実測コードは調査用の一時コードのため本 issue の成果物ではなく、`feature/debug-` ブランチはマージしない。
