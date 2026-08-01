@@ -59,6 +59,8 @@
   - @voluntas
 - [ADD] Linux で `exit_code` を実装する
   - @voluntas
+- [UPDATE] macOS の `exit_code()` で停止済みコンテナの exit code を都度取得できるようにする
+  - @voluntas
 - [FIX] Linux で `with_exposed_port` / `Image::expose_ports` がホストポート公開に反映されないのを修正する
   - @voluntas
 - [FIX] manifest 選択フォールバックで attestation manifest (`architecture: "unknown"`) を除外する

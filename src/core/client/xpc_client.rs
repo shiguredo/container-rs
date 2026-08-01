@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::net::IpAddr;
 use std::os::fd::FromRawFd;
+use std::time::Duration;
 
 use nojson::DisplayJson;
 
@@ -60,6 +61,23 @@ impl XpcClient {
             "containerWait",
             &[(id_key(), s(id)), (k("processIdentifier"), s(process_id))],
             crate::xpc::LONG_TIMEOUT,
+        )?;
+        reply.try_int64(&k("exitCode"))
+    }
+
+    /// タイムアウト付きでコンテナの exit code を待つ。
+    ///
+    /// 停止済みコンテナへの都度取得用。通常は即座に返る。
+    pub(crate) fn wait_blocking_with_timeout(
+        id: &str,
+        process_id: &str,
+        timeout: Duration,
+    ) -> Result<i64> {
+        let conn = XpcConn::connect(SERVICE_NAME)?;
+        let reply = conn.send_with_timeout(
+            "containerWait",
+            &[(id_key(), s(id)), (k("processIdentifier"), s(process_id))],
+            timeout,
         )?;
         reply.try_int64(&k("exitCode"))
     }

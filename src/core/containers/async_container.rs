@@ -762,11 +762,11 @@ impl<I: Image> ContainerAsync<I> {
         }
     }
 
-    /// バックグラウンドの `containerWait` が観測した exit code を返す (未終了なら `None`)。
+    /// コンテナの exit code を返す (未終了なら `None`)。
     ///
-    /// 取得経路はバックグラウンド wait がキャッシュした値だけである。
-    /// バックグラウンド wait が未完了、または wait 自体が失敗した場合は、コンテナが
-    /// 停止済みでも `Ok(None)` を返し得る。`container_state` からの再取得経路は無い。
+    /// macOS: バックグラウンド wait のキャッシュを優先し、停止済みかつ未観測の場合は
+    /// 短いタイムアウト (5 秒) で都度 `containerWait` を呼んで取得を試みる。
+    /// 取得失敗時は `Ok(None)` を返す (エラーにしない)。
     pub async fn exit_code(&self) -> Result<Option<i64>> {
         // バックグラウンドの containerWait が既に終了コードを取得していれば返す。
         if let Some(code) = self
@@ -785,10 +785,34 @@ impl<I: Image> ContainerAsync<I> {
                 if c.container_state(&self.id).await?.running {
                     Ok(None)
                 } else {
-                    // 停止済みだがまだバックグラウンド wait が完了していない。
-                    // ここで containerWait を呼ぶと runtime client が解放済みの場合に
-                    // ブロック・失敗するため、取得できない場合は None を返す。
-                    Ok(None)
+                    // 停止済みだがバックグラウンド wait が未完了。
+                    // 短いタイムアウトで都度 containerWait を呼んで exit code を取得する。
+                    let id = self.id.clone();
+                    let wait_state = self.wait_state.clone();
+                    let generation = self
+                        .wait_state
+                        .lock()
+                        .expect("wait state mutex must not be poisoned")
+                        .generation();
+                    let result = tokio::task::spawn_blocking(move || {
+                        crate::core::client::xpc_client::XpcClient::wait_blocking_with_timeout(
+                            &id,
+                            &id,
+                            std::time::Duration::from_secs(5),
+                        )
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(code)) => {
+                            let mut guard = wait_state.lock().expect(
+                                "wait state mutex must not be poisoned while recording exit code",
+                            );
+                            let _ = guard.store_if_current(generation, code);
+                            Ok(Some(code))
+                        }
+                        // タイムアウト・XPC 失敗・runtime 解放済みは None を返す。
+                        _ => Ok(None),
+                    }
                 }
             }
             #[cfg(target_os = "linux")]
