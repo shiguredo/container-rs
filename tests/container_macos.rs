@@ -1213,6 +1213,150 @@ mod test_container_xpc {
         container.rm().await.expect("コンテナの削除に失敗した");
     }
 
+    /// volume マウントしたボリュームがコンテナ内に現れ、読み書きできること。
+    #[tokio::test]
+    async fn xpc_alpine_with_volume_mount() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        // Apple のボリューム名制約 (英数字始まり・255 文字以内) に適合するユニーク名。
+        // ユニーク名のため並行実行と衝突しない。panic で残った volume は同一名に
+        // ならないため掃除されず蓄積するが、次回実行には影響しない (名前が変わるため)。
+        let volume_name = format!(
+            "container_vol_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        );
+        let _ = std::process::Command::new("container")
+            .args(["volume", "rm", &volume_name])
+            .output();
+
+        let container = GenericImage::new("alpine", "latest")
+            .with_mount(shiguredo_container::core::Mount::volume_mount(
+                &volume_name,
+                "/data",
+            ))
+            .with_cmd(["sleep", "30"])
+            .start()
+            .await
+            .expect("volume マウント付き alpine コンテナの起動に失敗した");
+
+        // df の出力にマウントポイントが含まれ、書き込んだファイルが読めること。
+        let result = container
+            .exec(ExecCommand::new([
+                "sh",
+                "-c",
+                "df | grep -q ' /data$' && \
+                 echo volume-probe > /data/probe.txt && \
+                 [ \"$(cat /data/probe.txt)\" = \"volume-probe\" ]",
+            ]))
+            .await
+            .expect("volume マウント確認コマンドに失敗した");
+        assert_eq!(
+            result
+                .exit_code()
+                .await
+                .expect("確認コマンドの終了コード取得に失敗した"),
+            Some(0),
+            "volume が df に現れ、読み書きできること"
+        );
+
+        container
+            .stop_with_timeout(Some(0))
+            .await
+            .expect("コンテナの停止に失敗した");
+        container.rm().await.expect("コンテナの削除に失敗した");
+
+        // 名前付きボリュームはコンテナ削除後も残るため CLI で削除する。
+        let rm_volume = std::process::Command::new("container")
+            .args(["volume", "rm", &volume_name])
+            .output()
+            .expect("container volume rm の実行に失敗した");
+        assert!(
+            rm_volume.status.success(),
+            "volume の削除に失敗した: {}",
+            String::from_utf8_lossy(&rm_volume.stderr)
+        );
+    }
+
+    /// 既に存在するボリュームをマウントして起動できること。
+    #[tokio::test]
+    async fn xpc_alpine_with_existing_volume_mount() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        // 既存ボリュームへの再マウントは volumeCreate の already exists エラーを
+        // 契機に volumeInspect へフォールバックする経路で、この経路を実機で固定する。
+        // 事前に CLI で作成してから library (XPC) 経由でマウントする。
+        // ユニーク名のため並行実行と衝突しない。panic で残った volume は同一名に
+        // ならないため掃除されず蓄積するが、次回実行には影響しない。
+        let volume_name = format!(
+            "container_vol_existing_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        );
+        let _ = std::process::Command::new("container")
+            .args(["volume", "rm", &volume_name])
+            .output();
+        let create = std::process::Command::new("container")
+            .args(["volume", "create", &volume_name])
+            .output()
+            .expect("container volume create の実行に失敗した");
+        assert!(
+            create.status.success(),
+            "volume の事前作成に失敗した: {}",
+            String::from_utf8_lossy(&create.stderr)
+        );
+
+        let container = GenericImage::new("alpine", "latest")
+            .with_mount(shiguredo_container::core::Mount::volume_mount(
+                &volume_name,
+                "/data",
+            ))
+            .with_cmd(["sleep", "30"])
+            .start()
+            .await
+            .expect("既存 volume マウント付き alpine コンテナの起動に失敗した");
+
+        // 既存ボリュームがコンテナ内に現れること。
+        let result = container
+            .exec(ExecCommand::new(["sh", "-c", "df | grep -q ' /data$'"]))
+            .await
+            .expect("volume マウント確認コマンドに失敗した");
+        assert_eq!(
+            result
+                .exit_code()
+                .await
+                .expect("確認コマンドの終了コード取得に失敗した"),
+            Some(0),
+            "既存 volume が df に現れること"
+        );
+
+        container
+            .stop_with_timeout(Some(0))
+            .await
+            .expect("コンテナの停止に失敗した");
+        container.rm().await.expect("コンテナの削除に失敗した");
+
+        let rm_volume = std::process::Command::new("container")
+            .args(["volume", "rm", &volume_name])
+            .output()
+            .expect("container volume rm の実行に失敗した");
+        assert!(
+            rm_volume.status.success(),
+            "volume の削除に失敗した: {}",
+            String::from_utf8_lossy(&rm_volume.stderr)
+        );
+    }
+
     /// CopyTargetOptions でファイルモードを指定してコピーできること。
     #[tokio::test]
     async fn xpc_alpine_with_copy_to_target_options() {

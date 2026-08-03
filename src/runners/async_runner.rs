@@ -114,6 +114,12 @@ where
             // amd64 (Rosetta) ゲストでも arm64 カーネルを使う (CLI と同方針)。
             let kernel = client.get_default_kernel().await?;
 
+            // volume マウントを解決する。
+            // Apple container は volume マウントを block デバイスとして扱い、
+            // source にボリューム実体のパスを要求する (ボリューム名ではマウント不可)。
+            let volume_resolutions =
+                crate::core::client::xpc_client::resolve_volumes(&client, &container_req).await?;
+
             // ContainerCfg を構築して containerCreate。
             // 失敗時のロールバックは spawn の投げっぱなしにせず await する。
             // 呼び出し元がすぐ終了 (テストプロセス等) しても削除が完了することを保証する。
@@ -122,6 +128,7 @@ where
                 &id,
                 &desc_raw,
                 &image_config,
+                &volume_resolutions,
             )?;
             if let Err(e) = client.create_container(&cfg, kernel).await {
                 rollback_remove(&id, client.remove(&id, true)).await;

@@ -8,7 +8,10 @@ use nojson::DisplayJson;
 
 use crate::{
     ContainerRequest, Image,
-    core::{error::Result, mounts::AccessMode, ports::ContainerPort},
+    core::{
+        client::xpc_client::VolumeResolution, error::Result, mounts::AccessMode,
+        ports::ContainerPort,
+    },
 };
 
 /// platform 文字列を `(architecture, rosetta, resolve_platform)` に正規化する。
@@ -80,11 +83,16 @@ fn unix_secs_to_swift_reference_date(unix_secs: f64) -> f64 {
 }
 
 /// `ContainerRequest<I>` から XPC の `ContainerCfg` を構築する。
+///
+/// `volume_resolutions` は volume マウントの解決結果 (実体パス・ファイルシステム形式)。
+/// Apple container は volume マウントを block デバイスとして扱い、ボリューム名では
+/// マウントできないため、`XpcClient::resolve_volume` で事前に解決した結果を渡す。
 pub(crate) fn build_config<I: Image>(
     req: &ContainerRequest<I>,
     id: &str,
     desc_raw: &str,
     image_config: &crate::core::client::image_config::ImageConfig,
+    volume_resolutions: &HashMap<String, VolumeResolution>,
 ) -> Result<ContainerCfg> {
     // ENTRYPOINT / CMD から init プロセスの executable と arguments を決める。
     // Docker の意味論に合わせ、ユーザー指定が無ければ image config の既定値を使う。
@@ -107,7 +115,10 @@ pub(crate) fn build_config<I: Image>(
         .unwrap_or_else(|| "/".into());
 
     // mounts。
-    let mounts: Vec<MountCfg> = req.mounts().map(mount_cfg).collect();
+    let mounts: Vec<MountCfg> = req
+        .mounts()
+        .map(|m| mount_cfg(m, volume_resolutions))
+        .collect();
 
     // Apple container は SCTP 未対応。XPC に渡す前に明示エラーで落とす。
     reject_sctp_ports(req)?;
@@ -206,19 +217,32 @@ pub(crate) fn build_config<I: Image>(
 }
 
 /// `Mount` から `MountCfg` を作る。
-fn mount_cfg(m: &crate::core::mounts::Mount) -> MountCfg {
-    let (source, fs_type, volume_name) = match m.mount_type() {
+///
+/// volume マウントの `source` はボリューム名ではなく、`volume_resolutions` から
+/// 解決した実体パスを使う (Apple container は block デバイスとしてマウントする)。
+/// 解決結果が無い場合は空文字になり、containerCreate がエラーを返す。
+fn mount_cfg(
+    m: &crate::core::mounts::Mount,
+    volume_resolutions: &HashMap<String, VolumeResolution>,
+) -> MountCfg {
+    let (source, fs_type, volume_name, volume_format) = match m.mount_type() {
         crate::core::mounts::MountType::Bind => (
             m.source().map(|s| s.to_string()).unwrap_or_default(),
             "virtiofs",
             None,
+            None,
         ),
-        crate::core::mounts::MountType::Volume => (
-            m.source().map(|s| s.to_string()).unwrap_or_default(),
-            "volume",
-            m.source().map(|s| s.to_string()),
-        ),
-        crate::core::mounts::MountType::Tmpfs => ("tmpfs".into(), "tmpfs", None),
+        crate::core::mounts::MountType::Volume => {
+            let name = m.source().map(|s| s.to_string()).unwrap_or_default();
+            let resolution = volume_resolutions.get(&name);
+            (
+                resolution.map(|r| r.source.clone()).unwrap_or_default(),
+                "volume",
+                Some(name),
+                resolution.map(|r| r.format.clone()),
+            )
+        }
+        crate::core::mounts::MountType::Tmpfs => ("tmpfs".into(), "tmpfs", None, None),
     };
     let destination = m.target().map(|s| s.to_string()).unwrap_or_default();
     let readonly = matches!(m.access_mode(), AccessMode::ReadOnly);
@@ -246,6 +270,7 @@ fn mount_cfg(m: &crate::core::mounts::Mount) -> MountCfg {
         destination,
         fs_type: fs_type.into(),
         volume_name,
+        volume_format,
         options,
     }
 }
@@ -373,6 +398,8 @@ struct MountCfg {
     destination: String,
     fs_type: String,
     volume_name: Option<String>,
+    /// volume マウント時のファイルシステム形式 (block デバイスの format)。
+    volume_format: Option<String>,
     /// `ro` / `rw` に加え、tmpfs では `size=` / `mode=` を含む。
     options: Vec<String>,
 }
@@ -385,6 +412,7 @@ impl DisplayJson for MountCfg {
                     "type",
                     &FsTypeObj::Volume {
                         name: self.volume_name.clone().unwrap_or_default(),
+                        format: self.volume_format.clone().unwrap_or_default(),
                     },
                 )?,
                 _ => f.member("type", &FsTypeObj::Tmpfs)?,
@@ -398,16 +426,22 @@ impl DisplayJson for MountCfg {
 
 enum FsTypeObj {
     Virtiofs,
-    Volume { name: String },
+    Volume { name: String, format: String },
     Tmpfs,
 }
 impl DisplayJson for FsTypeObj {
     fn fmt(&self, f: &mut nojson::JsonFormatter) -> std::fmt::Result {
         match self {
             FsTypeObj::Virtiofs => f.object(|f| f.member("virtiofs", &EmptyObj)),
-            FsTypeObj::Volume { name } => {
-                f.object(|f| f.member("volume", &VolType { name: name.clone() }))
-            }
+            FsTypeObj::Volume { name, format } => f.object(|f| {
+                f.member(
+                    "volume",
+                    &VolType {
+                        name: name.clone(),
+                        format: format.clone(),
+                    },
+                )
+            }),
             FsTypeObj::Tmpfs => f.object(|f| f.member("tmpfs", &EmptyObj)),
         }
     }
@@ -420,16 +454,35 @@ impl DisplayJson for EmptyObj {
     }
 }
 
+/// 単一キー + 空オブジェクトの JSON オブジェクトを表す。
+///
+/// Swift の合成 Codable は raw value を持たない enum を `{"auto":{}}` のような
+/// 単一キー + 空オブジェクトとしてデコードするため、文字列値ではデコードに失敗する。
+struct KeyedEmptyObj {
+    key: &'static str,
+}
+impl DisplayJson for KeyedEmptyObj {
+    fn fmt(&self, f: &mut nojson::JsonFormatter) -> std::fmt::Result {
+        f.object(|f| f.member(self.key, &EmptyObj))
+    }
+}
+
+/// Apple container の volume マウント設定 (`Filesystem.FSType.volume`)。
+///
+/// `format` はボリューム実体のファイルシステム形式で、解決済みの値を使う。
+/// `cache` / `sync` は Apple 側の raw value なし enum (`CacheMode` / `SyncMode`) のため、
+/// 単一キーオブジェクト形式で出力する。
 struct VolType {
     name: String,
+    format: String,
 }
 impl DisplayJson for VolType {
     fn fmt(&self, f: &mut nojson::JsonFormatter) -> std::fmt::Result {
         f.object(|f| {
             f.member("name", &self.name)?;
-            f.member("format", "raw")?;
-            f.member("cache", "auto")?;
-            f.member("sync", "fsync")
+            f.member("format", &self.format)?;
+            f.member("cache", &KeyedEmptyObj { key: "auto" })?;
+            f.member("sync", &KeyedEmptyObj { key: "fsync" })
         })
     }
 }
@@ -651,6 +704,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.shm_size, Some(2 * 1024 * 1024 * 1024));
@@ -668,6 +722,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.shm_size, None);
@@ -686,6 +741,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.masked_paths, None);
@@ -708,6 +764,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.masked_paths, Some(vec![]));
@@ -751,6 +808,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
 
@@ -768,6 +826,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
 
@@ -786,6 +845,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.network, "my-net");
@@ -804,6 +864,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.network, "default");
@@ -823,6 +884,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.hostname, "guest-host");
@@ -849,6 +911,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.hostname, "named-box");
@@ -864,6 +927,7 @@ mod tests {
             "generated-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.hostname, "generated-id");
@@ -881,6 +945,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.hostname, "hostname-value");
@@ -902,6 +967,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert!(cfg.read_only);
@@ -924,6 +990,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert!(!cfg.read_only);
@@ -947,6 +1014,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert!(cfg.terminal);
@@ -969,6 +1037,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert!(!cfg.terminal);
@@ -993,6 +1062,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.init_exe, "/entry.sh");
@@ -1009,6 +1079,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         );
         assert!(result.is_err(), "空のコマンドはエラーになること");
     }
@@ -1025,6 +1096,7 @@ mod tests {
                 entrypoint: None,
                 cmd: Some(vec!["nginx".into(), "-g".into(), "daemon off;".into()]),
             },
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.init_exe, "nginx");
@@ -1044,6 +1116,7 @@ mod tests {
                 entrypoint: None,
                 cmd: Some(vec!["nginx".into()]),
             },
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.init_exe, "sleep");
@@ -1064,6 +1137,7 @@ mod tests {
                 entrypoint: Some(vec!["/bin/sh".into(), "-c".into()]),
                 cmd: Some(vec!["echo".into(), "image".into()]),
             },
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.init_exe, "/bin/bash");
@@ -1083,6 +1157,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.ports.len(), 1);
@@ -1102,6 +1177,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert_eq!(cfg.ports.len(), 1);
@@ -1120,6 +1196,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         );
         let err = match result {
             Err(e) => e,
@@ -1144,6 +1221,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         );
         let err = match result {
             Err(e) => e,
@@ -1197,6 +1275,7 @@ mod tests {
                 "test-id",
                 "{}",
                 &crate::core::client::image_config::ImageConfig::default(),
+                &HashMap::new(),
             )
             .expect("build_config が成功すること");
             assert!(
@@ -1224,6 +1303,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert!(!cfg.rosetta);
@@ -1237,6 +1317,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert!(!cfg.rosetta);
@@ -1251,10 +1332,96 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
         assert!(!cfg.rosetta);
         assert_eq!(cfg.architecture, "arm64");
+    }
+
+    #[test]
+    fn volume_mount_uses_apple_container_enum_json_format() {
+        // cache / sync は Apple container の raw value なし enum (CacheMode / SyncMode) の
+        // エンコード形式である単一キーオブジェクトでなければ、合成 Codable のデコードに
+        // 失敗して必ず起動エラーになる。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_mount(crate::core::mounts::Mount::volume_mount(
+                "data-volume",
+                "/data",
+            ))
+            .with_cmd(["sleep", "1"]);
+        let resolutions = HashMap::from([(
+            "data-volume".to_string(),
+            VolumeResolution {
+                source: "/host/volumes/data-volume/volume.img".into(),
+                format: "ext4".into(),
+            },
+        )]);
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &resolutions,
+        )
+        .expect("コンテナ設定の構築に成功すること");
+
+        let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
+        assert!(
+            json.contains("\"name\":\"data-volume\""),
+            "volume 名が文字列のままであること: {json}"
+        );
+        assert!(
+            json.contains("\"format\":\"ext4\""),
+            "format が解決済みの値のままであること: {json}"
+        );
+        assert!(
+            json.contains("\"source\":\"/host/volumes/data-volume/volume.img\""),
+            "source が解決済みの実パスであること: {json}"
+        );
+        assert!(
+            json.contains("\"cache\":{\"auto\":{}}"),
+            "cache が単一キーオブジェクト形式であること: {json}"
+        );
+        assert!(
+            json.contains("\"sync\":{\"fsync\":{}}"),
+            "sync が単一キーオブジェクト形式であること: {json}"
+        );
+        assert!(
+            !json.contains("\"cache\":\"auto\""),
+            "cache が文字列形式のままでないこと: {json}"
+        );
+    }
+
+    #[test]
+    fn volume_mount_without_resolution_emits_empty_source() {
+        // 解決結果が無い volume マウントは、ボリューム名ではなく空の source が
+        // 入るため containerCreate がエラーになる (明示エラーで検出される)。
+        // 解決漏れが黙ってボリューム名のまま送信されないことの回帰防止。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_mount(crate::core::mounts::Mount::volume_mount(
+                "unresolved-volume",
+                "/data",
+            ))
+            .with_cmd(["sleep", "1"]);
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        )
+        .expect("コンテナ設定の構築に成功すること");
+
+        let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
+        assert!(
+            json.contains("\"source\":\"\""),
+            "未解決 volume の source が空であること: {json}"
+        );
+        assert!(
+            !json.contains("\"source\":\"unresolved-volume\""),
+            "未解決 volume がボリューム名のまま送られないこと: {json}"
+        );
     }
 
     #[test]
@@ -1271,11 +1438,19 @@ mod tests {
             )
             .with_mount(crate::core::mounts::Mount::tmpfs_mount("/container/tmpfs"))
             .with_cmd(["sleep", "1"]);
+        let resolutions = HashMap::from([(
+            "data-volume".to_string(),
+            VolumeResolution {
+                source: "/host/volumes/data-volume/volume.img".into(),
+                format: "ext4".into(),
+            },
+        )]);
         let cfg = build_config(
             &req,
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &resolutions,
         )
         .expect("コンテナ設定の構築に成功すること");
 
@@ -1285,9 +1460,17 @@ mod tests {
         assert_eq!(cfg.mounts[0].fs_type, "virtiofs");
         assert_eq!(cfg.mounts[0].volume_name, None);
         assert_eq!(cfg.mounts[0].options, vec!["rw".to_string()]);
-        assert_eq!(cfg.mounts[1].source, "data-volume");
+        assert_eq!(
+            cfg.mounts[1].source, "/host/volumes/data-volume/volume.img",
+            "volume の source が解決済みの実パスであること"
+        );
         assert_eq!(cfg.mounts[1].fs_type, "volume");
         assert_eq!(cfg.mounts[1].volume_name.as_deref(), Some("data-volume"));
+        assert_eq!(
+            cfg.mounts[1].volume_format.as_deref(),
+            Some("ext4"),
+            "volume の format が解決済みの値であること"
+        );
         assert_eq!(cfg.mounts[1].options, vec!["ro".to_string()]);
         assert_eq!(cfg.mounts[2].source, "tmpfs");
         assert_eq!(cfg.mounts[2].fs_type, "tmpfs");
@@ -1310,6 +1493,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("コンテナ設定の構築に成功すること");
 
@@ -1347,6 +1531,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("コンテナ設定の構築に成功すること");
         assert_eq!(cfg.cap_add, vec!["NET_ADMIN"]);
@@ -1363,6 +1548,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("特権コンテナ設定の構築に成功すること");
         assert_eq!(privileged_cfg.cap_add, vec!["ALL"]);
@@ -1374,6 +1560,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("既定のコンテナ設定の構築に成功すること");
         assert_eq!(default_cfg.working_directory, "/");
@@ -1400,6 +1587,7 @@ mod tests {
             "test-id",
             "{}",
             &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
         )
         .expect("build_config が成功すること");
 
