@@ -1,7 +1,7 @@
 # バグ: macOS の LogConsumer 配信タスクがコンテナ終了後も 100ms ポーリングを継続する
 
 - Created: 2026-08-02
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-03
 - Branch: feature/fix-macos-log-consumer-polling
 - Polished: 2026-08-02
 
@@ -27,9 +27,10 @@ macOS でコンテナが自然終了した後も LogConsumer 配信タスクが 
 
 ## 解決方法
 
-- `spawn_log_consumer_task` に `wait_state` を渡し、EOF 時に「stop フラグ OR (exit code 記録を初めて観測してから 2 秒経過)」で終了判定する。観測時刻はタスク内のローカル `Instant` で記録する (WaitState には記録時刻が無いため。`log_strategy.rs` の `exited_at` パターンと同じ固定アンカー方式)。stop フラグは猶予より優先する (明示 stop が猶予で遅延しない)
-- 影響範囲は macOS の `spawn_log_consumer_task` (async_container.rs の 4 箇所の呼び出し) と `log_strategy.rs` の `DRAIN_GRACE` の `pub(crate)` 化に限定される。Linux 側の `docker_log_stream::spawn_log_consumer_task` は別実装で無関係。再 start 時は世代機構で exit code がクリアされ、新タスクはポーリングを継続する (従来どおり)
-- `wait_blocking` 失敗で exit code が記録されない場合はポーリングが継続し得る (FollowFdReader と同じ制約。stop / rm / Drop 経路で解消される) ことを許容する
-- macOS 統合テスト (`tests/container_macos.rs`) に回帰テストを追加する: テスト用 LogConsumer を登録し、`sh -c "echo <マーカー>; exit 0"` 相当の cmd (マーカーはテスト固有の一意な文字列、例: `log-consumer-exit-marker`) で最終行 (マーカー文字列で特定) 出力後に自然終了させる。(1) 最終行が配信されること、(2) 配信停止をポーリングで検出し (固定待ちにしない。停止は「EOF 観測 + exit code 初観測から 2 秒」で、`wait_blocking` 応答遅延と EOF 観測周期 (最大 100ms) の分だけ遅れ得る)、FD が解放されることを検証する。停止確認の上限時間は「`wait_blocking` 応答遅延 + 最大 100ms + 2 秒 + ポーリング間隔 + マージン」の合計を上回る値にする
-- `async_container.rs` と `tests/container_macos.rs` を変更するため、同一ファイルを変更する 0058 / 0059 / 0060 / 0061 / 0063 / 0068 / 0069 とマージ順に注意する (特に 0063 は同じ `refresh_log_streams` の macOS 分岐を変更する)
+- `src/core/containers/async_container.rs` の `spawn_log_consumer_task` (macOS) に `wait_state` を追加引数として渡し、EOF 時に「stop フラグ OR (exit code 記録を初めて観測してから 2 秒経過)」で終了判定するように変更する
+- 猶予のアンカーはタスクローカルの `Instant` で初回観測時点に固定する (ポーリングが長引いても猶予が伸びない)。一度観測したアンカーはリセットしない (再 start の世代バンプ時点で旧コンテナは停止済みであり、リセットすると refresh 失敗時に新コンテナの exit までタスクが残るため)
+- `src/core/wait/log_strategy.rs` の `DRAIN_GRACE` を `pub(crate)` 化して共有する (LogWaitStrategy と LogConsumer 配信タスクで「コンテナ終了後のドレイン猶予」を共有する意図をコメントで明記)
+- `FollowFdReader::should_stop_follow` は変更しない (LogWaitStrategy の DRAIN_GRACE 実装と干渉するため)
+- 単体テストへの影響なし (既存 158 本すべて通過)
+- 統合テスト: `tests/container_macos.rs` に `xpc_alpine_log_consumer_stops_after_natural_exit` を追加する。`echo <マーカー>; exit 0` の cmd で自然終了させ、(1) マーカーが配信されること、(2) 配信タスクの dup FD (stdout / stderr で計 2 本) が解放されて FD 数が spawn 時より減ること、をポーリングで検証する。実機で通過確認済み (並列実行時の FD 検証の干渉リスクはコメントで明記)
 - `CHANGES.md` に `[FIX]` エントリを追加する
