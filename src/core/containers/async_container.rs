@@ -299,6 +299,9 @@ impl<I: Image> ContainerAsync<I> {
     /// Docker Engine API の `GET /containers/{id}/archive` で取得した tar を自前 ustar パーサ
     /// (`docker_tar`) で展開し、先頭 regular file の内容を `target` へ渡す。`source` は絶対パス
     /// 必須。ディレクトリを指定すると tar 先頭エントリの typeflag で `IsDirectory` になる。
+    /// 受信する tar 全体 (ヘッダ + データ + トレーラ) は 64 MiB 上限で、超過時はエラーを返す
+    /// (ファイル内容がちょうど 64 MiB でも tar オーバーヘッド分でエラーになり得る)。
+    /// macOS 側にこの上限は無い。
     pub async fn copy_file_from<T: CopyFileFromContainer>(
         &self,
         source: impl Into<String> + Send,
@@ -991,6 +994,10 @@ impl<I: Image> ContainerAsync<I> {
     /// (`refresh_log_streams`) で demux 開始時点が更新されると、以前に取得した古いリーダーは
     /// 新バッファに接続されない。`follow = false` では呼び出しごとに新規 HTTP セッションを
     /// 張って現時点までの全ログを取得するため、ループで N 回呼ばず結果を保持すること。
+    /// `follow = false` (1-shot) は各ストリーム 64 MiB 上限で、超過時は読み出しを
+    /// 即座に止めてエラーを返す (stdout / stderr は同一セッションで取得するため、片方の
+    /// ストリームの超過で両方の取得が失敗し、合計最大 128 MiB が一時保持され得る)。
+    /// macOS 側にこの上限は無い。
     pub fn stdout(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>> {
         let source = self
             .log_source
@@ -1032,6 +1039,10 @@ impl<I: Image> ContainerAsync<I> {
     /// drop された場合は取りこぼした旨を `warn` ログに出力し、読み進みは継続する。
     /// `follow = false` では呼び出しごとに新規 HTTP セッションを張って現時点までの全ログを
     /// 取得するため、ループで N 回呼ばず結果を保持すること。
+    /// `follow = false` (1-shot) は各ストリーム 64 MiB 上限で、超過時は読み出しを
+    /// 即座に止めてエラーを返す (stdout / stderr は同一セッションで取得するため、片方の
+    /// ストリームの超過で両方の取得が失敗し、合計最大 128 MiB が一時保持され得る)。
+    /// macOS 側にこの上限は無い。
     pub fn stderr(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>> {
         let source = self
             .log_source
@@ -1132,6 +1143,9 @@ impl<I: Image> ContainerAsync<I> {
     }
 
     /// stdout を全量読み出して `Vec<u8>` で返す (follow なし)。
+    ///
+    /// Linux では各ストリーム 64 MiB 上限で、超過時はエラーを返す (切り詰めない)。
+    /// macOS 側にこの上限は無い。
     pub async fn stdout_to_vec(&self) -> Result<Vec<u8>> {
         let mut stdout = Vec::new();
         self.stdout(false).read_to_end(&mut stdout).await?;
@@ -1139,6 +1153,9 @@ impl<I: Image> ContainerAsync<I> {
     }
 
     /// stderr を全量読み出して `Vec<u8>` で返す (follow なし)。
+    ///
+    /// Linux では各ストリーム 64 MiB 上限で、超過時はエラーを返す (切り詰めない)。
+    /// macOS 側にこの上限は無い。
     pub async fn stderr_to_vec(&self) -> Result<Vec<u8>> {
         let mut stderr = Vec::new();
         self.stderr(false).read_to_end(&mut stderr).await?;

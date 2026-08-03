@@ -91,12 +91,16 @@
   - @voluntas
 - [FIX] macOS の再起動フローでログ FD 再取得に失敗した場合に、実行中のコンテナを残さず SIGKILL で巻き戻す
   - @voluntas
+- [FIX] Linux のログ 1-shot 取得 (各ストリーム 64 MiB) ・ `copy_file_from` (tar 全体 64 MiB) ・ イメージ pull 進捗 (64 MiB) の無制限メモリ蓄積を修正する (超過時は切り詰めずエラーを返す)
+  - @voluntas
 
 ### misc
 
 - [UPDATE] 内部リファクタリング: 命名不整合の修正・ロールバックパターンのヘルパ抽出・ZST の Arc ラップ解除
   - @voluntas
 - [UPDATE] `ContainerAsync::exec` の rustdoc に出力上限 (Linux: 64 MiB 合計 / macOS: 各 64 MiB) と超過時の挙動を明記する
+  - @voluntas
+- [UPDATE] Linux の 1-shot ログ取得 ・ `copy_file_from` の rustdoc に 64 MiB 上限と超過時の挙動・macOS 側に上限が無い旨を明記する
   - @voluntas
 - [UPDATE] `with_copy_to` の rustdoc に macOS で起動前にファイルを見せたい場合は `Mount::bind_mount` を使う旨と制約を明記する
   - @voluntas

@@ -23,14 +23,18 @@ const DEFAULT_DOCKER_SOCKET: &str = "/var/run/docker.sock";
 /// exec start や stop?t=N 等、正当に長時間ブロックする経路には適用しない。
 const DOCKER_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Docker exec のレスポンスボディ蓄積上限。macOS 経路 (`read_file_to_vec`) と同じ 64 MiB の値。
+/// Docker Engine API レスポンスボディの蓄積上限。macOS 経路 (`read_file_to_vec`) と同じ 64 MiB の値。
 ///
-/// 適用対象は demux 前の multiplexed stream 全体 (stdout + stderr の合計、フレームヘッダ込み) で、
-/// macOS の stdout / stderr 各ストリーム別 64 MiB より実効上限が厳しい (この非対称は許容する)。
-/// 超過時は切り詰めずエラーにする。multiplexed stream を切り詰めるとフレーム途中で
-/// 切断され `demux_exec_stream` が不完全フレームを静かに捨てて出力が欠損するため。
-/// 判定は macOS 側と同じ `>` 境界 (ちょうど 64 MiB は成功)。
-const EXEC_OUTPUT_BODY_LIMIT: usize = 64 * 1024 * 1024;
+/// 適用対象は以下の 4 経路で共有する (将来の上限変更で一部だけが変わる非対称を防ぐ):
+/// - exec start の出力: demux 前の multiplexed stream 全体 (stdout + stderr の合計、
+///   フレームヘッダ込み) で、macOS の stdout / stderr 各ストリーム別 64 MiB より実効上限が
+///   厳しい (この非対称は許容する)。超過時は切り詰めずエラーにする。multiplexed stream を
+///   切り詰めるとフレーム途中で切断され `demux_exec_stream` が不完全フレームを静かに捨てて
+///   出力が欠損するため。判定は macOS 側と同じ `>` 境界 (ちょうど 64 MiB は成功)
+/// - 1-shot ログ取得 (`?follow=false`) の各ストリーム蓄積
+/// - `copy_from` の tar 全体 (ヘッダ + データ + トレーラ)
+/// - イメージ pull の進捗ストリーム (JSON Lines)
+pub(crate) const DOCKER_RESPONSE_BODY_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Docker exec の生結果。
 pub(crate) struct DockerExecResult {
@@ -75,9 +79,24 @@ impl DockerClient {
         let extra_headers: Vec<(&'static str, String)> = auth_header
             .map(|v| vec![("X-Registry-Auth", v)])
             .unwrap_or_default();
+        // プル進捗ストリーム (JSON Lines) は無制限にバッファリングしない。
+        // 実用上 64 MiB 未満に収まるため、超過時はエラーにする (OOM 防止)。
+        // 上限超過時は進捗ストリーム末尾の daemon エラー (errorDetail) が読めないため、
+        // 文脈を付けて包む (エラーバリアントは ClientError::Other のまま維持する)。
         let response = self
-            .request_with_extra_headers("POST", &path, None, extra_headers)
-            .await?;
+            .request_with_extra_headers(
+                "POST",
+                &path,
+                None,
+                extra_headers,
+                BodyLimit::Error(DOCKER_RESPONSE_BODY_LIMIT),
+            )
+            .await
+            .map_err(|e| {
+                crate::core::error::Error::Client(ClientError::Other(format!(
+                    "failed to receive pull progress for image {descriptor}: {e}"
+                )))
+            })?;
         if response.status_code() >= 400 {
             return Err(ClientError::Other(format!(
                 "failed to pull image {descriptor}: {}",
@@ -393,7 +412,7 @@ impl DockerClient {
                 "POST",
                 &start_path,
                 Some(start_json.into_bytes()),
-                BodyLimit::Error(EXEC_OUTPUT_BODY_LIMIT),
+                BodyLimit::Error(DOCKER_RESPONSE_BODY_LIMIT),
             )
             .await?;
         if response.status_code() >= 400 {
@@ -676,8 +695,9 @@ impl DockerClient {
 
     /// ボディ蓄積上限を指定して Docker Engine API に HTTP リクエストを送信する。
     ///
-    /// ボディ上限は exec start の出力読み出し専用 (早期アボート用)。
-    /// その他の経路は `request` 経由で `BodyLimit::Unlimited` を使い、挙動を変えない。
+    /// ボディ上限は exec start の出力読み出し・`copy_from` (archive) ・プル進捗受信の
+    /// 早期アボート用 (OOM 防止)。上限を指定しない経路は `request` 経由で
+    /// `BodyLimit::Unlimited` を使い、挙動を変えない。
     async fn request_with_body_limit(
         &self,
         method: &str,
@@ -713,12 +733,15 @@ impl DockerClient {
     }
 
     /// 追加ヘッダ付きの HTTP リクエスト (レジストリ認証用)。
+    ///
+    /// `body_limit` は受信ボディの蓄積上限 (プル進捗ストリームの OOM 防止に使う)。
     async fn request_with_extra_headers(
         &self,
         method: &str,
         path: &str,
         body: Option<Vec<u8>>,
         extra_headers: Vec<(&'static str, String)>,
+        body_limit: BodyLimit,
     ) -> Result<Response> {
         let socket_path = self.socket_path.clone();
         let method = method.to_string();
@@ -734,7 +757,7 @@ impl DockerClient {
 
             let mut stream = UnixStream::connect(&socket_path)?;
             stream.write_all(&request_bytes)?;
-            read_http11_response(&mut stream, &method, BodyLimit::Unlimited)
+            read_http11_response(&mut stream, &method, body_limit)
         })
         .await
         .map_err(|e| ClientError::Other(format!("spawn_blocking failed: {e}")))?
@@ -770,13 +793,23 @@ impl DockerClient {
     ///
     /// レスポンスボディの生 tar を返す。404 は `ContainerNotFound` に寄せる
     /// (既存 `container_state` と同じ扱い)。
+    ///
+    /// 蓄積は tar 全体 (ヘッダ + データ + トレーラ) で 64 MiB 上限・超過時エラー
+    /// (OOM 防止。ファイル内容がちょうど 64 MiB でも tar オーバーヘッド分でエラーになり得る)。
     pub(crate) async fn copy_from(&self, id: &str, path: &str) -> Result<Vec<u8>> {
         let api_path = format!(
             "/containers/{}/archive?path={}",
             percent_encode_path_segment(id),
             percent_encode_component(path)
         );
-        let response = self.request("GET", &api_path, None).await?;
+        let response = self
+            .request_with_body_limit(
+                "GET",
+                &api_path,
+                None,
+                BodyLimit::Error(DOCKER_RESPONSE_BODY_LIMIT),
+            )
+            .await?;
         if response.status_code() == 404 {
             return Err(ClientError::ContainerNotFound(id.to_string()).into());
         }
