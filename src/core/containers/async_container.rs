@@ -500,7 +500,23 @@ impl<I: Image> ContainerAsync<I> {
             c.start_process(&self.id).await?;
             self.reset_wait_state_and_respawn();
             // 再 bootstrap 後は旧ログ FD が死ぬため、差し替えて consumer も再武装する。
-            self.refresh_log_streams(c).await?;
+            // 差し替えに失敗した場合は、ログ系 API が機能しない実行中コンテナを残さず
+            // SIGKILL で巻き戻してから元のエラーを返す。巻き戻しは Linux の refresh 失敗時と
+            // 同じ方針で、コンテナ再起動を内部に持たない単一責務の refresh_log_streams の
+            // 呼び出し側 (start) で完結させる。
+            if let Err(e) = self.refresh_log_streams(c).await {
+                // stop_with_timeout は stop_log_delivery を経由して現役の LogConsumer タスクも
+                // 停止するため、client.stop 直接呼びより望ましい。
+                if let Err(stop_err) = self.stop_with_timeout(Some(0)).await {
+                    tracing::warn!(
+                        "failed to stop container after log refresh failure: {stop_err}"
+                    );
+                    // 巻き戻し失敗時は実行中コンテナ + 死んだログ FD が残る。次回 start は
+                    // running のため再起動分岐をスキップしてログは回復しない。先に stop() を
+                    // 呼んでから start() すると回復する。
+                }
+                return Err(e);
+            }
         }
         #[cfg(target_os = "linux")]
         if let Client::Linux(c) = &self.client
@@ -556,7 +572,7 @@ impl<I: Image> ContainerAsync<I> {
     /// 再 start 後にログ FD を再取得し、旧 FD を close、LogConsumer を再 spawn する (macOS)。
     ///
     /// `logs()` が成功するまで旧 `log_stop` / FD / consumer は維持する。
-    /// 失敗時は部分更新せず `Err` を返す (呼び出し側の `start` が失敗する)。
+    /// 失敗時は部分更新せず `Err` を返す (呼び出し側の `start` が SIGKILL で巻き戻す)。
     #[cfg(target_os = "macos")]
     async fn refresh_log_streams(
         &self,
@@ -1409,8 +1425,10 @@ fn spawn_log_consumer_task(
         // 一度観測したら保持し続ける (リセットしない)。exit code が Some → None に戻るのは
         // 再 start 時の世代バンプのみで、その時点で旧コンテナは停止済みであり、旧タスクが
         // 読む dup FD は死んだファイルを指す。リセットすると refresh_log_streams 失敗時に
-        // stop フラグが立たないまま (logs() 成功後にしか立たないため) 新コンテナの exit まで
-        // タスクが残り続けるため、アンカーは保持して必ず「観測 + 猶予」で終了させる。
+        // 旧タスクが新世代の exit 記録まで残り続けるため、アンカーは保持して必ず
+        // 「観測 + 猶予」で終了させる。なお refresh 失敗時は start 側の巻き戻し
+        // (stop_with_timeout) が stop_log_delivery 経由で stop フラグを立てるため、
+        // タスクは EOF 観測時に即 break する (アンカー保持は保険の役割)。
         let mut exit_observed_at: Option<std::time::Instant> = None;
         loop {
             buf.clear();

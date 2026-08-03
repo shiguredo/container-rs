@@ -89,6 +89,8 @@
   - @voluntas
 - [FIX] macOS の LogConsumer 配信タスクがコンテナ終了後も 100ms ポーリングを継続するのを修正する (EOF 観測で exit code 記録を確認してから猶予 2 秒で停止する)
   - @voluntas
+- [FIX] macOS の再起動フローでログ FD 再取得に失敗した場合に、実行中のコンテナを残さず SIGKILL で巻き戻す
+  - @voluntas
 
 ### misc
 
