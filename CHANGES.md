@@ -87,6 +87,8 @@
   - @voluntas
 - [FIX] macOS の `stop_with_timeout` がグレース 60 秒超の指定で XPC タイムアウトの誤エラーを返すのを修正する (XPC 呼び出しタイムアウトをグレース + 30 秒に拡張する。下限 60 秒・上限 24 時間)
   - @voluntas
+- [FIX] macOS の LogConsumer 配信タスクがコンテナ終了後も 100ms ポーリングを継続するのを修正する (EOF 観測で exit code 記録を確認してから猶予 2 秒で停止する)
+  - @voluntas
 
 ### misc
 

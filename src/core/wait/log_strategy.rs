@@ -17,7 +17,12 @@ use crate::{
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// プロセス終了を検出した後も、ログのフラッシュ遅延を考慮して読み続ける猶予。
-const DRAIN_GRACE: Duration = Duration::from_secs(2);
+///
+/// LogConsumer 配信タスク (macOS) の自然終了後のドレイン猶予と共有する。
+/// `core::wait` が `core::containers` に依存している関係上、ここから macOS 側へ
+/// 定数を参照する逆依存が生じるが、「コンテナ終了後のドレイン猶予」という同一概念を
+/// 2 つの実装が共有する意図による。用途ごとに猶予を独立に調整する場合は分離すること。
+pub(crate) const DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// `EndOfStream` 診断用に保持するログの上限バイト数。
 ///
