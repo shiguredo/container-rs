@@ -1,7 +1,7 @@
 # バグ: Linux のログ 1-shot 取得・ copy_from ・ pull 進捗にメモリ上限が無い
 
 - Created: 2026-08-02
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-03
 - Branch: feature/fix-linux-memory-accumulation-limits
 - Polished: 2026-08-02
 
@@ -30,12 +30,11 @@ Linux (Docker Engine API) 経路の無制限メモリ蓄積 3 経路に上限を
 
 ## 解決方法
 
-- `fetch_logs_oneshot_blocking` の 1-shot 蓄積を各ストリーム 64 MiB 上限・超過時エラーにする。`SharedLogBuffer` は follow 経路で drop-oldest (先頭から切り捨て、8 MiB) として使われるため、既存の drop-oldest 挙動は変えず、1-shot 経路専用の「超過を検知してエラーを返す」モードを追加する (0055 が既存の上限挙動を変えず exec 専用のエラーモードを追加したのと同じ配慮)。上限超過を検知した時点で即時エラーを返す (早期アボート。exec と同じ方針)。エラーは `output exceeds ... bytes limit` の文言 (macOS と同じ) にする
-- `copy_from` を `BodyLimit::Error(64 MiB)` で受信する (`request_with_body_limit` を使う。同関数の「exec start の出力読み出し専用」というコメントは本変更で古くなるため更新する)。上限は tar 全体 (ヘッダ + データ + トレーラ) に掛かるため、ファイル内容 64 MiB ちょうどでも tar オーバーヘッド分でエラーになり得る。利用者向けの `copy_file_from` rustdoc には「tar 形式のオーバーヘッド分を考慮する」旨を添える
-- `pull_image` を `BodyLimit::Error(64 MiB)` で受信する。`request_with_extra_headers` は BodyLimit パラメータを持たないため、body_limit パラメータを追加するか同等の経路を設ける。エラー文言はフレーミング依存になり得る (Content-Length 宣言の超過はデコーダ側の `body too large` が先に返る)。早期アボートでソケットを切った場合、デーモン側のプルは継続してイメージがローカルに残り得る (0055 の exec と同じトレードオフとして許容する)
-- 境界テストは、上限値をテストから差し替え可能にして単体テストで小さな上限 (例: 8 バイト) で検証する (既存の `shared_buffer_drops_oldest_over_limit` と同じ手法)。1-shot は加えて「上限超過を検知した時点で読み出しを止めてエラーを返す (ハングしない)」ことの回帰テストも追加する。pull / copy_from の `BodyLimit::Error` の超過時エラー自体は `http_decode.rs` の単体テストで検証済みのため、配線 (正しい上限が渡ること) はコードレビューで検証する
-- 上限値の定数は既存の `EXEC_OUTPUT_BODY_LIMIT` (64 MiB) と同じ値になるため、定数を共有するか各ファイルに定義するかを実装時に統一する (将来の上限変更で一部だけが変わる非対称を防ぐ)
-- 1-shot ログの follow 経路 (8 MiB・切り詰め) との値・挙動の差 (64 MiB・エラー) は、1-shot が「決定的に全ログを取得する」契約を持つことによる設計判断として維持する
-- macOS のログ 1-shot 経路は無制限のまま残る (本 issue の対象外として許容する。Linux 側にだけ上限が入る非対称が生じる)
-- `docker_client.rs` と `docker_log_stream.rs` を変更するため、同じ `DockerClient::copy_from` を変更する 0065 とマージ順に注意する (0065 の 404 分岐と 0064 の BodyLimit 変更は領域が別だが、同一関数のためコンフリクト時は両方の変更を保持する)
-- `CHANGES.md` に `[FIX]` エントリを追加する
+- `src/core/client/docker_log_stream.rs` の 1-shot 蓄積を各ストリーム 64 MiB 上限・超過時エラーに変更する。`SharedLogBuffer` に strict モード (`new_strict`) を追加し、follow 経路の drop-oldest (8 MiB) は変更しない。`FrameDemuxer::feed` を `Result<(bool, bool)>` 化して上限超過を伝播し、検知した時点で即時エラー (早期アボート) する。エラー文言はストリーム識別子付きの `stdout output exceeds ... bytes limit` / `stderr output exceeds ... bytes limit`
+- 1-shot 蓄積の上限はテストから差し替え可能にするため、`fetch_logs_oneshot_blocking_with_limit(socket_path, id, limit)` を内部関数として分離し、公開経路は `DOCKER_RESPONSE_BODY_LIMIT` (64 MiB) を渡す
+- `src/core/client/docker_client.rs` の `copy_from` を `BodyLimit::Error(64 MiB)` で受信する (上限は tar 全体。ヘッダ + データ + トレーラ)。`pull_image` は `request_with_extra_headers` に `body_limit` パラメータを追加して `BodyLimit::Error(64 MiB)` で受信し、上限超過時は `failed to receive pull progress for image ...` の文脈で包む
+- 上限定数は `EXEC_OUTPUT_BODY_LIMIT` を `DOCKER_RESPONSE_BODY_LIMIT` に改名して 4 経路 (exec / 1-shot ログ / copy_from / pull 進捗) で共有する (将来の上限変更で一部だけが変わる非対称を防ぐ)
+- 公開 API の rustdoc (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `copy_file_from`。async / sync 両方) に 64 MiB 上限・超過時の挙動・1-shot は stdout / stderr を同一セッションで取得するため片方の超過で両方が失敗し合計最大 128 MiB が一時保持され得ること・macOS 側に上限が無いことを明記する
+- 単体テスト: strict モードの境界テスト 4 本 (ちょうど上限成功・累積超過・単発超過・stderr 超過) と、上限超過時に読み出しを止めてエラーを返す (ハングしない) ことの回帰テスト `oneshot_aborts_early_when_over_limit` を追加する (実 Unix ソケットのサーバが上限超フレームを送り続け、クライアントが早期に Err で戻ることを検証)。既存テストの `feed` 呼び出しは `.expect(...)` で不変条件 (非 strict では失敗しない) を固定する
+- `copy_from` / `pull_image` の `BodyLimit::Error` の超過時エラー自体は `http_decode.rs` の単体テストで検証済みのため、配線はコードレビューで検証する。`http_decode.rs` のコメント (exec 以外で使われない旨) を現在の利用経路に合わせて更新する
+- `CHANGES.md` に `[FIX]` エントリと rustdoc 更新分の `[UPDATE]` (misc) エントリを追加する
