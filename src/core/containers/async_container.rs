@@ -301,6 +301,8 @@ impl<I: Image> ContainerAsync<I> {
     /// 必須。ディレクトリを指定すると tar 先頭エントリの typeflag で `IsDirectory` になる。
     /// 受信する tar 全体 (ヘッダ + データ + トレーラ) は 64 MiB 上限で、超過時はエラーを返す
     /// (ファイル内容がちょうど 64 MiB でも tar オーバーヘッド分でエラーになり得る)。
+    /// 存在しないコンテナ内パスは `ClientError::ContainerPathNotFound`、コンテナ自体が
+    /// 存在しない場合は `ClientError::ContainerNotFound` になる (Linux)。
     /// macOS 側にこの上限は無い。
     pub async fn copy_file_from<T: CopyFileFromContainer>(
         &self,
