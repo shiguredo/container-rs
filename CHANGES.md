@@ -83,6 +83,8 @@
   - @voluntas
 - [FIX] Linux exec の出力読み出しに 64 MiB のサイズ上限を設定し、超過時に切り詰めずエラーを返すようにする
   - @voluntas
+- [FIX] macOS の `Mount::volume_mount` が Apple container の Codable 形式に合わず必ず起動に失敗するのを修正する (cache / sync を単一キーオブジェクト形式にし、ボリューム実体パスと format を XPC 経由で解決して渡す)
+  - @voluntas
 
 ### misc
 

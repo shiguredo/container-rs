@@ -228,6 +228,51 @@ impl XpcClient {
         .await?
     }
 
+    /// 名前付きボリュームを解決し、その実体パスとファイルシステム形式を返す。
+    ///
+    /// Apple container は volume マウントを block デバイスとして扱い、
+    /// `Filesystem.volume` の `source` にボリューム実体の絶対パスを要求する
+    /// (Apple の CLI 実装 `Utility.containerConfigFromFlags` は `getOrCreateVolume` で
+    /// 実パスを解決して渡している。ボリューム名のままではマウントできない)。
+    /// CLI と同様に `volumeCreate` (既存なら `volumeInspect`) で解決する。
+    /// 実装は Apple container 1.2.0 で検証している。将来のバージョンで
+    /// XPC のエラー形式が変わると already exists 判定がずれる可能性がある。
+    /// 自動作成されたボリュームは、コンテナの起動失敗時も削除されず残る
+    /// (Docker の名前付きボリューム自動作成と同じ挙動)。
+    pub(crate) async fn resolve_volume(&self, name: &str) -> Result<VolumeResolution> {
+        let name = name.to_string();
+        // Apple のボリューム名制約 (英数字始まり・255 文字以内) を事前検証する。
+        // 不正名は volumeCreate が分かりにくい XPC エラーを返すため、ここで落とす。
+        if !is_valid_volume_name(&name) {
+            return Err(ClientError::Other(format!(
+                "invalid volume name {name:?}: must match ^[A-Za-z0-9][A-Za-z0-9_.-]*$ and be at most 255 characters"
+            ))
+            .into());
+        }
+        tokio::task::spawn_blocking(move || {
+            let conn = XpcConn::connect(SERVICE_NAME)?;
+            // まず自動作成を試みる。既に存在する場合は inspect にフォールバックする。
+            let reply = conn.send(
+                "volumeCreate",
+                &[(k("volumeName"), s(&name)), (k("volumeDriver"), s("local"))],
+            );
+            let data = match reply {
+                Ok(r) => r.data(&k("volume")),
+                Err(e) if is_volume_already_exists_error(&e) => conn
+                    .send("volumeInspect", &[(k("volumeName"), s(&name))])?
+                    .data(&k("volume")),
+                Err(e) => return Err(e),
+            };
+            let data = data.ok_or_else(|| {
+                crate::core::error::Error::Client(ClientError::Other(format!(
+                    "volume '{name}' resolution did not return volume"
+                )))
+            })?;
+            parse_volume_configuration(&data)
+        })
+        .await?
+    }
+
     /// コンテナの状態を取得する。
     ///
     /// `containerList` のレスポンスから `status` と `configuration.publishedPorts` を取得する。
@@ -606,6 +651,103 @@ fn is_not_found_error(e: &crate::core::error::Error) -> bool {
     }
 }
 
+/// エラーが「同名ボリュームが既に存在する」ことを表すか。
+///
+/// 既存ボリュームへの `volumeCreate` は `VolumeError.volumeAlreadyExists` が
+/// XPC エラーのメッセージに `volume '<name>' already exists` の形で含まれて返る
+/// (message 部分は Apple container 1.2.0 で実測。`xpc_alpine_with_existing_volume_mount`
+/// 統合テストで固定済み。code 部分の値は未検証のため判定には使わない)。
+/// 将来のバージョンで文面が変わると判定がずれる可能性がある。
+fn is_volume_already_exists_error(e: &crate::core::error::Error) -> bool {
+    match e {
+        crate::core::error::Error::Client(ClientError::Xpc(msg)) => msg.contains("already exists"),
+        _ => false,
+    }
+}
+
+/// ボリューム名が Apple container の制約を満たすか。
+///
+/// `VolumeStorage.volumeNamePattern` (`^[A-Za-z0-9][A-Za-z0-9_.-]*$`) と
+/// 255 文字以下の制約 (Apple container 1.2.0 の `isValidVolumeName`)。
+fn is_valid_volume_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// ボリューム解決の結果。`Filesystem.volume` の `source` / `format` に使う。
+#[derive(Debug)]
+pub(crate) struct VolumeResolution {
+    /// ボリューム実体の絶対パス (block デバイスイメージ)。
+    pub(crate) source: String,
+    /// ボリュームのファイルシステム形式 (例: `"ext4"`)。
+    pub(crate) format: String,
+}
+
+/// `ContainerRequest` の volume マウントをまとめて解決する。
+///
+/// 同一名の重複マウントは 1 回の解決にまとめ、決定的な順序で 1 つずつ解決する。
+/// 途中で失敗した場合は、それまでに自動作成されたボリュームは残る
+/// (Docker の名前付きボリューム自動作成と同じ挙動)。
+pub(crate) async fn resolve_volumes<I: crate::Image>(
+    client: &XpcClient,
+    req: &crate::ContainerRequest<I>,
+) -> Result<std::collections::HashMap<String, VolumeResolution>> {
+    let mut names: Vec<String> = req
+        .mounts()
+        .filter(|m| matches!(m.mount_type(), crate::core::mounts::MountType::Volume))
+        .filter_map(|m| m.source().map(str::to_owned))
+        .collect();
+    names.sort();
+    names.dedup();
+    let mut resolutions = std::collections::HashMap::new();
+    for name in names {
+        // どのボリュームで失敗したか分かるように、ボリューム名を添えて変換する。
+        let resolution = client
+            .resolve_volume(&name)
+            .await
+            .map_err(|e| crate::Error::other(format!("failed to resolve volume '{name}': {e}")))?;
+        resolutions.insert(name.clone(), resolution);
+    }
+    Ok(resolutions)
+}
+
+/// `VolumeConfiguration` の JSON から `source` / `format` を取り出す。
+///
+/// `volumeCreate` / `volumeInspect` のレスポンス (`volume` キー) の形式。
+/// `source` / `format` が欠落した JSON はエラーにする。
+fn parse_volume_configuration(data: &[u8]) -> Result<VolumeResolution> {
+    let text = std::str::from_utf8(data)
+        .map_err(|e| ClientError::Json(format!("volume configuration is not UTF-8: {e}")))?;
+    let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
+    let v = parsed.value();
+    let source: String = v
+        .to_member("source")
+        .and_then(|m| m.required())
+        .and_then(|v| v.try_into())
+        .map_err(|e| {
+            ClientError::Json(format!(
+                "volume configuration missing or invalid source: {e}"
+            ))
+        })?;
+    let format: String = v
+        .to_member("format")
+        .and_then(|m| m.required())
+        .and_then(|v| v.try_into())
+        .map_err(|e| {
+            ClientError::Json(format!(
+                "volume configuration missing or invalid format: {e}"
+            ))
+        })?;
+    Ok(VolumeResolution { source, format })
+}
+
 /// イメージ参照を Apple container が受け付ける完全修飾形式に正規化する。
 ///
 /// Apple container の image service はホスト部の無い参照を
@@ -937,6 +1079,98 @@ mod tests {
             normalized.ends_with("nginx:1.25"),
             "元の参照が末尾に残ること: {normalized}"
         );
+    }
+
+    #[test]
+    fn is_valid_volume_name_accepts_allowed_chars() {
+        // 英数字始まり・英数字と _ . - を含む名前は有効であること。
+        for name in ["data", "Data-1", "a_b.c-d", "0", "a".repeat(255).as_str()] {
+            assert!(is_valid_volume_name(name), "有効な名前であること: {name}");
+        }
+    }
+
+    #[test]
+    fn is_valid_volume_name_rejects_invalid_names() {
+        // 空・英数字以外の先頭・256 文字超・禁止記号は無効であること。
+        for name in [
+            "",
+            "-data",
+            ".data",
+            "_data",
+            "da ta",
+            "a/b",
+            "a#b",
+            "a".repeat(256).as_str(),
+        ] {
+            assert!(!is_valid_volume_name(name), "無効な名前であること: {name}");
+        }
+    }
+
+    #[test]
+    fn is_volume_already_exists_error_matches_existing_volume_message() {
+        // 既存ボリュームへの volumeCreate が返す XPC エラーで true になること。
+        let err = crate::Error::Client(ClientError::Xpc(
+            "XPC error internalError: volume 'data' already exists".into(),
+        ));
+        assert!(is_volume_already_exists_error(&err));
+    }
+
+    #[test]
+    fn is_volume_already_exists_error_rejects_other_errors() {
+        // already exists を含まない XPC エラーと、Xpc 以外のエラーでは false になること。
+        let xpc_err = crate::Error::Client(ClientError::Xpc(
+            "XPC error internalError: storage error".into(),
+        ));
+        assert!(!is_volume_already_exists_error(&xpc_err));
+
+        let other_err = crate::Error::Client(ClientError::ContainerNotFound("id".into()));
+        assert!(!is_volume_already_exists_error(&other_err));
+    }
+
+    #[test]
+    fn parse_volume_configuration_extracts_source_and_format() {
+        // VolumeConfiguration JSON から source / format を取り出せること。
+        let json = br#"{
+            "name": "data",
+            "driver": "local",
+            "format": "ext4",
+            "source": "/host/volumes/data/volume.img"
+        }"#;
+        let resolution = parse_volume_configuration(json).expect("パースに成功すること");
+        assert_eq!(resolution.source, "/host/volumes/data/volume.img");
+        assert_eq!(resolution.format, "ext4");
+    }
+
+    #[test]
+    fn parse_volume_configuration_rejects_missing_source() {
+        // source が無い JSON は Json エラーになること。
+        let json = br#"{"name":"data","format":"ext4"}"#;
+        let err = parse_volume_configuration(json).expect_err("source 欠落はエラーであること");
+        assert!(matches!(err, crate::Error::Client(ClientError::Json(_))));
+    }
+
+    #[test]
+    fn parse_volume_configuration_rejects_missing_format() {
+        // format が無い JSON は Json エラーになること。
+        let json = br#"{"name":"data","source":"/host/volumes/data/volume.img"}"#;
+        let err = parse_volume_configuration(json).expect_err("format 欠落はエラーであること");
+        assert!(matches!(err, crate::Error::Client(ClientError::Json(_))));
+    }
+
+    #[test]
+    fn parse_volume_configuration_rejects_invalid_json() {
+        // 不正 JSON は Json エラーになること。
+        let err =
+            parse_volume_configuration(b"not-json").expect_err("不正 JSON はエラーであること");
+        assert!(matches!(err, crate::Error::Client(ClientError::Json(_))));
+    }
+
+    #[test]
+    fn parse_volume_configuration_rejects_non_utf8() {
+        // 非 UTF-8 バイト列は Json エラーになること。
+        let err =
+            parse_volume_configuration(&[0xff, 0xfe]).expect_err("非 UTF-8 はエラーであること");
+        assert!(matches!(err, crate::Error::Client(ClientError::Json(_))));
     }
 
     #[test]

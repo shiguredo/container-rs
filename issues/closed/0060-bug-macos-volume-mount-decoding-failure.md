@@ -1,7 +1,7 @@
 # バグ: macOS の Mount::volume_mount が apiserver でデコード失敗して必ず起動に失敗する
 
 - Created: 2026-08-02
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-03
 - Branch: feature/fix-macos-volume-mount-decoding
 - Polished: 2026-08-02
 
@@ -31,9 +31,9 @@ macOS (Apple container) で `Mount::volume_mount` を使うと必ずコンテナ
 
 ## 解決方法
 
-- `src/core/client/container_cfg.rs` の `VolType` で `cache` / `sync` を単一キーオブジェクト形式で出力する (nojson の DisplayJson で表現。既存の `EmptyObj` と同じパターン)。`format` は設計方針に従い、実機確認の結果に応じて変更する
-- `container_cfg.rs` の単体テストで、`cache` / `sync` が単一キーオブジェクト形式であり、`name` / `format` が文字列のままであることを JSON 文字列で検証する (contains 検証で十分)
-- `tests/container_macos.rs` に volume マウントの統合テストを追加する (テスト名: `xpc_alpine_with_volume_mount`。起動 → コンテナ内でマウント確認 → 掃除)。`skip_if_ci` ガードと `with_startup_timeout` は既存の macOS 統合テストに合わせる。マウント確認は df の出力にマウントポイントが含まれることで行い、df に現れない場合は exec での読み書き確認に切り替える。volume は指定時に自動作成される (Apple container の CLI で確認済み。テスト実装時に library (XPC) 経由でも自動作成されることを確認し、事前作成が必要ならテストの前処理で CLI (`container volume create`) を呼ぶ)。テスト用ボリューム名は Apple のボリューム名制約 (英数字始まり・255 文字以内) に適合する `container_vol_{pid}_{nanos}` 形式でユニーク化し、テスト冒頭で同名ボリュームの事前削除を試みて冪等化する (前回実行の assert 失敗で残存したボリュームを除去して再実行可能にする)。クレートに volume 削除 API は無いため、掃除ではクレートの `container.rm()` に加えて Apple container CLI (`container volume rm`) を直接呼んで volume も削除する (名前付きボリュームはコンテナ削除後も残存するため)
-- macOS の volume 統合テストは本 issue が担当する。Linux 側の `volume_mount` 統合テストは 0069 が担当する (0069 の解決方法の「別の既知バグ」は本 issue を指す)
-- `tests/container_macos.rs` を変更するため、同一ファイルを変更する 0058 / 0059 / 0061 / 0068 / 0069 とマージ順に注意する
+- `src/core/client/container_cfg.rs` の `VolType` で `cache` / `sync` を単一キーオブジェクト形式 (`{"auto":{}}` / `{"fsync":{}}`) で出力する。汎用の `KeyedEmptyObj` として実装し、`format` は XPC で解決したボリューム実体の値を渡す
+- `src/core/client/xpc_client.rs` に `resolve_volume` / `resolve_volumes` を追加する。Apple container は volume マウントを block デバイスとして扱い `source` にボリューム実体の絶対パスを要求するため、`volumeCreate` (既存なら `volumeInspect`) で実パスと `format` (ext4) を解決する。CLI (`Utility.containerConfigFromFlags`) と同じ挙動。ボリューム名の事前検証 (`is_valid_volume_name`) と `parse_volume_configuration` も追加する
+- `src/runners/async_runner.rs` の macOS 分岐で、`containerCreate` 前に `resolve_volumes` を呼び、解決結果を `build_config` に渡す
+- 単体テスト: `container_cfg.rs` に JSON 形式の固定テスト (`volume_mount_uses_apple_container_enum_json_format` / `volume_mount_without_resolution_emits_empty_source`)、`xpc_client.rs` に `is_volume_already_exists_error` / `parse_volume_configuration` / `is_valid_volume_name` のテストを追加する
+- 統合テスト: `tests/container_macos.rs` に `xpc_alpine_with_volume_mount` (新規ボリュームの自動作成 → df と読み書きでマウント確認 → 掃除) と `xpc_alpine_with_existing_volume_mount` (既存ボリュームの already exists → inspect フォールバックの実機固定) を追加する。実機で全 84 テストの通過を確認済み
 - `CHANGES.md` に `[FIX]` エントリを追加する
