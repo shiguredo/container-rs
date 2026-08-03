@@ -97,6 +97,8 @@
   - @voluntas
 - [FIX] Linux の `copy_file_from` で存在しないコンテナ内パスを指定したときに、コンテナが存在するのに `ContainerNotFound` と誤報告するのを修正する (パス不存在は `ContainerPathNotFound` として区別する)
   - @voluntas
+- [FIX] Linux の `with_copy_to` がターゲットパスに `..` (親ディレクトリ参照)・終端 `.`・空コンポーネント (`//`) を許容していたのを修正する (daemon の挙動依存を避け、ライブラリ側で明示エラーにする)
+  - @voluntas
 
 ### misc
 

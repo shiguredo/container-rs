@@ -1,7 +1,7 @@
 # バグ: Linux with_copy_to のターゲットパスが中間 .. を許容する
 
 - Created: 2026-08-02
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-03
 - Branch: feature/fix-linux-copy-to-path-validation
 - Polished: 2026-08-02
 
@@ -31,9 +31,9 @@ macOS 経路 (`copy_to_sources`) は検証なし・素通しのまま (現状維
 
 ## 解決方法
 
-- `copy_to_sources_linux` の検証で、オリジナルの `Path` に対して `std::path::Component::ParentDir` を含むパスを拒否する。挿入位置は既存の `file_name()` チェックの後とする (末尾 `..` は既存チェックが先に捕捉し、エラー文言も既存のまま維持する。新チェックは実質「中間・先頭の `..`」を捕捉する)
-- 境界テストは `tests/container_linux.rs` の統合テストに追加する (`copy_to_sources_linux` は private 関数のため単体テスト不可。既存の symlink 拒否テストと同じ `expect_err` パターン)。ケースは中間 `..` (拒否)、先頭 `..` (拒否)、末尾 `..` (既存チェックの回帰確認)、通常パス (動作)、CurDir 入り (実測結果に従う)。テスト名は既存の命名に合わせて `copy_to_target_with_parent_dir_is_rejected` 等とする
-- 拒否の検証はエラー文言まで assert する。中間・先頭 `..` は `copy path error` を含み `must not contain '..'` を含むこと、末尾 `..` は既存文言の `copy path error` を含み `must have a file name` を含むことを確認する。`expect_err` だけでは、daemon が `..` エントリを拒否する環境でチェックが無くてもテストが pass してしまうため
-- 既存の親ディレクトリ自動作成テスト (`copy_to_creates_missing_parents_for_data` 等) は `..` 拒否と直交するため、通常パスの回帰はこれらが担保する
-- `with_copy_to` の rustdoc (`src/core/image/image_ext.rs`) の投入能力の節に「ターゲットパスに `..` は使えない」旨を追記する
+- `src/runners/async_runner.rs` の `copy_to_sources_linux` のパス検証に、`std::path::Component::ParentDir` (中間・先頭の `..`) を含むターゲットパスの拒否チェックを追加する (挿入位置は既存の `file_name()` チェックの後。末尾 `..` は既存チェックが先に捕捉し、エラー文言も既存のまま維持)。エラー文言は `copy_to target path must not contain '..'` で `PathNameError`
+- 実測の結果、daemon は中間 CurDir (`/tmp/./x`) は受理するが、終端 CurDir (`/tmp/.`) と空コンポーネント (`/tmp//x`) は正しく展開しないことを確認したため、両者も明示的に拒否する (`ends_with("/.")` と `contains("//")` の文字列チェック。`Path::components()` は正規化で消すため捕捉できない)
+- `with_copy_to` の rustdoc (`src/core/image/image_ext.rs`) に「ターゲットパスに `..` ・終端の `.`・空コンポーネント (`//`) は使えない」旨を追記する
+- 統合テスト: `tests/container_linux.rs` に 6 本追加する (中間 `..` 拒否・先頭 `..` 拒否・末尾 `..` 既存文言回帰・終端 CurDir 拒否・空コンポーネント拒否・中間 CurDir 許容 (ファイル到達まで検証))。エラー型は `CopyToContainerError::PathNameError` を `downcast_ref` + `matches!` で検証するヘルパー `assert_path_name_error` に集約する
+- 実測は Docker Desktop (docker 29.6.2) で実施し、全 51 統合テスト + 158 単体テストの通過を確認済み
 - `CHANGES.md` に `[FIX]` エントリを追加する

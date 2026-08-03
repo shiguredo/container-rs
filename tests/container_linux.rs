@@ -14,6 +14,7 @@ use shiguredo_container::core::error::ClientError;
 use shiguredo_container::core::image::ExecCommand;
 use shiguredo_container::core::logs::{LogConsumer, LogFrame};
 use shiguredo_container::{AsyncRunner, Error, GenericImage, ImageExt, WaitFor};
+use std::error::Error as StdError;
 
 /// 常駐 alpine を起動する。
 async fn start_alpine() -> shiguredo_container::ContainerAsync<GenericImage> {
@@ -22,6 +23,20 @@ async fn start_alpine() -> shiguredo_container::ContainerAsync<GenericImage> {
         .start()
         .await
         .expect("alpine コンテナの起動に失敗した")
+}
+
+/// エラーが `CopyToContainerError::PathNameError` であることを検証する。
+fn assert_path_name_error(err: &Error) {
+    let inner = err
+        .source()
+        .and_then(|s| s.downcast_ref::<shiguredo_container::core::CopyToContainerError>());
+    assert!(
+        matches!(
+            inner,
+            Some(shiguredo_container::core::CopyToContainerError::PathNameError(_))
+        ),
+        "エラー型が PathNameError であること"
+    );
 }
 
 /// `docker inspect` を 1 回実行してコンテナ不在を assert する。
@@ -1132,6 +1147,112 @@ async fn copy_to_directory_with_symlink_is_rejected() {
     );
 
     let _ = fs::remove_dir_all(&host_dir);
+}
+
+/// 中間 `..` を含むターゲットパスは明示エラーで拒否されること。
+#[tokio::test]
+async fn copy_to_target_with_intermediate_parent_dir_is_rejected() {
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/../etc/passwd", b"x\n".to_vec())
+        .start()
+        .await
+        .expect_err("中間 .. を含む投入は失敗すること");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("copy path error") && msg.contains("must not contain '..'"),
+        "明示エラーであること: {msg}"
+    );
+    assert_path_name_error(&err);
+}
+
+/// 先頭 `..` を含むターゲットパスは明示エラーで拒否されること。
+#[tokio::test]
+async fn copy_to_target_with_leading_parent_dir_is_rejected() {
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/../etc/passwd", b"x\n".to_vec())
+        .start()
+        .await
+        .expect_err("先頭 .. を含む投入は失敗すること");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("copy path error") && msg.contains("must not contain '..'"),
+        "明示エラーであること: {msg}"
+    );
+    assert_path_name_error(&err);
+}
+
+/// 末尾 `..` は既存チェック (must have a file name) で拒否されること (回帰)。
+#[tokio::test]
+async fn copy_to_target_with_trailing_parent_dir_keeps_existing_error() {
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/..", b"x\n".to_vec())
+        .start()
+        .await
+        .expect_err("末尾 .. を含む投入は失敗すること");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("copy path error") && msg.contains("must have a file name"),
+        "既存文言のままであること: {msg}"
+    );
+    assert_path_name_error(&err);
+}
+
+/// 終端 CurDir (`/tmp/.`) は明示エラーで拒否されること。
+#[tokio::test]
+async fn copy_to_target_with_trailing_cur_dir_is_rejected() {
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/.", b"x\n".to_vec())
+        .start()
+        .await
+        .expect_err("終端 CurDir を含む投入は失敗すること");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("copy path error") && msg.contains("must not end with a '.'"),
+        "明示エラーであること: {msg}"
+    );
+    assert_path_name_error(&err);
+}
+
+/// 空コンポーネント (`/tmp//x`) を含むターゲットパスは明示エラーで拒否されること。
+#[tokio::test]
+async fn copy_to_target_with_empty_component_is_rejected() {
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp//empty-ok.txt", b"x\n".to_vec())
+        .start()
+        .await
+        .expect_err("空コンポーネントを含む投入は失敗すること");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("copy path error") && msg.contains("must not contain '//'"),
+        "明示エラーであること: {msg}"
+    );
+    assert_path_name_error(&err);
+}
+
+/// CurDir (`.`) を含むターゲットパスは許容され、正しい場所に展開されること
+/// (中間 CurDir は daemon が受理する実測に基づく)。
+#[tokio::test]
+async fn copy_to_target_with_cur_dir_is_accepted() {
+    let container = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/./cur-dir-ok.txt", b"cur-dir-ok\n".to_vec())
+        .start()
+        .await
+        .expect("CurDir を含む投入が成功すること");
+
+    // `/tmp/./cur-dir-ok.txt` が `/tmp/cur-dir-ok.txt` として展開されていること。
+    let bytes = container
+        .copy_file_from("/tmp/cur-dir-ok.txt", Vec::new())
+        .await
+        .expect("CurDir 入りパスで投入したファイルを回収できること");
+    assert_eq!(bytes, b"cur-dir-ok\n", "投入内容が正しく展開されていること");
+
+    container.rm().await.expect("rm に失敗した");
 }
 
 /// ディレクトリの `copy_file_from` は `IsDirectory` で拒否されること。
