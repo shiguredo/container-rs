@@ -1585,12 +1585,7 @@ mod tests {
             let mut frame = vec![1u8, 0, 0, 0];
             frame.extend_from_slice(&9u32.to_be_bytes());
             frame.extend_from_slice(b"abcdefghi");
-            loop {
-                match conn.write_all(&frame) {
-                    Ok(()) => {}
-                    Err(_) => break,
-                }
-            }
+            while conn.write_all(&frame).is_ok() {}
         });
 
         let socket_path = path
