@@ -791,8 +791,9 @@ impl DockerClient {
 
     /// コンテナからファイルを取り出す (`GET /containers/{id}/archive`)。
     ///
-    /// レスポンスボディの生 tar を返す。404 は `ContainerNotFound` に寄せる
-    /// (既存 `container_state` と同じ扱い)。
+    /// レスポンスボディの生 tar を返す。404 はボディの daemon メッセージで
+    /// 「コンテナ不存在」と「コンテナ内パス不存在」を区別する (区別できない場合は
+    /// `ContainerNotFound` に寄せる)。
     ///
     /// 蓄積は tar 全体 (ヘッダ + データ + トレーラ) で 64 MiB 上限・超過時エラー
     /// (OOM 防止。ファイル内容がちょうど 64 MiB でも tar オーバーヘッド分でエラーになり得る)。
@@ -811,7 +812,9 @@ impl DockerClient {
             )
             .await?;
         if response.status_code() == 404 {
-            return Err(ClientError::ContainerNotFound(id.to_string()).into());
+            return Err(
+                classify_archive_404(id, path, response.body_bytes().unwrap_or(&[])).into(),
+            );
         }
         if response.status_code() >= 400 {
             return Err(ClientError::Other(format!(
@@ -848,6 +851,43 @@ impl DockerClient {
         }
         Ok(())
     }
+}
+
+/// Docker Engine API の `GET /containers/{id}/archive` の 404 応答を分類する。
+///
+/// Docker Engine は「コンテナ不存在」と「コンテナ内パス不存在」の両方で 404 を返す。
+/// moby の実装ではボディの JSON `message` にそれぞれ
+/// `No such container: <id>` / `Could not find the file <path> in container <id>` を含む。
+///
+/// - `message` が `Could not find the file ` で始まる → `ContainerPathNotFound` (パス不存在)
+/// - それ以外 (コンテナ不存在・未知文言・空ボディ・非 JSON) → `ContainerNotFound`
+///
+/// マッチは `starts_with` で行う (パス名に `No such container:` 等を含む場合の誤分類を防ぐ)。
+/// daemon メッセージからのパス切り出しは文言変更で壊れるため行わず、リクエスト引数の
+/// `path` をそのまま保持する。区別できない場合は既存挙動 (`ContainerNotFound`) を維持する
+/// (パス不存在の誤診断を増やさない安全側の設計)。
+fn classify_archive_404(id: &str, path: &str, body: &[u8]) -> ClientError {
+    let message = parse_daemon_error_message(body);
+    match message {
+        Some(msg) if msg.starts_with("Could not find the file ") => {
+            ClientError::ContainerPathNotFound(path.to_string())
+        }
+        _ => ClientError::ContainerNotFound(id.to_string()),
+    }
+}
+
+/// daemon エラーボディ (`{"message": "..."}`) から `message` フィールドの値を取り出す。
+///
+/// 空・非 JSON・`message` 欠落は `None` を返す。
+fn parse_daemon_error_message(body: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(body).ok()?;
+    let parsed = nojson::RawJson::parse(text).ok()?;
+    parsed
+        .value()
+        .to_member("message")
+        .ok()
+        .and_then(|m| m.required().ok())
+        .and_then(|v| TryInto::<String>::try_into(v).ok())
 }
 
 /// Docker Engine API 向け HTTP/1.1 リクエストをエンコードする。
@@ -2021,5 +2061,85 @@ mod tests {
         let (stdout, stderr) = demux_exec_stream(&data);
         assert_eq!(stdout, b"hello", "完全なフレームは正しく処理されること");
         assert_eq!(stderr, b"par", "切断フレームは部分出力を返すこと");
+    }
+
+    #[test]
+    fn classify_archive_404_path_not_found_message() {
+        // daemon が「パス不存在」のメッセージを返す場合は ContainerPathNotFound になること。
+        let body = br#"{"message":"Could not find the file /no/such in container abc123"}"#;
+        let err = classify_archive_404("abc123", "/no/such", body);
+        assert!(
+            matches!(err, ClientError::ContainerPathNotFound(ref p) if p == "/no/such"),
+            "ContainerPathNotFound にパスが保持されること: {err:?}"
+        );
+        assert_eq!(err.to_string(), "container path not found: /no/such");
+    }
+
+    #[test]
+    fn classify_archive_404_container_not_found_message() {
+        // daemon が「コンテナ不存在」のメッセージを返す場合は ContainerNotFound になること。
+        let body = br#"{"message":"No such container: abc123"}"#;
+        let err = classify_archive_404("abc123", "/etc/hostname", body);
+        assert!(
+            matches!(err, ClientError::ContainerNotFound(ref id) if id == "abc123"),
+            "ContainerNotFound に ID が保持されること: {err:?}"
+        );
+    }
+
+    #[test]
+    fn classify_archive_404_falls_back_on_unknown_message() {
+        // 未知文言・空ボディ・非 JSON・message 欠落は ContainerNotFound にフォールバック
+        // すること (パス不存在の誤診断を増やさない安全側の設計)。
+        for body in [
+            &b""[..],
+            b"not-json",
+            br#"{"error":"something else"}"#,
+            br#"{"message":"an unknown daemon message"}"#,
+        ] {
+            let err = classify_archive_404("abc123", "/etc/hostname", body);
+            assert!(
+                matches!(err, ClientError::ContainerNotFound(_)),
+                "フォールバックは ContainerNotFound であること: {body:?} → {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_archive_404_prefix_match_not_contains() {
+        // パス名に "No such container:" が含まれても、message が "Could not find the file "
+        // で始まる限り ContainerPathNotFound になること (contains 誤分類の回帰)。
+        let body =
+            br#"{"message":"Could not find the file /etc/No such container: x in container abc123"}"#;
+        let err = classify_archive_404("abc123", "/etc/No such container: x", body);
+        assert!(
+            matches!(err, ClientError::ContainerPathNotFound(_)),
+            "先頭一致で分類されること: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_daemon_error_message_rejects_non_string_and_non_object() {
+        // message が文字列でない・トップレベルがオブジェクトでない・非 UTF-8 は None に
+        // フォールバックすること (分類の安全側の設計を直接検証)。
+        for body in [
+            &br#"{"message":123}"#[..],
+            b"[1,2,3]",
+            b"\"just a string\"",
+            &[0xff, 0xfe][..],
+        ] {
+            assert!(
+                parse_daemon_error_message(body).is_none(),
+                "不正な message は None になること: {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_daemon_error_message_extracts_message() {
+        // 正常な daemon エラーボディから message が取り出せること。
+        assert_eq!(
+            parse_daemon_error_message(br#"{"message":"No such container: abc"}"#).as_deref(),
+            Some("No such container: abc")
+        );
     }
 }

@@ -59,7 +59,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `AsyncRunner::pull_image` / `AsyncRunner::start` は動く (既定の空 ready 条件なら完結する)
 - `ports` / `exec` (exit code + stdout / stderr + Env) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
-- `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入する (親ディレクトリ自動作成・ディレクトリ一括投入対応。配下 regular file の `mode` / `uid` / `gid` は反映。中間 directory の mode は `0o755`。コピー後 mtime は epoch)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり。親作成は `createParents`）。起動前投入は Linux のみの公開契約
+- `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。404 はボディの daemon メッセージで区別し、コンテナ内パス不存在は `ClientError::ContainerPathNotFound`、コンテナ不存在は `ClientError::ContainerNotFound` になる。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入する (親ディレクトリ自動作成・ディレクトリ一括投入対応。配下 regular file の `mode` / `uid` / `gid` は反映。中間 directory の mode は `0o755`。コピー後 mtime は epoch)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり。親作成は `createParents`）。起動前投入は Linux のみの公開契約
 - `ExitWaitStrategy` は macOS / Linux とも exit_code_hint + container_state ポーリングで対応
 - `ImageExt::with_ssh` / `with_masked_paths` / `with_readonly_paths` のみ Linux では start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
 
@@ -74,10 +74,10 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 | 未実装 (実装可能) | 0 |
 | 未実装 (XPC 制約) | 3 |
 | なし | 94 |
-| shiguredo 拡張 (本家に無い追加 API) | 20 |
+| shiguredo 拡張 (本家に無い追加 API) | 21 |
 | 内部型/内部関数 (対象外) | 4 |
 
-内訳合計: 413 API (判定対象。対象外 4 は含まない。feature ゲート表の「備考」列も集計外)
+内訳合計: 414 API (判定対象。対象外 4 は含まない。feature ゲート表の「備考」列も集計外)
 
 判定内訳の傾向 (Apple Container):
 
@@ -86,7 +86,8 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
 - **未実装 (XPC 制約)** (3): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機) と `with_health_check` (start 時明示エラー)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` はシグネチャ自体を削除済みのため「なし」に分類
 - **なし** (94): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
-- **shiguredo 拡張** (20): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths`、`ContainerAsync::container_state`、`Container::container_state`、`ClientError::Xpc*` / `ImageNotFound` / `ContainerNotFound` / `Json` / `Other`、`ContainerRequest` の `init` / `ssh` / `masked_paths` / `readonly_paths` accessor、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()`
+- **shiguredo 拡張** (21): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths`、`ContainerAsync::container_state` / `rm_blocking`、`Container::container_state` / `rm_blocking`、`ClientError::Xpc*` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other`、`ContainerRequest` の `init` / `ssh` / `masked_paths` / `readonly_paths` accessor、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()`
+  - 件数は対応表の「shiguredo 拡張」判定の行数で、async / sync で 2 行ある `container_state` / `rm_blocking` は 1 API として数える。`Xpc*` は ClientError の Xpc 系バリアント (4 個) の集約表記
 
 ## サマリ (Docker Engine API)
 
@@ -694,8 +695,10 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `XpcConnect` | なし | shiguredo 拡張 | なし | XPC 接続失敗 / Docker: XPC 固有 |
 | `Xpc(String)` | なし | shiguredo 拡張 | なし | Docker: XPC 固有 |
 | `XpcNullReply` | なし | shiguredo 拡張 | なし | Docker: XPC 固有 |
+| `XpcTimeout` | なし | shiguredo 拡張 | なし | XPC 呼び出しがタイムアウト / Docker: XPC 固有 |
 | `ImageNotFound(String)` | なし | shiguredo 拡張 | 対応 | Docker: Linux の DockerClient でも使用 |
 | `ContainerNotFound(String)` | なし | shiguredo 拡張 | 対応 | Docker: Linux の DockerClient でも使用 |
+| `ContainerPathNotFound(String)` | なし | shiguredo 拡張 | 対応 | Docker: Linux の DockerClient (archive 404) で使用。コンテナ内パス不存在 (コンテナ自体は存在) |
 | `Json(String)` | なし | shiguredo 拡張 | 対応 | Docker: Linux の DockerClient でも使用 |
 | `Other(String)` | なし | shiguredo 拡張 | 対応 | Docker: Linux の DockerClient でも使用 |
 

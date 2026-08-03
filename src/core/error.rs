@@ -125,6 +125,8 @@ pub enum ClientError {
     ImageNotFound(String),
     /// コンテナが見つからない。
     ContainerNotFound(String),
+    /// コンテナ内のパスが見つからない (コンテナ自体は存在する)。
+    ContainerPathNotFound(String),
     /// 設定エラー。
     Configuration(String),
     /// JSON パースエラー。
@@ -142,6 +144,7 @@ impl fmt::Display for ClientError {
             ClientError::XpcTimeout => write!(f, "XPC request timed out"),
             ClientError::ImageNotFound(s) => write!(f, "image not found: {s}"),
             ClientError::ContainerNotFound(s) => write!(f, "container not found: {s}"),
+            ClientError::ContainerPathNotFound(s) => write!(f, "container path not found: {s}"),
             ClientError::Configuration(s) => write!(f, "configuration error: {s}"),
             ClientError::Json(s) => write!(f, "JSON parse error: {s}"),
             ClientError::Other(s) => write!(f, "{s}"),

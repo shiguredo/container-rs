@@ -1174,6 +1174,25 @@ async fn copy_file_from_nonexistent_container_is_not_found() {
     }
 }
 
+/// 存在しないコンテナ内パスへの `copy_file_from` が `ContainerPathNotFound` になること。
+#[tokio::test]
+async fn copy_file_from_nonexistent_path_is_path_not_found() {
+    let container = start_alpine().await;
+
+    let err = container
+        .copy_file_from("/no/such/file/in/container", Vec::new())
+        .await
+        .expect_err("存在しないパスの copy_file_from は失敗すること");
+    match err {
+        Error::Client(ClientError::ContainerPathNotFound(path)) => {
+            assert_eq!(path, "/no/such/file/in/container");
+        }
+        other => panic!("ContainerPathNotFound 以外のエラー: {other}"),
+    }
+
+    container.rm().await.expect("rm に失敗した");
+}
+
 /// `with_health_check` + `WaitFor::healthcheck` で healthy まで到達すること。
 #[tokio::test]
 async fn healthcheck_reaches_healthy() {

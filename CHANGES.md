@@ -25,6 +25,8 @@
   - @voluntas
 - [CHANGE] macOS のコンテナ ID (`with_container_name`) を Apple container 1.2.0 の `nameValid` 相当の制約で検証して start 時に拒否するようにし、macOS ランタイム要件を 1.2.0 以上に変更する（破壊的変更）
   - @voluntas
+- [CHANGE] 公開エラー型 `ClientError` に `ContainerPathNotFound` バリアントを追加する（コンテナ内パス不存在を表す。公開 enum へのバリアント追加のため後方互換のない変更）
+  - @voluntas
 - [ADD] Linux で `Healthcheck` / `ImageExt::with_health_check` / `HealthWaitStrategy` の Linux 分岐に対応する
   - @voluntas
 - [ADD] Linux で `ExitWaitStrategy` (`WaitFor::Exit`) を実装する
@@ -93,6 +95,8 @@
   - @voluntas
 - [FIX] Linux のログ 1-shot 取得 (各ストリーム 64 MiB) ・ `copy_file_from` (tar 全体 64 MiB) ・ イメージ pull 進捗 (64 MiB) の無制限メモリ蓄積を修正する (超過時は切り詰めずエラーを返す)
   - @voluntas
+- [FIX] Linux の `copy_file_from` で存在しないコンテナ内パスを指定したときに、コンテナが存在するのに `ContainerNotFound` と誤報告するのを修正する (パス不存在は `ContainerPathNotFound` として区別する)
+  - @voluntas
 
 ### misc
 
@@ -101,6 +105,8 @@
 - [UPDATE] `ContainerAsync::exec` の rustdoc に出力上限 (Linux: 64 MiB 合計 / macOS: 各 64 MiB) と超過時の挙動を明記する
   - @voluntas
 - [UPDATE] Linux の 1-shot ログ取得 ・ `copy_file_from` の rustdoc に 64 MiB 上限と超過時の挙動・macOS 側に上限が無い旨を明記する
+  - @voluntas
+- [UPDATE] `copy_file_from` の rustdoc に archive 404 の分類 (`ContainerPathNotFound` / `ContainerNotFound`) と Linux 限定である旨を明記する
   - @voluntas
 - [UPDATE] `with_copy_to` の rustdoc に macOS で起動前にファイルを見せたい場合は `Mount::bind_mount` を使う旨と制約を明記する
   - @voluntas
