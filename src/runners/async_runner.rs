@@ -939,9 +939,32 @@ async fn copy_to_sources_linux<I: Image>(
         if src.target.path.ends_with('/') {
             return Err(name_err("copy_to target path must not end with a slash"));
         }
+        // 終端 CurDir (`/tmp/.`) も同様に Path の正規化で消えるため、明示的に検出して拒否する。
+        // file_name() は `/tmp/.` に対して `Some("tmp")` を返すため、既存チェックでは捕捉できない。
+        // tar エントリ名に `tmp/.` が載ると daemon の挙動依存になる。
+        if src.target.path.ends_with("/.") {
+            return Err(name_err("copy_to target path must not end with a '.'"));
+        }
+        // 空コンポーネント (`/tmp//x`) は Path::components() の正規化で消えるため、
+        // ParentDir 検査では捕捉できない。tar エントリ名に `tmp//x` がそのまま載ると
+        // daemon が正しく展開しない (実測で確認済み) ため、文字列で明示的に拒否する。
+        if src.target.path.contains("//") {
+            return Err(name_err("copy_to target path must not contain '//'"));
+        }
         // file_name() が None になる場合 (例: "/tmp/..") は拒否。
         if target_path.file_name().is_none() {
             return Err(name_err("copy_to target path must have a file name"));
+        }
+        // 中間・先頭の `..` (ParentDir) を含むパスは拒否する。
+        // `..` がそのまま tar エントリ名に載ると daemon の挙動依存になり、
+        // 解決された場合はコンテナ内の任意ファイルをサイレント上書きし得る。
+        // 末尾 `..` は file_name() チェックが先に捕捉する (エラー文言は既存のまま)。
+        // 中間 CurDir (`/tmp/./x`) は実測で daemon が受理するため許容する。
+        if target_path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(name_err("copy_to target path must not contain '..'"));
         }
         let relative = make_path_relative(&src.target.path)?;
         let mode = src.target.mode;

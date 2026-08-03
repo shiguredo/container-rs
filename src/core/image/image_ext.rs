@@ -81,6 +81,8 @@ pub trait ImageExt<I: Image> {
     /// - **Linux**: 親ディレクトリの自動作成とホストディレクトリの再帰投入に対応する。
     ///   配下の regular file には `CopyTargetOptions.mode` / `uid` / `gid` を適用する。
     ///   中間 directory の mode は `0o755`。symlink / 特殊ファイルは拒否する。
+    ///   ターゲットパスに `..` (親ディレクトリ参照)・終端の `.`・空コンポーネント (`//`) を
+    ///   含めることはできない。
     /// - **macOS**: 親ディレクトリは `createParents` で自動作成される。ホストディレクトリの
     ///   再帰投入も XPC が受理する（Apple container 1.1.0 で実測）。`uid` / `gid` は非反映。
     ///
