@@ -1,7 +1,7 @@
 # バグ: macOS stop_with_timeout がグレース 60 秒超で XPC タイムアウトの誤エラーを返す
 
 - Created: 2026-08-02
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-03
 - Branch: feature/fix-macos-stop-grace-timeout
 - Polished: 2026-08-02
 
@@ -35,9 +35,10 @@ XPC 送信タイムアウトを「グレース + 余裕 (30 秒)」に拡張す�
 
 ## 解決方法
 
-- `XpcClient::stop` で `XpcConn::send_with_timeout` に設計方針の計算式のタイムアウトを渡す (u64 で飽和計算し、i32 境界のオーバーフローを避ける。`conn.rs` の `send_with_timeout` 内の `u64::try_from(...).unwrap_or(u64::MAX)` と同じ発想)
-- `XpcClient::stop` の rustdoc に、XPC 送信タイムアウトが「グレース + 30 秒」になる旨 (負値は 24 時間で飽和) を追記する。あわせて公開 API 側 (`ContainerAsync::stop_with_timeout` / `SyncContainer` 相当) の rustdoc に、負値指定時に呼び出し側が最大 24 時間ブロックされ得る旨を追記する
-- `tests/container_macos.rs` に `trap '' TERM` (SIGTERM 無視) の init を使った統合テストを追加する (テスト名: `xpc_alpine_stop_with_timeout_grace_ignores_sigterm`)。グレースは 60 秒超の最小値 (61 秒) を使い、テスト所要時間を最小化する。「エラーなしで停止し、グレース経過後に SIGKILL で止まること」を検証する (経過時間がグレース値以上であることと、`is_running()` が false になることを確認する。`trap ''` が効かず SIGTERM で即死する誤実装を検出するため)。このテストは SIGTERM 経路のシナリオ検証であり、`tests/helpers/mod.rs` の後始末規約 (停止は `stop_with_timeout(Some(0))`) の例外であることをコメントで注記する。実装時に SIGKILL 後の reply 到着遅延が 30 秒以内であることを実機で確認する
-- macOS のグレース 60 秒超の回帰テストは本 issue が担当する。SIGTERM 経路 (None / 正のグレース / 負値) の網羅テストは 0069 が担当する (0069 の解決方法の graceful 停止テストと重複しないようにする)
-- `tests/container_macos.rs` を変更するため、同一ファイルを変更する 0058 / 0059 / 0060 / 0068 / 0069 とマージ順に注意する
+- `src/core/client/xpc_client.rs` の `XpcClient::stop` で `XpcConn::send` を `send_with_timeout` に変更し、XPC 送信タイムアウトを設計方針の計算式 `max(DEFAULT_TIMEOUT, min(グレース + 30 秒, LONG_TIMEOUT))` で求める。計算は純関数 `xpc_timeout_for_grace` に切り出し、u64 で飽和計算する
+- `src/xpc/conn.rs` の `DEFAULT_TIMEOUT` を `pub(crate)` 化し、`src/xpc/mod.rs` の re-export に追加する
+- `XpcClient::stop` の rustdoc に、XPC 送信タイムアウトが「グレース + 30 秒 (下限 60 秒・上限 24 時間)」になる旨と、24 時間後に `XpcTimeout` が返り得る旨、ランタイム drop 時のハング注意を追記する
+- 公開 API 側 (`ContainerAsync::stop_with_timeout` / `SyncContainer::stop_with_timeout`) の rustdoc に、macOS では負値またはグレース + 30 秒が 24 時間を超える指定で最大 24 時間ブロックされた後に XPC タイムアウトのエラーが返り得る旨を追記する (負値は macOS では `i32::MAX` 秒、Linux では 30 秒に変換されることも明記)。`docs/TESTCONTAINERS.md` の機能対照表にも上限 24 時間の注記を追記する
+- 単体テスト: `xpc_timeout_for_grace` の境界値テスト 4 本を追加する (60 秒下限維持・グレース + 30 秒・24 時間飽和・u64 オーバーフローなし)
+- 統合テスト: `tests/container_macos.rs` に `xpc_alpine_stop_with_timeout_grace_ignores_sigterm` を追加する (`trap '' TERM` で SIGTERM を無視する init にグレース 61 秒を指定し、誤エラーなしで停止し、経過時間 61 秒以上・`is_running()` false を検証する)。実機で 64 秒で通過することを確認済み
 - `CHANGES.md` に `[FIX]` エントリを追加する

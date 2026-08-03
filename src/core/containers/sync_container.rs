@@ -123,6 +123,14 @@ impl<I: Image> Container<I> {
 
     /// タイムアウトを指定してコンテナを停止する。
     ///
+    /// `timeout_seconds` が `None` の場合はデフォルト (SIGTERM + 30 秒)、
+    /// `Some(0)` の場合は即時 SIGKILL。負値は macOS では無限待ちに近いタイムアウト
+    /// (`i32::MAX` 秒) で SIGTERM、Linux では 30 秒に変換される。
+    ///
+    /// macOS では、負値 (またはグレース + 30 秒が 24 時間を超える正の値) を指定すると、
+    /// SIGTERM を無視するコンテナでこの呼び出しが最大 24 時間ブロックされた後、
+    /// XPC タイムアウトのエラーが返り得る。Linux では指定グレース時間のまま待つ。
+    ///
     /// # Feature
     ///
     /// この API は `blocking` feature が必要です。

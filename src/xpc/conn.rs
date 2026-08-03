@@ -53,7 +53,7 @@ pub(crate) const SERVICE_NAME: &CStr = c"com.apple.container.apiserver";
 pub(crate) const IMAGE_SERVICE: &CStr = c"com.apple.container.core.container-core-images";
 
 /// 通常の XPC 呼び出しのタイムアウト。
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// `containerWait` など、プロセス終了を待つ呼び出しのタイムアウト。
 pub(crate) const LONG_TIMEOUT: Duration = Duration::from_secs(86400);
 
