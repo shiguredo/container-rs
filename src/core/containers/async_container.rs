@@ -195,12 +195,14 @@ impl<I: Image> ContainerAsync<I> {
                 spawn_log_consumer_task(
                     out_fd,
                     log_stop.clone(),
+                    wait_state.clone(),
                     consumers.clone(),
                     crate::core::logs::LogFrame::StdOut,
                 );
                 spawn_log_consumer_task(
                     err_fd,
                     log_stop.clone(),
+                    wait_state.clone(),
                     consumers.clone(),
                     crate::core::logs::LogFrame::StdErr,
                 );
@@ -596,12 +598,14 @@ impl<I: Image> ContainerAsync<I> {
             spawn_log_consumer_task(
                 Some(new_out),
                 new_stop.clone(),
+                self.wait_state.clone(),
                 consumers.clone(),
                 crate::core::logs::LogFrame::StdOut,
             );
             spawn_log_consumer_task(
                 Some(new_err),
                 new_stop,
+                self.wait_state.clone(),
                 consumers.clone(),
                 crate::core::logs::LogFrame::StdErr,
             );
@@ -1376,10 +1380,21 @@ fn fd_reader_or_empty_sync(
 /// EOF は「ログの終端」ではなく「現時点の末尾」なので、停止指示 (`stop`) が来るまで
 /// ポーリングで追記を読み続ける。以前は最初の EOF でタスクが終了してしまい、
 /// それ以降のログが consumer に届かなかった。
+///
+/// コンテナが自然終了した場合も `stop` は立たないため、EOF 時に「stop フラグ OR
+/// (exit code 記録を初めて観測してから `DRAIN_GRACE` 経過)」で終了判定する。
+/// 終了直前に flush されるログを取りこぼさないための猶予である。
+/// `stop` フラグは EOF 観測時に猶予を待たず即 break する (ログ配信中は EOF に達するまで
+/// 停止しない。ドレインとして意図的)。macOS ではコンテナ終了後にログ追記が止まるため、
+/// いずれ EOF に達して判定される。
+///
+/// exit code は `wait_blocking` の成功時のみ記録されるため、XPC 障害で記録が無い場合は
+/// ポーリングが継続し得る (`FollowFdReader` と同じ制約。stop / rm / Drop 経路で解消される)。
 #[cfg(target_os = "macos")]
 fn spawn_log_consumer_task(
     fd: Option<RawFd>,
     stop: Arc<AtomicBool>,
+    wait_state: Arc<std::sync::Mutex<WaitState>>,
     consumers: Arc<Vec<Box<dyn crate::core::logs::consumer::LogConsumer + 'static>>>,
     to_frame: fn(Vec<u8>) -> crate::core::logs::LogFrame,
 ) {
@@ -1390,12 +1405,35 @@ fn spawn_log_consumer_task(
     tokio::spawn(async move {
         let mut reader = tokio::io::BufReader::new(reader);
         let mut buf = Vec::new();
+        // exit code を初めて観測した時刻。未観測の間は None。
+        // 一度観測したら保持し続ける (リセットしない)。exit code が Some → None に戻るのは
+        // 再 start 時の世代バンプのみで、その時点で旧コンテナは停止済みであり、旧タスクが
+        // 読む dup FD は死んだファイルを指す。リセットすると refresh_log_streams 失敗時に
+        // stop フラグが立たないまま (logs() 成功後にしか立たないため) 新コンテナの exit まで
+        // タスクが残り続けるため、アンカーは保持して必ず「観測 + 猶予」で終了させる。
+        let mut exit_observed_at: Option<std::time::Instant> = None;
         loop {
             buf.clear();
             match reader.read_until(b'\n', &mut buf).await {
                 Ok(0) => {
                     if stop.load(Ordering::Relaxed) {
                         break;
+                    }
+                    // コンテナ自然終了 (exit code 記録) を観測したら、猶予期間の経過で
+                    // タスクと dup FD を解放する。猶予のアンカーは初回観測時点で固定し、
+                    // ポーリングが長引いても猶予が伸びないようにする。
+                    let exited = wait_state
+                        .lock()
+                        .expect(
+                            "wait state mutex must not be poisoned while checking container exit",
+                        )
+                        .exit_code()
+                        .is_some();
+                    if exited {
+                        let anchor = exit_observed_at.get_or_insert_with(std::time::Instant::now);
+                        if anchor.elapsed() >= crate::core::wait::log_strategy::DRAIN_GRACE {
+                            break;
+                        }
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
