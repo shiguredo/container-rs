@@ -1,7 +1,7 @@
 # バグ: macOS start() の再起動フローがログ再取得失敗時に巻き戻らない
 
 - Created: 2026-08-02
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-03
 - Branch: feature/fix-macos-start-log-refresh-rollback
 - Polished: 2026-08-02
 
@@ -30,10 +30,9 @@ macOS で停止済みコンテナを再起動する `ContainerAsync::start` が�
 
 ## 解決方法
 
-- macOS の `start` で `refresh_log_streams` が `Err` を返した場合に `self.stop_with_timeout(Some(0))` (SIGKILL) で巻き戻す。`stop_with_timeout` は `stop_log_delivery` を経由して現役の LogConsumer タスクも停止するため、`client.stop` 直接呼びよりも望ましい (直接呼びだと現役 consumer が死んだ FD をポーリングし続ける)。巻き戻し失敗は `failed to stop container after log refresh failure: {stop_err}` の warn ログに記録し、元の `Err` を返す
-- 巻き戻しの配置は `start` 側とする。macOS の `refresh_log_streams` は「ログ FD の差し替え」という単一責務 (Linux の「コンテナ再起動 + ログセッション起動」とは構造が異なる) のため、失敗時の巻き戻しは呼び出し側の `start` が担う
-- 巻き戻しで停止済みになったコンテナは、次回 `start()` で再 bootstrap され、`refresh_log_streams` 成功時に `log_stop` / FD / consumer が新しく差し替えられて回復する。巻き戻し後も旧 FD は `log_source` に残るが、次回 refresh 成功時または `rm` / Drop で close される
-- 初回作成フロー (create / bootstrap / start_process の失敗時) は `rollback_remove` (削除) だが、再 start フローで削除すると次回 `start` が `ContainerNotFound` で失敗するため、停止 (SIGKILL) で巻き戻す
-- 検証: ログ再取得失敗 (XPC `logs` の失敗) は自動テストでの再現が困難 (モック禁止の制約下では誘発手段が限られる。FD 枯渇 (setrlimit 等) での誘発を検討する場合、巻き戻しの `stop_with_timeout` も XPC 接続 (ソケット FD) を要するため、誘発条件の絞り込み (reply の FD 受信 / dup のみを枯渇させる等) が必要)。巻き戻し経路はコードレビューと実機・手動確認で検証する (Linux の巻き戻しにもテストが無い)
-- `async_container.rs` を変更するため、同一ファイルを変更する 0061 / 0062 とマージ順に注意する (0061 は `stop_with_timeout` の rustdoc 更新、0062 は `spawn_log_consumer_task` のシグネチャ変更を伴う。本 issue はテストを追加しないため `tests/container_macos.rs` は変更しない)
+- `src/core/containers/async_container.rs` の `ContainerAsync::start` (macOS 分岐) で、`bootstrap_container` + `start_process` + `reset_wait_state_and_respawn` の後に呼ぶ `refresh_log_streams` が `Err` を返した場合、`self.stop_with_timeout(Some(0))` (SIGKILL) で巻き戻してから元のエラーを返すように変更する
+- `stop_with_timeout` は `stop_log_delivery` を経由して現役の LogConsumer タスクも停止するため、`client.stop` 直接呼びより望ましい (Linux 側は `refresh_log_streams` 内部で `client.stop` を呼ぶが、macOS は「FD 差し替え」という単一責務のため呼び出し側の `start` が巻き戻しを担う)
+- 巻き戻し失敗時は Linux と同じ文言 (`failed to stop container after log refresh failure: {stop_err}`) で warn 記録し、元の `Err` を返す。巻き戻し失敗時は実行中コンテナ + 死んだログ FD が残るため、先に `stop()` を呼んでから `start()` すると回復する旨をコメントで明記する
+- 巻き戻しは Keep ゲート無し (Linux と同様)
+- 自動テストは追加しない (XPC `logs` の失敗誘発はモック禁止の制約下で困難。issue の解決方法に記載のとおり)。既存の macOS 再起動テスト 3 本 (`stop_start_restarts_and_resets_wait_state` / `generic_image_stop_start_is_running` / `log_consumer_receives_lines_after_restart`) と全 macOS 統合テスト 86 本が実機で通過することを確認済み
 - `CHANGES.md` に `[FIX]` エントリを追加する
