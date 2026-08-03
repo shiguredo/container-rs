@@ -1582,6 +1582,48 @@ mod test_container_xpc {
         container.rm().await.ok();
     }
 
+    /// SIGTERM を無視する init に対し、グレース 60 秒超の停止が誤エラーにならないこと。
+    #[tokio::test]
+    async fn xpc_alpine_stop_with_timeout_grace_ignores_sigterm() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        // このテストは SIGTERM 経路のシナリオ検証であり、helpers の後始末規約
+        // (停止は stop_with_timeout(Some(0))) の例外。SIGTERM → グレース経過 → SIGKILL の
+        // 一連の停止を検証するため、停止にグレース値 (61 秒) の時間がかかる。
+        // グレース経過 + SIGKILL による停止完了 (61 秒 + α) が XPC 送信タイムアウト
+        // (61 + 30 = 91 秒) 以内に収まることを確認するのが目的。
+        let container = GenericImage::new("alpine", "latest")
+            .with_cmd(["sh", "-c", "trap '' TERM; exec tail -f /dev/null"])
+            .start()
+            .await
+            .expect("SIGTERM 無視の alpine コンテナの起動に失敗した");
+
+        let started = std::time::Instant::now();
+        container
+            .stop_with_timeout(Some(61))
+            .await
+            .expect("グレース 61 秒の停止がエラーにならないこと");
+        let elapsed = started.elapsed();
+
+        // グレース 61 秒の経過を待ってから SIGKILL で止まること。
+        // trap '' が効かず SIGTERM で即死する誤実装を検出するため、経過時間も検証する。
+        assert!(
+            elapsed.as_secs() >= 61,
+            "グレース 61 秒経過後に SIGKILL で停止すること (elapsed={elapsed:?})"
+        );
+        assert!(
+            !container
+                .is_running()
+                .await
+                .expect("is_running の取得に失敗した"),
+            "停止後にコンテナが実行中でないこと"
+        );
+
+        container.rm().await.expect("コンテナの削除に失敗した");
+    }
+
     #[tokio::test]
     async fn xpc_alpine_stop_with_timeout_immediate() {
         if super::helpers::skip_if_ci() {

@@ -6,5 +6,6 @@ pub mod conn;
 
 pub(crate) use conn::member_opt_string;
 pub(crate) use conn::{
-    Filters, IMAGE_SERVICE, KeyValue, LONG_TIMEOUT, SERVICE_NAME, XpcConn, id_key, j, k, s,
+    DEFAULT_TIMEOUT, Filters, IMAGE_SERVICE, KeyValue, LONG_TIMEOUT, SERVICE_NAME, XpcConn, id_key,
+    j, k, s,
 };

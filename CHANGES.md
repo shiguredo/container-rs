@@ -85,6 +85,8 @@
   - @voluntas
 - [FIX] macOS の `Mount::volume_mount` が Apple container の Codable 形式に合わず必ず起動に失敗するのを修正する (cache / sync を単一キーオブジェクト形式にし、ボリューム実体パスと format を XPC 経由で解決して渡す)
   - @voluntas
+- [FIX] macOS の `stop_with_timeout` がグレース 60 秒超の指定で XPC タイムアウトの誤エラーを返すのを修正する (XPC 呼び出しタイムアウトをグレース + 30 秒に拡張する。下限 60 秒・上限 24 時間)
+  - @voluntas
 
 ### misc
 

@@ -25,6 +25,17 @@ use crate::xpc::{self, IMAGE_SERVICE, KeyValue, SERVICE_NAME, XpcConn, id_key, j
 #[derive(Clone)]
 pub(crate) struct XpcClient;
 
+/// 停止処理の XPC 送信タイムアウトを求める。
+///
+/// apiserver は停止処理の完了 (グレース経過 + SIGKILL) を待って reply を返すため、
+/// グレース秒 + 余裕 30 秒を XPC 送信タイムアウトにする。`DEFAULT_TIMEOUT` (60 秒) を
+/// 下回らず、`LONG_TIMEOUT` (24 時間) で飽和する (u64 の飽和計算)。
+/// 負値のグレース (`i32::MAX` 秒) は 24 時間で飽和し、`XpcTimeout` が返り得る。
+fn xpc_timeout_for_grace(grace_seconds: u64) -> Duration {
+    crate::xpc::DEFAULT_TIMEOUT
+        .max(Duration::from_secs(grace_seconds.saturating_add(30)).min(crate::xpc::LONG_TIMEOUT))
+}
+
 /// ホスト側パスを絶対パス化する。
 ///
 /// copy_in / copy_out のホストパスは XPC 経由で apiserver に渡るが、apiserver は
@@ -90,6 +101,12 @@ impl XpcClient {
     /// - `Some(t)` (`t < 0`) → 無限待ちに近い長いタイムアウトで SIGTERM。
     ///   Apple container は負のタイムアウトをサポートしないため、`i32::MAX` 秒で代用。
     /// - `Some(t)` (`t > 0`) → SIGTERM、`t` 秒タイムアウト。
+    ///
+    /// XPC 呼び出し自体のタイムアウトは「グレース + 余裕 30 秒」で、`DEFAULT_TIMEOUT`
+    /// (60 秒) を下回らず `LONG_TIMEOUT` (24 時間) で飽和する。グレース + 30 秒が
+    /// `LONG_TIMEOUT` を超える指定は 24 時間後に `XpcTimeout` が返り得る
+    /// (実用上の上限として許容)。呼び出し中にランタイムを drop すると、tokio が
+    /// 最大 24 時間の XPC 待ちを join しようとしてハングし得るため注意する。
     pub(crate) async fn stop(&self, id: &str, timeout_seconds: Option<i32>) -> Result<()> {
         let (signal, timeout) = match timeout_seconds {
             Some(0) => ("SIGKILL".to_string(), 0),
@@ -97,16 +114,21 @@ impl XpcClient {
             Some(t) => ("SIGTERM".to_string(), t as u64),
             None => ("SIGTERM".to_string(), 30),
         };
+        // XPC 送信タイムアウト: グレース + 余裕 30 秒 (u64 で飽和計算)。
+        // apiserver は停止処理の完了を待って reply を返すため、グレースが
+        // DEFAULT_TIMEOUT (60 秒) を超える指定では 60 秒では足りず誤タイムアウトになる。
+        let xpc_timeout = xpc_timeout_for_grace(timeout);
         let id = id.to_string();
         let stop_options = j(&StopOptions { signal, timeout });
         tokio::task::spawn_blocking(move || {
             let conn = XpcConn::connect(SERVICE_NAME)?;
-            let result = conn.send(
+            let result = conn.send_with_timeout(
                 "containerStop",
                 &[
                     (id_key(), s(&id)),
                     (k("stopOptions"), KeyValue::Data(stop_options)),
                 ],
+                xpc_timeout,
             );
             match result {
                 Ok(_) => Ok(()),
@@ -1079,6 +1101,59 @@ mod tests {
             normalized.ends_with("nginx:1.25"),
             "元の参照が末尾に残ること: {normalized}"
         );
+    }
+
+    #[test]
+    fn xpc_timeout_for_grace_keeps_default_for_short_grace() {
+        // グレースが短い (30 秒以下) 場合は DEFAULT_TIMEOUT (60 秒) のままになること。
+        assert_eq!(
+            xpc_timeout_for_grace(0),
+            crate::xpc::DEFAULT_TIMEOUT,
+            "グレース 0 秒は 60 秒のまま"
+        );
+        assert_eq!(
+            xpc_timeout_for_grace(30),
+            crate::xpc::DEFAULT_TIMEOUT,
+            "グレース 30 秒は 60 秒のまま (30 + 30 = 60)"
+        );
+    }
+
+    #[test]
+    fn xpc_timeout_for_grace_extends_over_default() {
+        // グレースが 60 秒を超える場合は「グレース + 30 秒」になること。
+        assert_eq!(xpc_timeout_for_grace(61), Duration::from_secs(61 + 30));
+        assert_eq!(xpc_timeout_for_grace(120), Duration::from_secs(120 + 30));
+    }
+
+    #[test]
+    fn xpc_timeout_for_grace_saturates_at_long_timeout() {
+        // グレース + 30 秒が LONG_TIMEOUT を超える場合は 24 時間で飽和すること。
+        // 負値のグレース相当 (i32::MAX) も同じ。
+        assert_eq!(
+            xpc_timeout_for_grace(i32::MAX as u64),
+            crate::xpc::LONG_TIMEOUT
+        );
+        assert_eq!(
+            xpc_timeout_for_grace(crate::xpc::LONG_TIMEOUT.as_secs() - 20),
+            crate::xpc::LONG_TIMEOUT,
+            "グレース + 30 秒が 24 時間を超える場合は飽和"
+        );
+        assert_eq!(
+            xpc_timeout_for_grace(crate::xpc::LONG_TIMEOUT.as_secs() - 30),
+            crate::xpc::LONG_TIMEOUT,
+            "ちょうど 24 時間になる場合は飽和値"
+        );
+        assert_eq!(
+            xpc_timeout_for_grace(crate::xpc::LONG_TIMEOUT.as_secs() - 31),
+            Duration::from_secs(crate::xpc::LONG_TIMEOUT.as_secs() - 1),
+            "グレース + 30 秒が 24 時間未満の場合は飽和しない"
+        );
+    }
+
+    #[test]
+    fn xpc_timeout_for_grace_never_overflows() {
+        // u64::MAX を渡してもオーバーフローせず 24 時間で飽和すること。
+        assert_eq!(xpc_timeout_for_grace(u64::MAX), crate::xpc::LONG_TIMEOUT);
     }
 
     #[test]
