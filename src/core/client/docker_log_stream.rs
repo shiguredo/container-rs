@@ -93,27 +93,54 @@ impl LogStream {
 ///
 /// 各リーダーは「自分が次に読むべき絶対オフセット」を保持し、バッファ先頭より前を
 /// 読もうとした場合は先頭 drop が発生したと判定してスキップする。
+///
+/// `strict` モード (1-shot 経路) では drop-oldest せず、上限超過を検知した時点で
+/// エラーを返す (切り詰めるとログ取得の「決定的に全ログを返す」契約が壊れるため)。
 pub(crate) struct SharedLogBuffer {
     buf: VecDeque<u8>,
     /// バッファ先頭の絶対オフセット。先頭 drop のたびに進む。
     head: u64,
     /// ストリームあたりの上限バイト数。
     limit: usize,
+    /// true なら上限超過時にエラーを返す (1-shot 経路専用)。
+    strict: bool,
 }
 
 impl SharedLogBuffer {
+    /// `strict = false` のバッファを作る (follow 経路・drop-oldest)。
     fn new(limit: usize) -> Self {
+        Self::with_mode(limit, false)
+    }
+
+    /// 上限超過時に drop-oldest せずエラーを返す strict モードで作る (1-shot 経路)。
+    fn new_strict(limit: usize) -> Self {
+        Self::with_mode(limit, true)
+    }
+
+    fn with_mode(limit: usize, strict: bool) -> Self {
         Self {
             buf: VecDeque::new(),
             head: 0,
             limit,
+            strict,
         }
     }
 
-    /// バイト列を末尾に追加し、上限を超えた分は先頭から捨てる (drop-oldest)。
-    fn append(&mut self, data: &[u8]) {
+    /// バイト列を末尾に追加する。
+    ///
+    /// `strict` モードで上限を超えた場合は `false` を返し、追記は行わない
+    /// (呼び出し側が即時エラーにできるよう、検知した時点で止める)。
+    fn append(&mut self, data: &[u8]) -> bool {
         if data.is_empty() {
-            return;
+            return true;
+        }
+        if self.strict {
+            // 単発入力が上限超過なら false (このデータは捨てる。呼び出し側がエラーにする)。
+            if data.len() > self.limit || self.buf.len() + data.len() > self.limit {
+                return false;
+            }
+            self.buf.extend(data.iter().copied());
+            return true;
         }
         // 単発入力が上限超過なら末尾 limit だけ残す。
         let keep = if data.len() > self.limit {
@@ -126,6 +153,7 @@ impl SharedLogBuffer {
             self.buf.pop_front();
             self.head += 1;
         }
+        true
     }
 
     /// `reader_offset` から読めるだけ `buf` にコピーする。
@@ -188,13 +216,15 @@ impl FrameDemuxer {
 
     /// 到着バイトを demux し、stdout / stderr バッファへ追記する。
     ///
-    /// 返り値は `(stdout へ追記したか, stderr へ追記したか)`。通知の要否判定に使う。
+    /// 返り値は `Result<(stdout へ追記したか, stderr へ追記したか)>`。通知の要否判定に使う。
+    /// strict モードのバッファ (1-shot 経路) が上限超過を検知した場合はエラーを返す
+    /// (呼び出し側が即時アボートする)。
     fn feed(
         &mut self,
         mut data: &[u8],
         stdout: &mut SharedLogBuffer,
         stderr: &mut SharedLogBuffer,
-    ) -> (bool, bool) {
+    ) -> std::io::Result<(bool, bool)> {
         let mut wrote_out = false;
         let mut wrote_err = false;
         while !data.is_empty() {
@@ -223,11 +253,21 @@ impl FrameDemuxer {
                 match self.stream_type {
                     // 1 = stdout, 2 = stderr。0 (stdin) と未知の種別は捨てる。
                     1 => {
-                        stdout.append(chunk);
+                        if !stdout.append(chunk) {
+                            return Err(io_other(format!(
+                                "stdout output exceeds {} bytes limit",
+                                stdout.limit
+                            )));
+                        }
                         wrote_out |= !chunk.is_empty();
                     }
                     2 => {
-                        stderr.append(chunk);
+                        if !stderr.append(chunk) {
+                            return Err(io_other(format!(
+                                "stderr output exceeds {} bytes limit",
+                                stderr.limit
+                            )));
+                        }
                         wrote_err |= !chunk.is_empty();
                     }
                     _ => {}
@@ -239,7 +279,7 @@ impl FrameDemuxer {
                 }
             }
         }
-        (wrote_out, wrote_err)
+        Ok((wrote_out, wrote_err))
     }
 }
 
@@ -588,7 +628,9 @@ fn drain_decoded(
                     .buffer
                     .lock()
                     .expect("stderr buffer mutex must not be poisoned while demuxing logs");
-                demuxer.feed(data, &mut stdout, &mut stderr)
+                demuxer
+                    .feed(data, &mut stdout, &mut stderr)
+                    .map_err(crate::Error::other)?
             };
             decoder
                 .consume_body(len)
@@ -647,6 +689,19 @@ fn demux_loop(
 /// 戻り値は `(stdout, stderr)`。`stdout_to_vec` / `stderr_to_vec` 系が呼び出しごとに新規
 /// セッションを張って決定的に全ログを取得するための経路。
 fn fetch_logs_oneshot_blocking(socket_path: &str, id: &str) -> std::io::Result<(Vec<u8>, Vec<u8>)> {
+    fetch_logs_oneshot_blocking_with_limit(
+        socket_path,
+        id,
+        crate::core::client::docker_client::DOCKER_RESPONSE_BODY_LIMIT,
+    )
+}
+
+/// 1-shot 取得の上限付き版。テストから小さな上限を渡して境界を検証するための内部関数。
+fn fetch_logs_oneshot_blocking_with_limit(
+    socket_path: &str,
+    id: &str,
+    limit: usize,
+) -> std::io::Result<(Vec<u8>, Vec<u8>)> {
     let mut stream = UnixStream::connect(socket_path)?;
     // デーモン無応答時の無限ブロックを抑止するためタイムアウトを設定する。
     stream.set_read_timeout(LOG_SESSION_TIMEOUT)?;
@@ -663,8 +718,10 @@ fn fetch_logs_oneshot_blocking(socket_path: &str, id: &str) -> std::io::Result<(
     let mut decoder = log_stream_decoder();
     decoder.set_request_method("GET");
     let mut demuxer = FrameDemuxer::new();
-    let mut stdout = SharedLogBuffer::new(usize::MAX);
-    let mut stderr = SharedLogBuffer::new(usize::MAX);
+    // 1-shot 蓄積はストリームあたり上限・超過時エラー (exec 出力と同じ方針)。
+    // 切り詰めると「決定的に全ログを取得する」契約が壊れるため strict モードにする。
+    let mut stdout = SharedLogBuffer::new_strict(limit);
+    let mut stderr = SharedLogBuffer::new_strict(limit);
     let mut head_done = false;
 
     loop {
@@ -744,6 +801,7 @@ fn fetch_logs_oneshot_blocking(socket_path: &str, id: &str) -> std::io::Result<(
 ///
 /// ボディが完了 (`Complete`) したら `true` を返す。`NeedData` (追加読み込みが必要) なら
 /// `false` を返す。follow 経路の `drain_decoded` と同型だが、エラー型が `std::io::Error`。
+/// strict モードのバッファが上限超過を検知した場合は `Err` を返し、読み出しを即座に止める。
 fn drain_oneshot_body(
     decoder: &mut ResponseDecoder,
     demuxer: &mut FrameDemuxer,
@@ -756,7 +814,7 @@ fn drain_oneshot_body(
             let data = decoder
                 .peek_body()
                 .expect("peek_body must return data right after measuring length");
-            demuxer.feed(data, stdout, stderr);
+            demuxer.feed(data, stdout, stderr)?;
             decoder
                 .consume_body(len)
                 .map_err(|e| io_other(e.to_string()))?;
@@ -1162,7 +1220,9 @@ mod tests {
         let mut input = frame(1, b"out1");
         input.extend(frame(2, b"err1"));
         input.extend(frame(1, b"out2"));
-        demuxer.feed(&input, &mut stdout, &mut stderr);
+        demuxer
+            .feed(&input, &mut stdout, &mut stderr)
+            .expect("非 strict バッファでは feed は失敗しないこと");
         assert_eq!(drain_buffer(&stdout), b"out1out2");
         assert_eq!(drain_buffer(&stderr), b"err1");
     }
@@ -1178,10 +1238,14 @@ mod tests {
         let split_points = [3usize, 8, 12];
         let mut prev = 0;
         for &sp in &split_points {
-            demuxer.feed(&input[prev..sp], &mut stdout, &mut stderr);
+            demuxer
+                .feed(&input[prev..sp], &mut stdout, &mut stderr)
+                .expect("非 strict バッファでは feed は失敗しないこと");
             prev = sp;
         }
-        demuxer.feed(&input[prev..], &mut stdout, &mut stderr);
+        demuxer
+            .feed(&input[prev..], &mut stdout, &mut stderr)
+            .expect("非 strict バッファでは feed は失敗しないこと");
         assert_eq!(drain_buffer(&stdout), b"hello world");
     }
 
@@ -1194,7 +1258,9 @@ mod tests {
         let mut input = frame(0, b"stdin");
         input.extend(frame(1, b""));
         input.extend(frame(2, b"e"));
-        demuxer.feed(&input, &mut stdout, &mut stderr);
+        demuxer
+            .feed(&input, &mut stdout, &mut stderr)
+            .expect("非 strict バッファでは feed は失敗しないこと");
         assert_eq!(drain_buffer(&stdout), b"");
         assert_eq!(drain_buffer(&stderr), b"e");
     }
@@ -1208,7 +1274,9 @@ mod tests {
         let mut input = frame(3, b"x");
         input.extend(frame(255, b"y"));
         input.extend(frame(1, b"ok"));
-        demuxer.feed(&input, &mut stdout, &mut stderr);
+        demuxer
+            .feed(&input, &mut stdout, &mut stderr)
+            .expect("非 strict バッファでは feed は失敗しないこと");
         assert_eq!(drain_buffer(&stdout), b"ok");
         assert_eq!(drain_buffer(&stderr), b"");
     }
@@ -1224,7 +1292,9 @@ mod tests {
         let mut input = vec![1u8, 0, 0, 0];
         input.extend_from_slice(&u32::MAX.to_be_bytes());
         input.extend_from_slice(b"abc");
-        demuxer.feed(&input, &mut stdout, &mut stderr);
+        demuxer
+            .feed(&input, &mut stdout, &mut stderr)
+            .expect("非 strict バッファでは feed は失敗しないこと");
         // 実データ 3 バイトのみがバッファに書かれ、状態機械は payload 待ちに留まる。
         assert_eq!(drain_buffer(&stdout), b"abc");
         assert!(demuxer.in_payload, "巨大 payload 待ちの状態を維持すること");
@@ -1242,6 +1312,71 @@ mod tests {
         let (n, _, _) = buffer.read_at(0, &mut out);
         assert_eq!(n, 8);
         assert_eq!(&out[..n], b"efghijkl");
+    }
+
+    #[test]
+    fn strict_buffer_accepts_exactly_at_limit() {
+        // strict モードではちょうど上限まで成功すること (境界: > であり >= ではない)。
+        let mut buffer = SharedLogBuffer::new_strict(8);
+        assert!(
+            buffer.append(b"abcdefgh"),
+            "ちょうど 8 バイトは成功すること"
+        );
+        assert_eq!(drain_buffer(&buffer), b"abcdefgh");
+    }
+
+    #[test]
+    fn strict_buffer_rejects_over_limit() {
+        // strict モードでは上限超過を検知して false を返し、追記しないこと。
+        let mut buffer = SharedLogBuffer::new_strict(8);
+        assert!(buffer.append(b"abcdefgh"), "先頭 8 バイトは成功すること");
+        assert!(!buffer.append(b"i"), "9 バイト目で上限超過を検知すること");
+        // 超過分は追記されない (drop-oldest もしない)。
+        assert_eq!(drain_buffer(&buffer), b"abcdefgh");
+    }
+
+    #[test]
+    fn strict_buffer_rejects_single_chunk_over_limit() {
+        // 単発入力が上限超過の場合は false を返し、末尾保持もしないこと。
+        let mut buffer = SharedLogBuffer::new_strict(8);
+        assert!(!buffer.append(b"abcdefghi"), "9 バイト投入は検知されること");
+        assert_eq!(drain_buffer(&buffer), b"", "超過分は一切追記されないこと");
+    }
+
+    #[test]
+    fn strict_demux_reports_overflow_error() {
+        // 1-shot 経路 (strict) の demux が上限超過をエラーとして報告すること。
+        // フレーム境界をまたいで累積超過した場合も検知できること。
+        let mut stdout = SharedLogBuffer::new_strict(8);
+        let mut stderr = SharedLogBuffer::new_strict(8);
+        let mut demuxer = FrameDemuxer::new();
+        // 8 バイトちょうどは成功。
+        let ok = demuxer.feed(&frame(1, b"abcdefgh"), &mut stdout, &mut stderr);
+        assert!(ok.is_ok(), "ちょうど上限までは成功すること: {ok:?}");
+        // 1 バイト超過でエラー。文言はストリーム識別子付きで完全一致。
+        let err = demuxer.feed(&frame(1, b"i"), &mut stdout, &mut stderr);
+        assert!(err.is_err(), "上限超過はエラーになること");
+        assert_eq!(
+            err.expect_err("エラーであること").to_string(),
+            "stdout output exceeds 8 bytes limit"
+        );
+    }
+
+    #[test]
+    fn strict_demux_reports_stderr_overflow_error() {
+        // stderr 側の上限超過も stdout と同じくエラーとして報告されること。
+        let mut stdout = SharedLogBuffer::new_strict(8);
+        let mut stderr = SharedLogBuffer::new_strict(8);
+        let mut demuxer = FrameDemuxer::new();
+        demuxer
+            .feed(&frame(2, b"abcdefgh"), &mut stdout, &mut stderr)
+            .expect("ちょうど上限までは成功すること");
+        let err = demuxer.feed(&frame(2, b"i"), &mut stdout, &mut stderr);
+        assert!(err.is_err(), "stderr の上限超過はエラーになること");
+        assert_eq!(
+            err.expect_err("エラーであること").to_string(),
+            "stderr output exceeds 8 bytes limit"
+        );
     }
 
     #[test]
@@ -1416,6 +1551,74 @@ mod tests {
         let (out, err) = result.expect("異常 EOF でもエラーにならず戻ること");
         assert_eq!(out, b"abc", "受信済みの stdout フレームを demux すること");
         assert_eq!(err, b"");
+    }
+
+    #[test]
+    fn oneshot_aborts_early_when_over_limit() {
+        // 上限超過を検知した時点で読み出しを止めてエラーを返すこと (ハングしないこと)。
+        // サーバが上限を超えるフレームを送り続けても、fetch 側は即座に Err で戻り、
+        // サーバ側の書き込みは EPIPE で終わる (クライアントが読みを止めた証拠)。
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        // 一時ソケットパス (プロセス ID で一意化)。
+        let path = std::env::temp_dir().join(format!(
+            "container-rs-log-oneshot-limit-test-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("UnixListener の bind に失敗した");
+
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("accept に失敗した");
+            // リクエストを読み捨てる (接続確立の同期代わり)。
+            let mut req = [0u8; 1024];
+            let _ = conn.read(&mut req);
+            let head = "HTTP/1.1 200 OK\r\n\
+                        Content-Type: application/vnd.docker.multiplexed-stream\r\n\
+                        \r\n";
+            conn.write_all(head.as_bytes())
+                .expect("ヘッダ書き込みに失敗した");
+            // 上限 8 バイトを超える stdout フレーム (payload 9 バイト) を送り続ける。
+            // クライアントが上限超過で読みを止めて接続を閉じるまでループする
+            // (EPIPE はクライアント側の早期アボートの証拠なので無視する)。
+            let mut frame = vec![1u8, 0, 0, 0];
+            frame.extend_from_slice(&9u32.to_be_bytes());
+            frame.extend_from_slice(b"abcdefghi");
+            loop {
+                match conn.write_all(&frame) {
+                    Ok(()) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let socket_path = path
+            .to_str()
+            .expect("ソケットパスが UTF-8 であること")
+            .to_string();
+        // 回帰時にハングせずクリーンに失敗するよう、タイムアウト付きで結果を受ける。
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(fetch_logs_oneshot_blocking_with_limit(
+                &socket_path,
+                "test-id",
+                8,
+            ));
+        });
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("fetch_logs_oneshot_blocking がタイムアウトした (ビジーループの疑い)");
+        server.join().expect("サーバスレッドが panic した");
+        let _ = std::fs::remove_file(&path);
+
+        // 上限超過を検知してエラーを返すこと。
+        let err = result.expect_err("上限超過はエラーになること");
+        assert_eq!(
+            err.to_string(),
+            "stdout output exceeds 8 bytes limit",
+            "エラー文言がストリーム識別子と上限を明示すること"
+        );
     }
 
     #[test]

@@ -60,7 +60,8 @@ impl ResponseAccumulator {
         // 超過時の文言は、exec の実経路である close-delimited では `drain_body` 側の判定が
         // `consume_body` より先に走るため `output exceeds ... bytes limit` で一貫する。
         // Content-Length ヘッダで宣言された上限超過はヘッダ解析時点でデコーダ側の
-        // `body too large` が先に返るため、文言はフレーミング依存になる (exec では使われない)。
+        // `body too large` が先に返るため、文言はフレーミング依存になる
+        // (copy_from / pull は Content-Length フレーミングで返るため `body too large` になり得る)。
         let mut decoder = match body_limit {
             BodyLimit::Error(max) => ResponseDecoder::with_limits(DecoderLimits {
                 max_body_size: max as u64,
