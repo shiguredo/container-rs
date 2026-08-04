@@ -20,7 +20,7 @@ macOS で `with_mapped_port(0, container_port)` (Docker ではランダム割当
 - macOS の `build_config` で `host_port == 0` の明示マッピングを `allocate_free_host_port` 経由の自動割当に流す (expose 経路と統一)。根拠: Apple container には `hostPort: 0` のランダム割当が無いため事前割当が必要。本家 testcontainers-rs は `host_port` をそのまま送り Docker Engine のランダム割当に任せる (Docker の慣用 `-p 0:port` 相当)。Linux 側 (`src/runners/async_runner.rs`) も 0 をそのまま Docker Engine に送ってランダム割当に任せている (0036 で確定した方針。ユーザー可視の結果を OS 間で揃える)。明示エラー案は Linux との OS 間非対称を生むため不採用
 - `parse_published_ports` でホストポート 0 / コンテナポート 0 (どちらか一方でも 0) のエントリをスキップする。役割分担: ホストポート 0 のスキップは自動割当後は到達不能な防御 (デーモン応答の異常系のみ)。コンテナポート 0 のスキップは必須 (コンテナポート 0 は `Tcp(0)` として `Ports` の最小キーになり、ポート未指定フォールバックが接続を試みるため)
 - 注意: `with_mapped_port(0, 80.tcp())` と `with_exposed_port(80.tcp())` を併用した場合、重複チェック (container_port + proto ベース) により expose 側がスキップされ二重割当は起きない (mapped のみ割り当て)
-- 注意: 0091 (bug) は `with_mapped_port` の重複検出を `image_ext.rs` 側で行う予定であり、本 issue の `build_config` / `xpc_client.rs` の変更とはファイルも対象も直交している (実装順序は自由)
+- 注意: 0091 (bug) は pull 前検証 (`async_runner.rs`) を予定しており、本 issue の変更対象 (`build_config`) とは異なるが、ポート関連の変更が同居するため実装順序に注意する
 
 ## 完了条件
 
