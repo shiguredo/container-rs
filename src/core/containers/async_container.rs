@@ -876,12 +876,10 @@ impl<I: Image> ContainerAsync<I> {
             }
             #[cfg(target_os = "linux")]
             Client::Linux(c) => {
-                if c.container_state(&self.id).await?.running {
-                    Ok(None)
-                } else {
-                    // 停止済みだがまだバックグラウンド wait が完了していない。
-                    Ok(None)
-                }
+                // running の確認はコンテナ不存在 (404) の検出を兼ねる。exit code は
+                // バックグラウンド wait の観測値のみで、停止済みでも未観測なら None を返す。
+                let _ = c.container_state(&self.id).await?.running;
+                Ok(None)
             }
         }
     }
