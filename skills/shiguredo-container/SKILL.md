@@ -18,7 +18,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 ## バージョン情報
 
 - crate 名: `shiguredo_container`
-- バージョン: 2026.1.0-canary.5
+- バージョン: 2026.1.0-canary.6
 - Rust Edition: 2024
 - 最小 Rust バージョン: 1.93
 - ライセンス: Apache-2.0
@@ -67,7 +67,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `with_platform` | 対応 (`"linux/amd64"` で rosetta / pull / architecture に反映) | 対応 (pull / create の platform クエリパラメータに反映) |
 | `with_network` | 部分対応 (事前に `container network create` が必要。自動作成しない) | 対応 (事前に `docker network create` が必要。自動作成しない) |
 | `with_mount` | 対応 (Bind / Volume / Tmpfs) | 対応 (Bind は Binds、Volume / Tmpfs は Mounts に反映) |
-| `with_copy_to` | 対応 (XPC `containerCopyIn`。start 後 copy。起動前契約なし。親作成は `createParents`。ディレクトリ再帰投入可。`uid` / `gid` はコピー後 chown で反映 (非ゼロの場合のみ、ディレクトリ一括投入時は `chown -R`)) | 対応 (create → copy → start。`PUT /containers/{id}/archive?path=/`。親ディレクトリ自動作成・ディレクトリ一括投入。`mode` / `uid` / `gid` は regular file に反映) |
+| `with_copy_to` | 対応 (XPC `containerCopyIn`。start 後 copy。起動前契約なし。親作成は `createParents`。ディレクトリ再帰投入可。`uid` / `gid` はコピー後 chown で反映 (非ゼロの場合のみ、ディレクトリ一括投入時は `chown -R`)) | 対応 (create → copy → start。`PUT /containers/{id}/archive?path=/`。親ディレクトリ自動作成・ディレクトリ一括投入。`mode` / `uid` / `gid` は regular file に反映。ターゲットパスに `..` / 終端 `.` / `//` は明示エラー) |
 | `with_log_consumer` | 対応 (行単位で `LogFrame` を配信) | 対応 (demux 済み共有バッファから行単位で配信。行末 `\n` / `\r` 剥がし、終端後の非改行残余は破棄) |
 | `with_privileged` | 部分対応 (`capAdd: ["ALL"]` 相当) | 対応 |
 | `with_cap_add`, `with_cap_drop`, `with_shm_size`, `with_readonly_rootfs` | 対応 | 対応 |
@@ -93,13 +93,13 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `start()` (再起動), `stop()`, `stop_with_timeout(Option<i32>)`, `is_running()`, `rm()`, `rm_blocking()` | 対応 | 対応 |
 | `container_state()` | **shiguredo 拡張** | 対応 |
 | `exit_code()` | 対応 (バックグラウンド wait のキャッシュ優先。停止済みかつ未観測なら 5 秒タイムアウトで都度 `containerWait`) | 部分対応 (バックグラウンド wait の観測済みキャッシュのみ) |
-| `copy_file_from(path, target)` | 対応 (`Vec<u8>` / `PathBuf` を target にできる) | 対応 (`GET /containers/{id}/archive` + 自前 ustar パーサ。source は絶対パス必須・ファイル専用) |
-| `stdout(follow)`, `stderr(follow)`, `stdout_to_vec()`, `stderr_to_vec()` | 対応 (`follow=true` は追記ポーリング) | 対応 (demux 済み共有バッファ。ストリームあたり 8 MiB・drop-oldest。`follow=false` は呼び出しごとに新規 HTTP セッションで全ログ取得。セッション起動には 30 秒タイムアウト、起動成功後は解除) |
+| `copy_file_from(path, target)` | 対応 (`Vec<u8>` / `PathBuf` を target にできる) | 対応 (`GET /containers/{id}/archive` + 自前 ustar パーサ。source は絶対パス必須・ファイル専用。tar 全体 64 MiB 上限・超過時エラー。404 はパス不存在 `ContainerPathNotFound` / コンテナ不存在 `ContainerNotFound` を区別) |
+| `stdout(follow)`, `stderr(follow)`, `stdout_to_vec()`, `stderr_to_vec()` | 対応 (`follow=true` は追記ポーリング) | 対応 (demux 済み共有バッファ。ストリームあたり 8 MiB・drop-oldest。`follow=false` は呼び出しごとに新規 HTTP セッションで全ログ取得。セッション起動には 30 秒タイムアウト、起動成功後は解除。1-shot は各ストリーム 64 MiB 上限・超過時エラー) |
 | `Drop` | 対応 (削除。`keep` ゲートあり) | 対応 |
 
 `pause` / `unpause` は macOS (XPC) には route が無いためシグネチャごと存在しない。Linux (Docker) では `#[cfg(target_os = "linux")]` で対応済み。
 
-`stop_with_timeout` の意味: macOS では `Some(0)` = 即時 SIGKILL、`None` = 30 秒 SIGTERM。Linux では `Some(t>=0)` = `t` 秒、`None`・負値 = 30 秒。
+`stop_with_timeout` の意味: macOS では `Some(0)` = 即時 SIGKILL、`Some(t)` (`t < 0`) = 長時間 SIGTERM (XPC 呼び出しは最大 24 時間で飽和し `XpcTimeout` になり得る)、`None` = 30 秒 SIGTERM。Linux では `Some(t>=0)` = `t` 秒、`None`・負値 = 30 秒。
 
 注意: macOS の stderr 側ログは VM の bootlog を指す。アプリケーションの stderr は stdout 側ログに混流する。Linux は Docker Engine API の STREAM_TYPE で stdout / stderr が正しく分離される。
 
@@ -139,6 +139,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 - `LogConsumer::accept(&LogFrame)` トレイト。`Fn(&LogFrame)` クロージャにも blanket impl がある
 - `LogFrame::StdOut(Vec<u8>)` / `StdErr(Vec<u8>)`、`source()`, `bytes()`
 - `LoggingConsumer::new()` (既定は `eprintln!`)、`with_stdout_level(tracing::Level)`, `with_stderr_level`, `with_prefix`
+- macOS の配信タスクは `stop` フラグ、またはコンテナ終了 (exit code 記録) の観測から 2 秒の猶予で停止する (自然終了時もポーリングを残さない)。Linux はログセッションの終端で配信が終了する
 
 ## コード例
 
@@ -264,7 +265,7 @@ let container = GenericImage::new("nginx", "latest")
 
 `Error` (crate root): `Client(ClientError)`, `WaitContainer(WaitContainerError)`, `PortNotExposed { id, port }`, `MissingInfo(ContainerMissingInfo)`, `Exec(ExecError)`, `Io(std::io::Error)`, `Other(Box<dyn Error>)`。`pub type Result<T>` あり。
 
-- `ClientError`: shiguredo 拡張として `XpcConnect` / `Xpc(String)` / `XpcNullReply` / `ImageNotFound` / `ContainerNotFound` / `Json` / `Other` を持つ (bollard 系エラーは無い)
+- `ClientError`: shiguredo 拡張として `XpcConnect` / `Xpc(String)` / `XpcNullReply` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` を持つ (bollard 系エラーは無い)
 - `WaitContainerError`: `WaitLog`, `StateUnavailable`, `HttpWait(HttpWaitError)` (feature), `HealthCheckNotConfigured`, `Unhealthy`, `StartupTimeout`, `UnexpectedExitCode { expected, actual }`
 - `ExecError`: `ExitCodeMismatch { expected, actual }`, `WaitLog(WaitLogError)`
 - `WaitLogError`: `EndOfStream(Vec<Vec<u8>>)` (本家は `Vec<Bytes>`。意図的差分), `Io`
@@ -281,4 +282,4 @@ let container = GenericImage::new("nginx", "latest")
 
 ## 参考資料
 
-- 本家 testcontainers-rs との API 対応表 (413 API の判定一覧): `docs/TESTCONTAINERS.md`
+- 本家 testcontainers-rs との API 対応表 (参考値: 判定対象 393 API の一覧): `docs/TESTCONTAINERS.md`

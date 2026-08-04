@@ -58,8 +58,8 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 
 - `AsyncRunner::pull_image` / `AsyncRunner::start` は動く (既定の空 ready 条件なら完結する)
 - `ports` / `exec` (exit code + stdout / stderr + Env) / `stop` / `is_running` / `rm` / Drop 削除 / `start` 再起動 / `container_state` は公開 API から利用できる
-- `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る
-- `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。404 はボディの daemon メッセージで区別し、コンテナ内パス不存在は `ClientError::ContainerPathNotFound`、コンテナ不存在は `ClientError::ContainerNotFound` になる。`with_copy_to` は create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入する (親ディレクトリ自動作成・ディレクトリ一括投入対応。配下 regular file の `mode` / `uid` / `gid` は反映。中間 directory の mode は `0o755`。コピー後 mtime は epoch)。Linux: create 後・start 前に PUT /archive。macOS: start_process 後の containerCopyIn（レースあり。親作成は `createParents`）。起動前投入は Linux のみの公開契約
+- `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る (1-shot は各ストリーム 64 MiB 上限・超過時はエラーで切り詰めない。stdout / stderr は同一セッションのため片方の超過で両方の取得が失敗する)。`pull_image` の進捗ストリームも 64 MiB 上限・超過時エラー
+- `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。受信する tar 全体 (ヘッダ + データ + トレーラ) は 64 MiB 上限・超過時エラー (ファイル内容がちょうど 64 MiB でも tar オーバーヘッド分でエラーになり得る。macOS 側にこの上限は無い)。404 はボディの daemon メッセージで区別し、コンテナ内パス不存在は `ClientError::ContainerPathNotFound`、コンテナ不存在は `ClientError::ContainerNotFound` になる。`with_copy_to` は Linux では create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入し、ターゲットパスに `..` / 終端 `.` / `//` を含めると明示エラー、親ディレクトリ自動作成・ディレクトリ一括投入対応、配下 regular file の `mode` / `uid` / `gid` は反映、中間 directory の mode は `0o755`、コピー後 mtime は epoch。起動前投入は Linux のみの公開契約で、macOS は start_process 後の containerCopyIn（レースあり。親作成は `createParents`）
 - `ExitWaitStrategy` は macOS / Linux とも exit_code_hint + container_state ポーリングで対応
 - `ImageExt::with_ssh` / `with_masked_paths` / `with_readonly_paths` のみ Linux では start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
 
@@ -69,25 +69,25 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 
 | 状態 | 件数 |
 |:--|--:|
-| 対応 | 274 |
-| 部分対応 | 22 |
+| 対応 | 289 |
+| 部分対応 | 18 |
 | 未実装 (実装可能) | 0 |
-| 未実装 (XPC 制約) | 3 |
-| なし | 94 |
-| shiguredo 拡張 (本家に無い追加 API) | 21 |
-| 内部型/内部関数 (対象外) | 4 |
+| 未実装 (XPC 制約) | 4 |
+| なし | 59 |
+| shiguredo 拡張 (本家に無い追加 API) | 23 |
+| 内部型/内部関数 (対象外) | 5 |
 
-内訳合計: 414 API (判定対象。対象外 4 は含まない。feature ゲート表の「備考」列も集計外)
+内訳合計: 393 API 程度 (判定対象。対象外 5 は含まない。feature ゲート表の「備考」列も集計外)。件数は参考値で、対応表の行数を機械集計したもの。API の追加・削除で随時変わる。
 
 判定内訳の傾向 (Apple Container):
 
-- **対応** (274): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` / `Healthcheck` 型はほぼ揃っている
-- **部分対応** (22): シグネチャあり + 動作するが XPC の情報不足 / 型不一致 / 挙動制約付き (例: `get_host` = `localhost` 固定 など)
+- **対応** (289): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` / `Healthcheck` 型はほぼ揃っている
+- **部分対応** (18): シグネチャあり + 動作するが XPC の情報不足 / 型不一致 / 挙動制約付き (例: `get_host` = `localhost` 固定 など)。うち 4 行は「部分対応 (意図的)」で、API 設計上の置き換えによる差分 (10.3 参照)
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
-- **未実装 (XPC 制約)** (3): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機) と `with_health_check` (start 時明示エラー)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` はシグネチャ自体を削除済みのため「なし」に分類
-- **なし** (94): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
-- **shiguredo 拡張** (21): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths`、`ContainerAsync::container_state` / `rm_blocking`、`Container::container_state` / `rm_blocking`、`ClientError::Xpc*` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other`、`ContainerRequest` の `init` / `ssh` / `masked_paths` / `readonly_paths` accessor、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()`
-  - 件数は対応表の「shiguredo 拡張」判定の行数で、async / sync で 2 行ある `container_state` / `rm_blocking` は 1 API として数える。`Xpc*` は ClientError の Xpc 系バリアント (4 個) の集約表記
+- **未実装 (XPC 制約)** (4): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機)・`with_health_check` (start 時明示エラー)・`HealthWaitStrategy::wait_until_ready` (10.2 参照)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` はシグネチャ自体を削除済みのため「なし」に分類
+- **なし** (59): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
+- **shiguredo 拡張** (23): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths`、`ContainerAsync::container_state` / `rm_blocking`、`Container::container_state` / `rm_blocking`、`ClientError::Xpc*` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other`、`ContainerRequest` の `init` / `ssh` / `masked_paths` / `readonly_paths` accessor、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()`
+  - 件数は対応表の「shiguredo 拡張」判定の行数。`Xpc*` は ClientError の Xpc 系バリアント (4 個) の集約表記
 
 ## サマリ (Docker Engine API)
 
@@ -131,7 +131,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_host(self, key, value)` | あり | 対応 | 対応 | macOS: exec で `/etc/hosts` へ追記 (`HostGateway` は `ipv4Gateway` から解決) / Docker: HostConfig.ExtraHosts に反映 |
 | `with_hostname(self, hostname)` | あり | 対応 | 対応 | macOS: 明示 hostname → container_name → id の優先で `networks[0].options.hostname` に反映 / Docker: Config.Hostname に反映 |
 | `with_mount(self, mount)` | あり | 対応 | 対応 | Bind/Volume/Tmpfs を XPC の `virtiofs/volume/tmpfs` にマップ / Docker: Bind は HostConfig.Binds、Volume/Tmpfs は HostConfig.Mounts に反映 |
-| `with_copy_to(self, target, source)` | あり | 対応 | 対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` はコピー後 exec で chown して反映 (uid/gid が非ゼロの場合のみ。ディレクトリ一括投入時は `chown -R`)。投入は start_process 後（起動前契約なし）。起動前にファイルを見せたい場合は `with_mount(Mount::bind_mount(host_path, container_path))` を使うこと (host_path は絶対パスかつ実ファイル / 実ディレクトリ必須。制約の詳細は `with_copy_to` の rustdoc 参照)。親作成は `createParents`。ホストディレクトリの再帰投入可（Apple container 1.1.0 で実測） / Docker: create 後・start 前に自前 ustar で `path=/` へ投入。親ディレクトリ自動作成・ディレクトリ一括投入対応。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で regular file に反映（中間 directory の mode は `0o755`）。コピー後 mtime は epoch。起動前投入は Linux のみの公開契約 |
+| `with_copy_to(self, target, source)` | あり | 対応 | 対応 | シグネチャは一致。コピー処理は XPC `containerCopyIn` で実行されるが、`CopyDataSource::Data` は一時ファイル経由。`mode` はフィールド代入で `fileMode` に反映、`uid` / `gid` はコピー後 exec で chown して反映 (uid/gid が非ゼロの場合のみ。ディレクトリ一括投入時は `chown -R`)。投入は start_process 後（起動前契約なし）。起動前にファイルを見せたい場合は `with_mount(Mount::bind_mount(host_path, container_path))` を使うこと (host_path は絶対パスかつ実ファイル / 実ディレクトリ必須。制約の詳細は `with_copy_to` の rustdoc 参照)。親作成は `createParents`。ホストディレクトリの再帰投入可（Apple container 1.1.0 で実測） / Docker: create 後・start 前に自前 ustar で `path=/` へ投入。ターゲットパスに `..` (親ディレクトリ参照)・終端 `.`・空コンポーネント (`//`) を含めると明示エラー。親ディレクトリ自動作成・ディレクトリ一括投入対応。`mode` / `uid` / `gid` は tar ヘッダ + `copyUIDGID=true` で regular file に反映（中間 directory の mode は `0o755`）。コピー後 mtime は epoch。起動前投入は Linux のみの公開契約 |
 | `with_mapped_port(self, host_port, container_port)` | あり | 対応 | 対応 | `publishedPorts` に反映 |
 | `with_exposed_host_port(self, port)` (feature) | あり | なし | なし | `host-port-exposure` feature、Rust 側で SSH tunnel 実装が必要 |
 | `with_exposed_host_ports(self, ports)` (feature) | あり | なし | なし | 同上 |
@@ -164,7 +164,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `async fn start(self) -> Result<ContainerAsync<I>>` | あり | 対応 | 対応 | XPC `containerCreate` → `containerBootstrap` → `containerStartProcess` → `containerCopyIn`。create / bootstrap / start_process / copy / ログ FD 取得失敗時の `remove` はすべて `keep` 尊重。ログ FD 取得失敗かつ `WaitFor::Log` ありの場合は明示エラー (10.1 のログ待機とも関連) / Docker: resolve → pull → create → copy (`PUT /archive`) → start → `container_state` → ready まで完結。logs ストリーム (`?follow=true`) を起動し Log 待機 / `with_log_consumer` に対応。起動失敗時は Log 待機 / consumer 使用なら fail-fast + remove、それ以外は warn + 空リーダー |
-| `async fn pull_image(self) -> Result<ContainerRequest<I>>` | あり | 対応 | 対応 | XPC `imagePull` / Docker: DockerClient::pull_image を直接呼ぶ |
+| `async fn pull_image(self) -> Result<ContainerRequest<I>>` | あり | 対応 | 対応 | XPC `imagePull` / Docker: DockerClient::pull_image を直接呼ぶ (進捗ストリームは 64 MiB 上限・超過時エラー) |
 
 ## 4. `SyncRunner` トレイト (`runners::SyncRunner`, feature = `blocking`)
 
@@ -175,16 +175,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 
 ## 5. `AsyncBuilder` / `SyncBuilder` トレイト (`runners`)
 
-| API | 本家 | Apple Container | Docker Engine API | 備考 |
-|:--|:--|:--|:--|:--|
-| `AsyncBuilder::build_image` | あり | なし | なし | 現時点では未対応。方針は 20 章参照 |
-| `AsyncBuilder::build_image_with` | あり | なし | なし | 同上 |
-| `SyncBuilder::build_image` (feature blocking) | あり | なし | なし | 同上 |
-| `SyncBuilder::build_image_with` (feature blocking) | あり | なし | なし | 同上 |
-| `GenericBuildableImage::new/with_dockerfile/with_dockerfile_string/with_file/with_data` | あり | なし | なし | 20 章参照 |
-| `BuildableImage` トレイト | あり | なし | なし | 20 章参照 |
-| `BuildContextBuilder::default/with_dockerfile/with_dockerfile_string/with_file/with_data/collect/as_copy_to_container_collection` | あり | なし | なし | 20 章参照 |
-| `BuildImageOptions::new/with_skip_if_exists/with_no_cache/with_build_arg/with_build_args` | あり | なし | なし | 20 章参照 |
+本家の build 系 API (`AsyncBuilder::build_image` / `build_image_with`、`SyncBuilder::build_image` / `build_image_with` (feature blocking)、`GenericBuildableImage`、`BuildableImage` トレイト、`BuildContextBuilder`、`BuildImageOptions`) はすべて**なし**。現時点では未対応で、方針は 20 章参照。
 
 ## 6. `ContainerAsync<I>` のメソッド (`core::containers::async_container::ContainerAsync`)
 
@@ -195,13 +186,13 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `image(&self) -> &I` | あり | 対応 | 対応 |  |
-| `async fn start(&self) -> Result<()>` | あり | 対応 | 対応 | 停止済みなら Docker `start`。macOS は bootstrap + start_process。`exec_after_start` を実行 / Docker: start_container 配線済み |
+| `async fn start(&self) -> Result<()>` | あり | 対応 | 対応 | 停止済みなら Docker `start`。macOS は bootstrap + start_process。ログ再取得 (`refresh_log_streams`) 失敗時は `stop_with_timeout(Some(0))` (SIGKILL) でコンテナを巻き戻してから元のエラーを返す (巻き戻し失敗時は `warn` 記録のみ。次回 start が回復しないため先に `stop()` が必要) / Docker: start_container 配線済み |
 | `async fn stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | macOS: `Some(0)` は即時 SIGKILL、`Some(t)` (`t < 0`) は長時間 SIGTERM (XPC 呼び出しは最大 24 時間で飽和し `XpcTimeout` になり得る)、`None` は 30 秒 SIGTERM / Docker: `None`・負値は `t=30`、`Some(t>=0)` は `t={t}`。404 は冪等成功 |
 | `async fn unpause(&self) -> Result<()>` | あり | なし | 対応 | 同上 / Docker: `POST /containers/{id}/unpause` (304 冪等) |
 | `async fn is_running(&self) -> Result<bool>` | あり | 対応 | 対応 | `XpcClient::container_state` の `running` を返す / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn container_state(&self) -> Result<ContainerState>` | なし | shiguredo 拡張 | 対応 | XPC `containerState`。本家 0.27 に無し。`ContainerState::from_container` は本メソッドへ委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn exit_code(&self) -> Result<Option<i64>>` | あり | 対応 | 部分対応 | macOS: バックグラウンド wait のキャッシュ優先、停止済みかつ未観測なら 5 秒タイムアウトで都度 `containerWait` を呼び取得を試みる (取得失敗時は `Ok(None)`) / Docker: バックグラウンド wait スレッド (`POST /containers/{id}/wait?condition=not-running`) の観測済みキャッシュのみ。未観測のときは停止後も `None` |
-| `async fn copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 対応 | XPC `containerCopyOut` でホスト上の一時ファイルに書き出し、`CopyFileFromContainer` に流し込む / Docker: `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開し先頭 regular file を渡す。ディレクトリは `IsDirectory`、source は絶対パス必須 |
+| `async fn copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 対応 | XPC `containerCopyOut` でホスト上の一時ファイルに書き出し、`CopyFileFromContainer` に流し込む / Docker: `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開し先頭 regular file を渡す。ディレクトリは `IsDirectory`、source は絶対パス必須。tar 全体は 64 MiB 上限・超過時エラー (macOS 側にこの上限は無い)。404 はコンテナ内パス不存在 `ContainerPathNotFound` / コンテナ不存在 `ContainerNotFound` をボディの daemon メッセージで区別 |
 | `async fn rm(mut self) -> Result<()>` | あり | 対応 | 対応 | XPC `containerDelete` / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `fn rm_blocking(mut self) -> Result<()>` | なし | shiguredo 拡張 | shiguredo 拡張 | `block_on` を使わず `remove_blocking` (同期 I/O) を直接呼び出す。tokio Runtime 内の同期コンテキスト (Drop ガードや `spawn_blocking` 内) から呼んでも deadlock しない。`force=true`、404 は冪等成功、`keep` でも削除する |
 
@@ -216,13 +207,13 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `async fn get_bridge_ip_address(&self) -> Result<IpAddr>` | あり | 対応 | 対応 | `containerList` の `networks[0].ipv4Address` (CIDRv4) から抽出 / Docker: inspect の `NetworkSettings.Networks` 先頭エントリの `IPAddress` から取得 |
 | `async fn get_host(&self) -> Result<Host>` | あり | 部分対応 | 部分対応 | macOS の Apple container は基本的にホスト側からの接続で `127.0.0.1` (`localhost`) が正しい。`Host` は `shiguredo_container::core::host::Host` / Docker: localhost 固定 |
 | `async fn exec(&self, cmd: ExecCommand) -> Result<ExecResult>` | あり | 部分対応 | 対応 | XPC は stdout/stderr/Env 付き。Docker は stdout/stderr/Env 付き (AttachStdout/AttachStderr + multiplexed stream demux。Env はコンテナ env を inspect で取得し exec 分で上書きマージ) |
-| `async fn start(&self) -> Result<()>` | あり | 対応 | 対応 | 停止済みなら Docker `start`。macOS は bootstrap + start_process。`exec_after_start` を実行 / Docker: start_container 配線済み |
+| `async fn start(&self) -> Result<()>` | あり | 対応 | 対応 | 停止済みなら Docker `start`。macOS は bootstrap + start_process。ログ再取得 (`refresh_log_streams`) 失敗時は `stop_with_timeout(Some(0))` (SIGKILL) でコンテナを巻き戻してから元のエラーを返す (巻き戻し失敗時は `warn` 記録のみ。次回 start が回復しないため先に `stop()` が必要) / Docker: start_container 配線済み |
 | `async fn stop(&self) -> Result<()>` | あり | 対応 | 対応 | `stop_with_timeout(None)` のエイリアス。timeout 30 秒固定 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | macOS: `Some(0)` は即時 SIGKILL、`Some(t)` (`t < 0`) は長時間 SIGTERM (XPC 呼び出しは最大 24 時間で飽和し `XpcTimeout` になり得る)、`None` は 30 秒 SIGTERM / Docker: `None`・負値は `t=30`、`Some(t>=0)` は `t={t}`。404 は冪等成功 |
-| `fn stdout(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 対応 | `containerLogs` から取得した stdout FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF) / Docker: demux 済み共有バッファを独立オフセットで読む。`follow=true` は 8 MiB リング (上限超過で先頭 drop、`warn` ログのみ)、`follow=false` は呼び出しごとに新規 HTTP セッション |
-| `fn stderr(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 対応 | `containerLogs` から取得した stderr FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF)。Apple の 2 本目 FD は bootlog であり、アプリの stderr は stdout 側に混流する。このため macOS で stderr メッセージ待機 (`WaitFor::message_on_stderr` 等) を使うと起動待ちがタイムアウトする / Docker: demux が STREAM_TYPE で分離するため本当に stderr のみ。8 MiB リング (上限超過で先頭 drop) |
-| `async fn stdout_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stdout` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る |
-| `async fn stderr_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stderr` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る |
+| `fn stdout(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 対応 | `containerLogs` から取得した stdout FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF) / Docker: demux 済み共有バッファを独立オフセットで読む。`follow=true` は 8 MiB リング (上限超過で先頭 drop、`warn` ログのみ)、`follow=false` は呼び出しごとに新規 HTTP セッション (1-shot は各ストリーム 64 MiB 上限・超過時は読み出しを即座に止めてエラー。macOS 側にこの上限は無い) |
+| `fn stderr(&self, follow: bool) -> Pin<Box<dyn AsyncBufRead + Send>>` | あり | 対応 | 対応 | `containerLogs` から取得した stderr FD を非同期に読む。`follow=true` は追記ポーリング (init 終了 / Drop で EOF)。Apple の 2 本目 FD は bootlog であり、アプリの stderr は stdout 側に混流する (macOS の stderr 待機の制約は 10.1 参照) / Docker: demux が STREAM_TYPE で分離するため本当に stderr のみ。8 MiB リング (上限超過で先頭 drop)。`follow=false` は各ストリーム 64 MiB 上限・超過時エラー |
+| `async fn stdout_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stdout` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る (各ストリーム 64 MiB 上限・超過時エラー。macOS 側にこの上限は無い) |
+| `async fn stderr_to_vec(&self) -> Result<Vec<u8>>` | あり | 対応 | 対応 | `stderr` リーダーから全文読み出す / Docker: `?follow=false&tail=all` の 1-shot 取得で全ログを読み切る (各ストリーム 64 MiB 上限・超過時エラー。macOS 側にこの上限は無い) |
 | `Drop` impl | あり | 部分対応 | 対応 | Runtime 内は専用 std スレッドで `remove_blocking` を実行し `DROP_REMOVE_TIMEOUT` (5 秒) を上限に完了を待つ (timeout 超過時は best-effort、削除スレッドは裏で継続)、Runtime 外は呼び出しスレッドで `remove_blocking` を同期実行 (試行終了まで待つが成功は非保証)。いずれも失敗は `tracing::error` のみで呼び出し側には届かない。常に `force=true`、404 は冪等成功。`keep` ゲートは Drop のみで、明示 `rm` / `rm_blocking` は `keep` でも削除する |
 
 ## 7. `Container<I>` (sync 版, feature = `blocking`)
@@ -275,7 +266,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `userns_mode(&self) -> Option<&str>` | あり | なし | なし | with_userns_mode とセット |
 | `shm_size(&self) -> Option<u64>` | あり | 対応 | 対応 | XPC `ContainerCfg.shmSize` に反映 (2 章参照) |
 | `entrypoint(&self) -> Option<&str>` | あり | 対応 | 対応 | Image に委譲 |
-| `cmd(&self) -> impl Iterator<...>` | あり | 対応 | 対応 | `either` 依存を回避した実装 |
+| `cmd(&self) -> impl Iterator<...>` | あり | 対応 | 対応 |  |
 | `descriptor(&self) -> String` | あり | 対応 | 対応 | `name:tag` |
 | `ready_conditions(&self) -> Vec<WaitFor>` | あり | 対応 | 対応 | `ContainerRequest::ready_conditions` オーバーライドが有効 (2 章参照) |
 | `expose_ports(&self) -> &[ContainerPort]` | あり | 対応 | 対応 | Docker: トレイト定義は OS 共通。未マッピングの expose は create 時に `HostPort=0` の `PortBindings` に載せる。macOS: 事前に空きホストポートを割当 |
@@ -306,13 +297,13 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `WaitFor::Nothing` | あり | 対応 | 対応 |  |
-| `WaitFor::Log(LogWaitStrategy)` | あり | 対応 | 対応 | 動作は 10.1 参照 / Docker: logs ストリーム (demux + 共有バッファ) で成立。EOF は demux 終端 (`logs_terminated`) で判定 |
+| `WaitFor::Log(LogWaitStrategy)` | あり | 対応 | 対応 | 動作は 10.1 参照 / Docker: logs ストリーム (demux + 共有バッファ) で成立 |
 | `WaitFor::Duration { length }` | あり | 対応 | 対応 |  |
 | `WaitFor::Healthcheck(HealthWaitStrategy)` | あり | 未実装 (XPC 制約) | 対応 | 動作は 10.2 参照 / Linux は Healthy/Unhealthy/Starting/None (running 後) の 4 分岐 |
-| `WaitFor::Http(Box<HttpWaitStrategy>)` (feature) | あり | 対応 | 部分対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決は可能。Log 待機との併用は未対応 |
+| `WaitFor::Http(Box<HttpWaitStrategy>)` (feature) | あり | 対応 | 部分対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決は可能 |
 | `WaitFor::Exit(ExitWaitStrategy)` | あり | 対応 | 対応 |  |
 | `pub fn message_on_stdout(msg)` | あり | 対応 | 対応 | Docker: demux が stdout を分離するため本当に stdout のみに反応 |
-| `pub fn message_on_stderr(msg)` | あり | 対応 | 対応 | macOS: stderr FD は VM の bootlog を指すためアプリの stderr メッセージは成立せず、`startup_timeout` でタイムアウトする。代わりに `message_on_stdout` / `message_on_either_std` を使うこと (アプリの stderr は stdout 側ログに混流する) / Docker: demux が stderr を分離するため本当に stderr のみに反応 |
+| `pub fn message_on_stderr(msg)` | あり | 対応 | 対応 | macOS: stderr FD は VM の bootlog を指すためアプリの stderr メッセージは成立せず、`startup_timeout` でタイムアウトする。代わりに `message_on_stdout` / `message_on_either_std` を使うこと (詳細は 10.1 参照) / Docker: demux が stderr を分離するため本当に stderr のみに反応 |
 | `pub fn message_on_either_std(msg)` | あり | 対応 | 対応 | Docker: stdout / stderr 両ストリームを並行照合 |
 | `pub fn log(strategy)` | あり | 対応 | 対応 | Docker: logs ストリームで成立 |
 | `pub fn healthcheck() -> WaitFor` | あり | 未実装 (XPC 制約) | 対応 | Docker: Linux は inspect ポーリング、macOS は with_health_check で即エラー |
@@ -330,7 +321,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `pub fn stdout(msg)` | あり | 対応 | 対応 | Docker: demux 済み stdout 共有バッファを照合 |
-| `pub fn stderr(msg)` | あり | 対応 | 対応 | macOS: 待機対象は VM bootlog のため成立せず起動待ちがタイムアウトする (stdout 側に混流。10.1 参照) / Docker: demux 済み stderr 共有バッファを照合 |
+| `pub fn stderr(msg)` | あり | 対応 | 対応 | macOS: 待機対象は VM bootlog のため成立せず起動待ちがタイムアウトする (stdout 側に混流) / Docker: demux 済み stderr 共有バッファを照合 |
 | `pub fn stdout_or_stderr(msg)` | あり | 対応 | 対応 | Docker: stdout / stderr 両共有バッファを並行照合 |
 | `pub fn new(source, msg)` | あり | 対応 | 対応 |  |
 | `pub fn with_times(mut self, n)` | あり | 対応 | 対応 |  |
@@ -399,7 +390,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `LogSource::includes_stderr()` (`pub(super)`) | あり | なし | なし | 内部メソッド |
 | `WaitLogError::EndOfStream(Vec<Bytes>)` | あり | 部分対応 | 部分対応 | payload は上限 (1 MiB) 内の直近ログ・連結済み (要素 0 または 1)。要素型は本家 `Bytes` / shiguredo `Vec<u8>` (意図的差分) |
 | `WaitLogError::Io(io::Error)` | あり | 対応 | 対応 |  |
-| `LogConsumer::accept(&self, &LogFrame) -> BoxFuture<'a, ()>` | あり | 対応 | 対応 |  |
+| `LogConsumer::accept(&self, &LogFrame) -> BoxFuture<'a, ()>` | あり | 対応 | 対応 | macOS: 配信タスクは `stop` フラグ、またはコンテナ終了 (exit code 記録) の観測から 2 秒 (`DRAIN_GRACE`) の猶予で停止する (自然終了時も 100ms ポーリングを残さない。XPC 障害で exit code が記録されない場合は継続し得る) / Linux: demux 終端 (TCP FIN) で配信が終了する |
 | `impl<F: Fn(&LogFrame)> LogConsumer for F` | あり | 対応 | 対応 |  |
 | `LoggingConsumer::new()` | あり | 対応 | 対応 | 既定は両ストリームとも `eprintln!` |
 | `LoggingConsumer::with_stdout_level(mut, level)` | あり | 対応 | 対応 | 引数は `tracing::Level` (本家は `log::Level`)。指定時は tracing へ |
@@ -491,12 +482,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 ### 13.3 `CopyToContainerCollection`
 
-| API | 本家 | Apple Container | Docker Engine API | 備考 |
-|:--|:--|:--|:--|:--|
-| `CopyToContainerCollection` 型 | あり | なし | なし |  |
-| `pub fn new(collection)` | あり | なし | なし |  |
-| `pub fn add(&mut, entry)` | あり | なし | なし |  |
-| `pub(crate) async fn tar()` | あり | なし | なし |  |
+本家の複数コピー一括管理型。shiguredo には型自体が存在しない (複数コピーは `with_copy_to` の繰り返しで表現する)。
 
 ### 13.4 `CopyTargetOptions`
 
@@ -634,7 +620,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 ### 16.2 `Host` (`core::host::Host`)
 
-15 章末尾 (8 章の下段) と重複。省略。
+8 章の下段と重複。省略。
 
 ### 16.3 `Healthcheck` (`core::healthcheck::Healthcheck`)
 
@@ -704,12 +690,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 ### 17.5 `ConfigurationError`
 
-| API | 本家 | Apple Container | Docker Engine API | 備考 |
-|:--|:--|:--|:--|:--|
-| `InvalidDockerHost(String)` | あり | なし | なし | 型ごとなし |
-| `UnknownCommand(String)` | あり | なし | なし |  |
-| `WrongPropertiesFormat` (feature) | あり | なし | なし | feature = `properties-config` |
-| `MissingContainerNameAndLabels` (feature) | あり | なし | なし | feature = `reusable-containers` |
+本家の `ConfigurationError` 型 (バリアント: `InvalidDockerHost` / `UnknownCommand` / `WrongPropertiesFormat` (feature = `properties-config`) / `MissingContainerNameAndLabels` (feature = `reusable-containers`)) は存在しない。shiguredo の設定エラーは `ClientError::Configuration(String)` で表す。
 
 ### 17.6 `WaitContainerError`
 
@@ -732,13 +713,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 ## 18. `Network` (内部型)
 
-本家では `Network` は `pub(crate)` の内部型。ユーザーには公開されていない。ただし `with_network(name)` で内部的に作られる。shiguredo は独立の `Network` 型を持たず、`with_network(name)` で指定された名前を XPC 側の `networks[0].network` に渡す (未指定時は `"default"`)。本家と違いネットワークの自動作成・自動削除は行わない。
-
-| API | 本家 | Apple Container | Docker Engine API | 備考 |
-|:--|:--|:--|:--|:--|
-| `pub(crate) struct Network` | あり | 内部型なので影響なし | 内部型なので影響なし |  |
-| `pub(crate) async fn new(name, client)` | あり | 内部関数 | 内部関数 |  |
-| `Drop` impl | あり | 内部関数 | なし | XPC `networkDelete` は存在するが、ネットワークライフサイクル管理は shiguredo にない / Docker: 同上 |
+本家では `Network` は `pub(crate)` の内部型で、`with_network(name)` で内部的に作られる (ユーザーに公開されていない)。shiguredo は独立の `Network` 型を持たず、`with_network(name)` で指定された名前を XPC 側の `networks[0].network` に渡す (未指定時は `"default"`)。本家と違いネットワークの自動作成・自動削除は行わない (XPC `networkDelete` は存在するが、ネットワークライフサイクル管理は shiguredo にない)。
 
 ## 19. `GenericImage` (`images::generic::GenericImage`)
 
@@ -771,27 +746,13 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 ## 21. `ReuseDirective` (feature = `reusable-containers`)
 
-現時点では本家 `reusable-containers` feature は未対応。reuse はローカル開発でのテスト起動高速化向けの利便機能で、テストライブラリとしての中核機能ではない。CI ではコンテナ掃除との相性が悪く、現時点では明確な需要が確認できていないため、需要が発生した場合に再検討する。
-
-| API | 本家 | Apple Container | Docker Engine API | 備考 |
-|:--|:--|:--|:--|:--|
-| `ReuseDirective::Never` | あり | なし | なし | `reusable-containers` feature 自体が未実装 (型も無し) |
-| `ReuseDirective::Always` | あり | なし | なし |  |
-| `ReuseDirective::CurrentSession` | あり | なし | なし |  |
-| `impl Default` (Never) | あり | なし | なし |  |
-| `impl Display` | あり | なし | なし |  |
-| `ContainerRequest.reuse` フィールド | あり | なし | なし |  |
-| `ContainerRequest::reuse()` accessor | あり | なし | なし |  |
-| `ImageExt::with_reuse(self, dir)` | あり | なし | なし |  |
-| `AsyncRunner::start` の reuse ロジック | あり | なし | なし |  |
+現時点では本家 `reusable-containers` feature は未対応。reuse はローカル開発でのテスト起動高速化向けの利便機能で、テストライブラリとしての中核機能ではない。CI ではコンテナ掃除との相性が悪く、現時点では明確な需要が確認できていないため、需要が発生した場合に再検討する。`ReuseDirective` 型 (`Never` / `Always` / `CurrentSession` / `Default` / `Display`)・`ContainerRequest` の `reuse` フィールド / `reuse()` accessor・`ImageExt::with_reuse`・`AsyncRunner::start` の reuse ロジックはすべて存在しない。
 
 ## 22. feature ゲート
 
 | feature | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `ring` (default) | あり | なし | なし | 該当なし (shiguredo では rustls を直接使用) |
-| `aws-lc-rs` | あり | なし | なし | 同上 |
-| `ssl` | あり | なし | なし | 同上 |
+| `ring` / `aws-lc-rs` / `ssl` (TLS 系) | あり | なし | なし | 該当なし。本クレートは TLS 系依存を持たず、`http_wait_plain` は plain HTTP のみ |
 | `blocking` | あり | あり | 対応 | 同期 API は ContainerAsync に委譲。Linux はライフサイクル・ログ・copy とも利用可 |
 | `watchdog` | あり | あり (macOS のみ) | なし | 対応。本家 (シグナルハンドラ方式) と異なり外部 reaper プロセス方式 (下記) / Linux では未提供 |
 | `http_wait` / `http_wait_plain` | あり | あり (`http_wait_plain`) | 部分対応 | ports() 配線済み。HTTP wait / Log 待機とも利用可 |
