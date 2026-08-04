@@ -1,7 +1,7 @@
 # バグ: macOS のコンテナ作成経路で環境変数の重複が解決されず `with_env_var` による上書きが効かない
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-04
 - Branch: feature/fix-macos-create-env-merge
 - Polished: 2026-08-04
 
@@ -32,6 +32,6 @@ macOS (Apple container) で `Image::env_vars` と `ImageExt::with_env_var` が�
 
 ## 解決方法
 
-- `src/core/client/container_cfg.rs` の `build_config` で env を BTreeMap に畳んでから `KEY=VALUE` に変換する
-- `src/core/client/container_cfg.rs` の `#[cfg(test)]` モジュールに、`build_config` が畳んだ結果が `ContainerCfg` の `init_env` に反映され、同名キーが 1 件に畳まれてリクエスト側の値が残ることを確認する単体テストを追加する (Image 既定 env と `with_env_var` の同名キーを作るため、既定 env を返すテスト専用 Image impl が必要)
-- macOS の統合テスト (`tests/container_macos.rs`) に、既定 env を返すテスト専用 Image impl を用意し、「Image 既定 env と `with_env_var` が同名キーを持つ場合にコンテナの init プロセスでリクエスト側が勝つ」ことを検証するテストを追加する (例: `with_cmd` で `printenv` を init プロセスにしてコンテナ stdout を確認する。`sh -c 'echo $VAR'` のようなシェル経由の展開は、シェルが環境を独自の変数テーブルに展開して重複を後勝ちで解決し得るため検証にならない。exec 経由でも exec 側の畳み込みにより修正前からリクエスト勝ちが成立してしまい、create 経路の修正を検証できない)
+- `src/core/client/container_cfg.rs` の `build_config` で env 構築を BTreeMap に畳む実装に変更した。`ContainerRequest::env_vars()` が返す Image 側 env → リクエスト側 env の chain を `BTreeMap<String, String>` に collect することで、同名キーは後から来た値 (リクエスト側) が勝つ。`KEY=VALUE` 形式の `Vec<String>` は BTreeMap から変換する
+- 単体テスト `env_vars_are_folded_with_request_winning_in_init_env` を追加した。既定 env を返すテスト専用 Image impl `DefaultEnvImage` (`FOO` / `IMAGE_ONLY`) を使い、`with_env_var` で `FOO` を上書きしたとき `init_env` が `["FOO=from_request", "IMAGE_ONLY=from_image_only", "REQ_ONLY=from_request_only"]` に畳まれることを検証する (衝突キーの後勝ち・Image 側のみのキーの素通し・リクエスト側のみのキーの素通し)
+- 統合テスト `alpine_create_env_request_wins_over_image_default` を `tests/container_macos.rs` に追加した。既定 env を持つテスト専用 Image impl を使い、`printenv FOO IMAGE_ONLY` を init プロセスにしてコンテナ stdout を検証する。`WaitFor::message_on_stdout` を ready 条件に指定して出力到着を決定的に待つ。実機で修正前は失敗 (FOO が Image 側の値のまま)・修正後は成功を確認した

@@ -43,9 +43,11 @@ fn skip_unless_rosetta() -> bool {
 
 #[cfg(target_os = "macos")]
 mod test_container_macos {
+    use std::borrow::Cow;
+
     use shiguredo_container::{
-        GenericImage, ImageExt, core::ExecCommand, core::image::ContainerState,
-        runners::AsyncRunner,
+        ContainerRequest, GenericImage, Image, ImageExt, WaitFor, core::ExecCommand,
+        core::image::ContainerState, runners::AsyncRunner,
     };
 
     /// 空いているホストポートを探す。
@@ -520,6 +522,84 @@ mod test_container_macos {
             .await
             .expect("コンテナの停止に失敗した");
         container.rm().await.expect("コンテナの削除に失敗した");
+    }
+
+    /// 既定 env を持つテスト専用イメージ。
+    ///
+    /// `Image::env_vars` と `with_env_var` が同名キーを持つケースを create 経路で
+    /// 検証するために使う。`GenericImage` は既定 env を持たないため、
+    /// Image 側 env と `with_env_var` の衝突を作れない。単体テスト
+    /// (container_cfg.rs) の同名フィクスチャと内容を揃えること。
+    struct DefaultEnvImage;
+
+    impl Image for DefaultEnvImage {
+        fn name(&self) -> &str {
+            "alpine"
+        }
+
+        fn tag(&self) -> &str {
+            "latest"
+        }
+
+        fn ready_conditions(&self) -> Vec<WaitFor> {
+            Vec::new()
+        }
+
+        fn env_vars(
+            &self,
+        ) -> impl IntoIterator<Item = (impl Into<Cow<'_, str>>, impl Into<Cow<'_, str>>)> {
+            [("FOO", "from_image"), ("IMAGE_ONLY", "from_image_only")]
+        }
+    }
+
+    /// Image 既定 env と `with_env_var` が同名キーのとき、コンテナの init プロセス
+    /// (create 経路) でリクエスト側の値が観測されること。
+    ///
+    /// `printenv` を init プロセスにして stdout を直接確認する。`sh -c 'echo $VAR'`
+    /// のようなシェル経由の展開は、シェルが環境を独自の変数テーブルに展開して
+    /// 重複を後勝ちで解決し得るため検証にならない。exec 経由でも exec 側の
+    /// 畳み込みにより修正前からリクエスト勝ちが成立してしまい、create 経路の
+    /// 修正を検証できない。
+    #[tokio::test]
+    async fn alpine_create_env_request_wins_over_image_default() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        let container = ContainerRequest::from(DefaultEnvImage)
+            .with_env_var("FOO", "from_request")
+            // 出力の全行到着を決定的に待つ。printenv は即終了するため固定 sleep では
+            // ログ FD への書き込みが間に合わず空出力で誤失敗し得る。ready 条件は
+            // 各行の到着を待つ (1 行目だけでは 2 行目の到着が保証されない)。
+            .with_ready_conditions(vec![
+                WaitFor::message_on_stdout("from_request"),
+                WaitFor::message_on_stdout("from_image_only"),
+            ])
+            // printenv は引数指定時に指定順で VALUE のみを出力する (POSIX 準拠の挙動)。
+            .with_cmd(["printenv", "FOO", "IMAGE_ONLY"])
+            .start()
+            .await
+            .expect("alpine コンテナの起動に失敗した");
+
+        // ログ待機により両行の到着は保証済み。stdout はアプリの stderr と混流するため
+        // (Apple container の containerLogs 仕様)、行単位の完全比較で検証する。
+        // 修正前は FOO が from_image のまま残り、from_request のログ待機が
+        // EndOfStream で失敗して start() がエラーになる (コンテナは自動削除される)。
+        let stdout = container
+            .stdout_to_vec()
+            .await
+            .expect("標準出力の取得に失敗した");
+        let stdout = String::from_utf8_lossy(&stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(
+            lines,
+            ["from_request", "from_image_only"],
+            "リクエスト側の値が init プロセスに観測されること: {stdout}"
+        );
+
+        // init プロセス (printenv) は既に終了しているため、stop はベストエフォートで良い。
+        container.stop_with_timeout(Some(0)).await.ok();
+        container.rm().await.ok();
     }
 
     /// `with_container_name` で指定した名前がコンテナ ID としてランタイムに反映されること。
