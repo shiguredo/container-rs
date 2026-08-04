@@ -3,7 +3,7 @@
 - Created: 2026-08-04
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-canary-version-regex
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-08-04
 
 ## 目的
 
@@ -15,20 +15,24 @@ canary.py のバージョン更新が、`Cargo.toml` の `[package]` セクシ�
 - `[package]` セクション内で `rust-version = "1.93.0"` が `version = "..."` より**前に**並ぶと、この正規表現は `rust-version` の値を拾う (`.*?` が最初の `version\s*=` に一致するため。`rust-version` の末尾 `version` が含まれる)
 - すると `next_canary_version("1.93.0")` がマイナーバンプ付き canary として成立し、置換 `package_content.replace('version = "1.93.0"', 'version = "1.94.0-canary.0"', 1)` が `rust-version = "1.93.0"` の**内部**の部分文字列に一致して、`rust-version` だけが書き換わり本物の `version` は無変更のまま成功扱いになる
 - 置換後の整合性チェック (`updated_package == package_content` で raise) も部分文字列一致のため検出不能
-- 現在の `Cargo.toml` は `version` が先頭 (3 行目) のため発症しないが、フィールド順の並べ替えで即発症する
+- 現在の `Cargo.toml` は `version` が `rust-version` より先に並ぶため発症しない
 
 ## 設計方針
 
-- 正規表現を「行頭の `version` キー」に固定する (例: `^version\s*=\s*"..."` を `re.MULTILINE` で使う、または `\nversion\s*=` アンカー)
+- 正規表現を「`[package]` セクション内の行頭の `version` キー」に固定する (例: `(?m)^[ \t]*version\s*=` を使い、`rust-version` の末尾 `version` に一致しないようにする)
+- 抽出・置換は package セクション文字列 (`package_content`) に対して完結させる。これにより他セクションの行頭 `version` キーを拾わず、マッチ span の座標変換 (`content` 座標 ↔ `package_content` 座標) も不要になる (`package_start` 自体は `update_version` 側の切り出し・スプライスに残る)
 - マッチの span を使って置換し、リテラル一致 (`replace`) に依存しない
+- span 置換でマッチが必ず存在するようになるため、現行の整合性チェック (raise) は到達不能になる。抽出失敗時は既存の `ValueError` が代替するため、チェックは削除する
 
 ## 完了条件
 
-- `rust-version` が `version` より前に並ぶ `Cargo.toml` に対しても、`update_version` が正しい `version` のみを更新すること
+- `rust-version` が `version` より前に並ぶ `Cargo.toml` に対しても、切り出した純粋関数 (package セクション更新ロジック) が正しい `version` のみを更新すること
 - `rust-version` の値が変更されないこと (単体テスト)
+- 正常順序 (`version` が `rust-version` より先) の `Cargo.toml` でも従来どおり更新されること (単体テスト)
+- ローカルで `python3 -m unittest test_canary` が通ること (CI 配線は 0092 の範囲)
 
 ## 解決方法
 
-- `canary.py` の `update_version` の抽出正規表現を修正し、マッチ span で置換する
-- `test_canary.py` に「`rust-version` が `version` より先に並ぶ Cargo.toml フィクスチャ」のテストを追加する
-- あわせて `test_canary.py` が実行されない問題 (CI / Makefile / prek に未配線) がある場合は、本 issue の検証で必要なため CI への配線を検討する (配線自体は別 issue の範囲とし、本 issue ではテストの追加のみ)
+- `canary.py` の `update_version` の抽出正規表現を修正し、マッチ span で置換する。`update_version` の package セクション更新ロジックを純粋関数 (入力: package セクション文字列 / 出力: 更新後文字列) に切り出し、完了条件を単体テストで検証できるようにする (`update_version` は dry-run ではファイルを書かず、非 dry-run は `input()` でブロックするため、そのままでは完了条件を検証できない。モックやスタブは使わない)
+- `test_canary.py` に「`rust-version` が `version` より先に並ぶ Cargo.toml フィクスチャ」のテストと、正常順序のフィクスチャのテストを追加する
+- 注意: 本 issue のテスト追加が回帰検出の実効力を持つのは 0092 (CI 配線) の完了後である。0092 は本 issue のバグを検出動機として参照しており、実装順序の依存がある
