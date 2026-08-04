@@ -2,7 +2,7 @@
 //!
 //! `AsyncRunner` が `ContainerRequest` から構築し、`XpcClient::create_container` に渡す。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use nojson::DisplayJson;
 
@@ -98,8 +98,17 @@ pub(crate) fn build_config<I: Image>(
     // Docker の意味論に合わせ、ユーザー指定が無ければ image config の既定値を使う。
     let (init_exe, arguments) = image_config.effective_command(req.entrypoint(), req.cmd())?;
 
-    // env を KEY=VALUE のリストに。
-    let env: Vec<String> = req.env_vars().map(|(k, v)| format!("{k}={v}")).collect();
+    // env を KEY=VALUE のリストに畳む。Image 側 env とリクエスト側 env の chain を
+    // BTreeMap に畳むことで、同名キーは後から来た値 (with_env_var) が勝つ
+    // (exec 経路と同一規則)。chain のまま送ると glibc / musl の getenv が
+    // envp の重複エントリの先頭を返すため、with_env_var による上書きが効かない。
+    let env: Vec<String> = req
+        .env_vars()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect::<BTreeMap<String, String>>()
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
 
     // image_ref の正規化。pull / resolve と同じ規則で完全修飾形式にする。
     let image_ref = crate::core::client::xpc_client::normalize_image_reference(&req.descriptor());
@@ -690,6 +699,8 @@ impl DisplayJson for DnsCfg {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    use std::borrow::Cow;
+
     use crate::{ContainerRequest, GenericImage, ImageExt, xpc::j};
 
     use super::*;
@@ -1593,5 +1604,59 @@ mod tests {
 
         let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
         assert!(json.contains("\"user\":{\"raw\":{\"userString\":\"nobody\"}}"));
+    }
+
+    /// 既定 env を返すテスト専用イメージ。env 畳み込みの検証に使う。
+    ///
+    /// `GenericImage` は既定 env を持たないため、Image 側 env と `with_env_var` の
+    /// 同名キーを作るには既定 env を返す Image impl が別途必要。
+    struct DefaultEnvImage;
+
+    impl Image for DefaultEnvImage {
+        fn name(&self) -> &str {
+            "alpine"
+        }
+
+        fn tag(&self) -> &str {
+            "latest"
+        }
+
+        fn ready_conditions(&self) -> Vec<crate::core::WaitFor> {
+            Vec::new()
+        }
+
+        fn env_vars(
+            &self,
+        ) -> impl IntoIterator<Item = (impl Into<Cow<'_, str>>, impl Into<Cow<'_, str>>)> {
+            [("FOO", "from_image"), ("IMAGE_ONLY", "from_image_only")]
+        }
+    }
+
+    #[test]
+    fn env_vars_are_folded_with_request_winning_in_init_env() {
+        // Image 既定 env と with_env_var が同名キーを持つとき、init_env に 1 件だけ
+        // 畳まれ、リクエスト側の値が残ること (exec 経路と同じ「後勝ち」規則)。
+        // 非重複キー (IMAGE_ONLY / REQ_ONLY) は両側から素通しされること。
+        let req: ContainerRequest<DefaultEnvImage> = ContainerRequest::from(DefaultEnvImage)
+            .with_cmd(["sleep", "1"])
+            .with_env_var("FOO", "from_request")
+            .with_env_var("REQ_ONLY", "from_request_only");
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        )
+        .expect("build_config が成功すること");
+
+        assert_eq!(
+            cfg.init_env,
+            vec![
+                "FOO=from_request".to_string(),
+                "IMAGE_ONLY=from_image_only".to_string(),
+                "REQ_ONLY=from_request_only".to_string(),
+            ]
+        );
     }
 }

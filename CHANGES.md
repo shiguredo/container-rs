@@ -99,6 +99,8 @@
   - @voluntas
 - [FIX] Linux の `with_copy_to` がターゲットパスに `..` (親ディレクトリ参照)・終端 `.`・空コンポーネント (`//`) を許容していたのを修正する (daemon の挙動依存を避け、ライブラリ側で明示エラーにする)
   - @voluntas
+- [FIX] macOS の create 経路で `Image::env_vars` と `with_env_var` が同名キーのときに `with_env_var` による上書きが反映されないのを修正する (env を BTreeMap に畳んでリクエスト側を優先する)
+  - @voluntas
 
 ### misc
 
