@@ -75,6 +75,8 @@
   - @voluntas
 - [ADD] macOS で OCI `maskedPaths` / `readonlyPaths` を `ImageExt::with_masked_paths` / `with_readonly_paths` で設定できるようにする（Apple container 1.2.0 以上）
   - @voluntas
+- [FIX] macOS で明示 platform 指定時に一致する manifest が無い場合、要求と異なるアーキテクチャへフォールバックして選ぶのをやめ `no matching manifest` エラーを返すようにする
+  - @voluntas
 - [FIX] Linux のイメージ pull 失敗時に daemon のエラーメッセージをエラー文言に含めて診断可能にする
   - @voluntas
 - [FIX] Linux のレジストリ認証で資格情報 (username / password / identitytoken) に制御文字が含まれても X-Registry-Auth の JSON が構文として有効になるようにエスケープを修正する

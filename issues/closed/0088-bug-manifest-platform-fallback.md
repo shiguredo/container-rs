@@ -1,7 +1,7 @@
 # バグ: 明示 platform 指定時の manifest 選択フォールバックが Docker と異なり、要求と異なるアーキテクチャを黙って選ぶ
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-manifest-platform-fallback
 - Polished: 2026-08-04
 
@@ -36,5 +36,7 @@ macOS のイメージ config 解決 (`resolve_image_config`) で、ユーザー�
 
 ## 解決方法
 
-- `src/core/client/image_config.rs` の `select_manifest_digest` で、`platform.is_some()` のときは主経路のみで判定し、不一致なら `ClientError::Other` (`no matching manifest for {platform}` 相当の文言) を返す
-- 単体テストを「明示 platform は完全一致のみ」「未指定はフォールバック」の 2 系統に整理する
+- `src/core/client/image_config.rs` の `select_manifest_digest` で、`platform` が明示指定 (`Some`) の場合は主経路のみで判定し、一致しなければ `ClientError::Other` (`no matching manifest for {platform}`) を返すようにした。preferred / soft / hard フォールバックは `platform == None` の場合のみ適用する
+- 照合は `target_os_and_architecture` による正規化後の (os, arch) で行う。許可外 arch (例: `linux/arm/v7`) はホスト arch に正規化されるため、`Some` 指定でもホスト arch の manifest があれば主経路で一致して成功し得るが、実経路では `normalize_platform` が許可外を `None` にするため顕在化しない旨を doc に明記した
+- テスト: 既存のフォールバックテスト 6 件を `None` 指定に書き換え (明示 platform ではフォールバックしないため)、明示 platform で一致しない場合のエラー (preferred 抑止 + hard 抑止) を検証する新規テストを追加した。`select_manifest_digest_prefers_arm64_fallback` はホスト arch 前提の意味に合わせて `select_manifest_digest_defaults_to_host_arch` に改名した
+- 既存の `select_manifest_digest_unknown_arch_stays_on_linux` は許可外 arch の正規化検証のため `Some` のままとした (issue の指示どおり)
