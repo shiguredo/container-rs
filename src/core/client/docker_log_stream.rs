@@ -449,6 +449,28 @@ impl Drop for TerminateOnDrop<'_> {
     }
 }
 
+/// drop 時に必ず `consumer_finished` を呼ぶガード。
+///
+/// LogConsumer 配信タスクが正常終了・panic のいずれで終わっても `active_consumers` を
+/// 減少させる。これがないと、`LogConsumer::accept` が panic した場合にカウンタが減らず、
+/// `all_done()` が永久に false のままになる。
+///
+/// このガードは `tokio::spawn` で起動した future 内で生成される。`register_consumer()`
+/// は spawn の外で呼ばれるため、Runtime コンテキスト不在で `tokio::spawn` 自体が
+/// panic した場合、または spawn 後最初の poll 前にタスクが cancel (runtime shutdown 等)
+/// された場合はカウンタが 1 増えたままになるが、呼び出し元は全て async 文脈
+/// (`ContainerAsync::start` 等) であり、`all_done()` を読む主体が残らない時点のため
+/// 実害はない。
+struct ConsumerFinishedOnDrop {
+    handle: Arc<DockerLogsHandle>,
+}
+
+impl Drop for ConsumerFinishedOnDrop {
+    fn drop(&mut self) {
+        self.handle.consumer_finished();
+    }
+}
+
 /// blocking スレッド上でログセッション全体 (接続 → ヘッダ検証 → demux ループ) を実行する。
 fn run_log_session(
     socket_path: &str,
@@ -1155,6 +1177,10 @@ pub(crate) fn spawn_log_consumer_task(
 ) {
     handle.register_consumer();
     tokio::spawn(async move {
+        // 正常終了・panic のいずれでも consumer_finished を呼ぶガード。
+        let _guard = ConsumerFinishedOnDrop {
+            handle: handle.clone(),
+        };
         let mut reader = tokio::io::BufReader::new(LogReader::new(stream));
         let mut buf = Vec::new();
         loop {
@@ -1179,7 +1205,6 @@ pub(crate) fn spawn_log_consumer_task(
                 }
             }
         }
-        handle.consumer_finished();
     });
 }
 
@@ -1622,5 +1647,138 @@ mod tests {
         // 既定の 10 MiB のままだと合計ログ 10 MiB 超でデコーダが BodyTooLarge を起こし、
         // ストリームが強制終了する (致命的バグの回帰)。
         assert_eq!(log_stream_decoder().limits().max_body_size, u64::MAX);
+    }
+
+    /// 配信タスクにログ行を追記する (テスト用ヘルパ)。
+    ///
+    /// 共有バッファに追記し、待機中のリーダーを起こす。`terminate_all` と違い
+    /// ストリーム終端と `demux_done` は立てないため、`active_consumers` の動きを
+    /// 単独で観測できる。
+    fn append_line(handle: &DockerLogsHandle, line: &[u8]) {
+        let stream = handle.stdout_stream();
+        let mut buffer = stream
+            .buffer
+            .lock()
+            .expect("ログストリームのバッファ mutex が poison されていないこと");
+        buffer.append(line);
+        drop(buffer);
+        stream.notify.notify_waiters();
+    }
+
+    /// `LogConsumer::accept` が panic しても `active_consumers` が減少し、
+    /// `all_done()` が true になること (カウンタの不変条件が保たれること)。
+    ///
+    /// 修正前は panic でタスクが終了しても `consumer_finished()` が呼ばれず、
+    /// `active_consumers` が 1 のまま残り、`all_done()` が永久に false になった。
+    #[tokio::test]
+    async fn consumer_panic_still_decrements_active_consumers() {
+        use crate::core::logs::LogFrame;
+
+        let handle = DockerLogsHandle::new("unused-socket".to_string(), "test-id".to_string());
+        // accept が panic するコールバック。
+        // この panic は tokio の既定どおり stderr にバックトレース付きで出力されるが、
+        // 意図的に発火させているためテスト失敗ではない (握り潰さない方針の検証でもある)。
+        let consumers = Arc::new(vec![Box::new(|_: &LogFrame| -> () {
+            panic!("意図的な consumer の panic");
+        }) as Box<dyn LogConsumer + 'static>]);
+
+        spawn_log_consumer_task(
+            handle.clone(),
+            handle.stdout_stream(),
+            consumers,
+            LogFrame::StdOut,
+        );
+        assert_eq!(
+            handle
+                .active_consumers
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "配信タスク起動直後はカウンタが 1 であること (register_consumer が効いていること)"
+        );
+
+        // 配信対象の行を追記して通知し、panic を発火させる。
+        append_line(&handle, b"hello\n");
+
+        // panic 経由でタスクが終了した後、active_consumers が 0 に戻ることを待つ。
+        // EOF を経ずにタスクが終了した = panic 経由で減算されたことの独立検証。
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if handle
+                .active_consumers
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("panic 後も active_consumers が 0 に戻らなかったこと");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        // terminate_all で demux_done を立てると all_done() が true になること。
+        handle.terminate_all();
+        assert!(
+            handle.all_done(),
+            "panic 後も all_done() が true になること"
+        );
+    }
+
+    /// 正常終了後も `all_done()` が true になること (カウンタがちょうど 1 回だけ減算されること)。
+    #[tokio::test]
+    async fn consumer_normal_finish_decrements_active_consumers_once() {
+        use std::sync::atomic::Ordering;
+
+        use crate::core::logs::LogFrame;
+
+        let handle = DockerLogsHandle::new("unused-socket".to_string(), "test-id".to_string());
+        let received = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let received_clone = received.clone();
+        let consumers = Arc::new(vec![Box::new(move |_: &LogFrame| {
+            received_clone.fetch_add(1, Ordering::SeqCst);
+        }) as Box<dyn LogConsumer + 'static>]);
+
+        spawn_log_consumer_task(
+            handle.clone(),
+            handle.stdout_stream(),
+            consumers,
+            LogFrame::StdOut,
+        );
+        assert_eq!(
+            handle.active_consumers.load(Ordering::SeqCst),
+            1,
+            "配信タスク起動直後はカウンタが 1 であること"
+        );
+
+        append_line(&handle, b"hello\n");
+        // 配信タスクがフレームを消費するのを期限付きで待つ (固定 sleep に依存しない)。
+        let received_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if received.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            if tokio::time::Instant::now() > received_deadline {
+                panic!("配信されたフレームが 1 件に達しなかったこと");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        // ストリームを終端すると配信ループが EOF で終了し、カウンタが 0 に戻る。
+        handle.terminate_all();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if handle.active_consumers.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("正常終了後も active_consumers が 0 に戻らなかったこと");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        assert!(
+            handle.all_done(),
+            "正常終了後も all_done() が true になること"
+        );
     }
 }
