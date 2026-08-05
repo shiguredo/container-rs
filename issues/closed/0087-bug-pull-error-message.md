@@ -1,7 +1,7 @@
 # バグ: イメージ pull 失敗時に daemon のエラーメッセージが捨てられ、認証失敗等の診断ができない
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-pull-error-message
 - Polished: 2026-08-04
 
@@ -28,6 +28,8 @@ Linux の `pull_image` で 4xx / 5xx 応答のボディに載っている daemon
 
 ## 解決方法
 
-- `src/core/client/docker_client.rs` の `pull_image` の 4xx / 5xx エラーパスで、エラー文言の組み立てを純粋関数で行う
-- エラー文言の組み立て (パース (`parse_daemon_error_message` の呼び出し) とフォールバックを関数内に閉じる) を純粋関数として切り出し、単体テストで検証できるようにする (0065 の `classify_archive_404` と同パターン。`pull_image` は実ソケット接続のため、そのままでは単体テストできない)。`parse_daemon_error_message` は空 message を `Some("")` で返すため、空文字列のフィルタは純粋関数側で行う
-- 単体テストに `{"message":"..."}` 形式の失敗応答のケースを追加する (ボディ無し・非 JSON・空 message・`{"errorDetail":{"message":"..."}}` 形式のフォールバックも検証する)
+- `src/core/client/docker_client.rs` の `pull_image` の 4xx / 5xx エラーパスで、ボディの daemon `message` (`{"message":"..."}` 形式。認証失敗は 401 + `unauthorized: ...` が代表例) をエラー文言に含めるようにした
+- エラー文言の組み立てを純粋関数 `pull_error_message` として切り出し、単体テストで検証できるようにした (`parse_daemon_error_message` の再利用 + フォールバック。`classify_archive_404` と同パターン)
+- ボディ無し・非 JSON・`message` 欠落・空 `message`・`message` が文字列でない (null / 数値) ・トップレベルがオブジェクトでない・非 UTF-8 の場合は現行の `failed to pull image {descriptor}: {status}` を維持する (`parse_daemon_error_message` は空 `message` を `Some("")` で返すため、空判定は `pull_error_message` 側で行う)
+- 200 系ストリームパス (`check_pull_stream_errors`) は変更しない (4xx/5xx パスとストリームパスのエラー形式は不揃いのまま)
+- テスト: `pull_error_message_includes_daemon_message` (401 / 500 + message の包含) と `pull_error_message_falls_back_without_message` (8 種のフォールバック) を追加した。既存の `tests/pull_image_linux.rs` は文言変更の影響を受けないことを確認した

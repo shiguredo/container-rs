@@ -145,9 +145,12 @@ impl DockerClient {
                 )))
             })?;
         if response.status_code() >= 400 {
-            return Err(ClientError::Other(format!(
-                "failed to pull image {descriptor}: {}",
-                response.status_code()
+            // 4xx / 5xx のボディには daemon の JSON エラー (`{"message":"..."}`) が載る
+            // (認証失敗は 401 + `unauthorized: ...` が代表例)。診断できるよう message を含める。
+            return Err(ClientError::Other(pull_error_message(
+                descriptor,
+                response.status_code(),
+                response.body_bytes().unwrap_or(&[]),
             ))
             .into());
         }
@@ -925,7 +928,8 @@ fn classify_archive_404(id: &str, path: &str, body: &[u8]) -> ClientError {
 
 /// daemon エラーボディ (`{"message": "..."}`) から `message` フィールドの値を取り出す。
 ///
-/// 空・非 JSON・`message` 欠落は `None` を返す。
+/// 非 JSON・`message` 欠落・`message` が文字列でない場合は `None` を返す。
+/// 空文字列の `message` は `Some("")` を返す (空判定は呼び出し側が行う)。
 fn parse_daemon_error_message(body: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(body).ok()?;
     let parsed = nojson::RawJson::parse(text).ok()?;
@@ -935,6 +939,22 @@ fn parse_daemon_error_message(body: &[u8]) -> Option<String> {
         .ok()
         .and_then(|m| m.required().ok())
         .and_then(|v| TryInto::<String>::try_into(v).ok())
+}
+
+/// イメージ pull の 4xx / 5xx エラーの文言を組み立てる (純粋関数)。
+///
+/// ボディの `message` が空でなければ `failed to pull image {descriptor}: {status}: {message}`、
+/// そうでなければ (ボディ無し・非 JSON・`message` 欠落・空文字列) 現行の
+/// `failed to pull image {descriptor}: {status}` を返す。
+/// `parse_daemon_error_message` は空 `message` を `Some("")` で返すため、
+/// 空文字列のフィルタはこの関数側で行う。
+fn pull_error_message(descriptor: &str, status: u16, body: &[u8]) -> String {
+    match parse_daemon_error_message(body) {
+        Some(message) if !message.is_empty() => {
+            format!("failed to pull image {descriptor}: {status}: {message}")
+        }
+        _ => format!("failed to pull image {descriptor}: {status}"),
+    }
 }
 
 /// Docker Engine API 向け HTTP/1.1 リクエストをエンコードする。
@@ -2273,6 +2293,89 @@ mod tests {
         assert!(
             parse_exec_inspect_state(b"not json").is_err(),
             "JSON パース失敗は Json エラーになること"
+        );
+    }
+
+    #[test]
+    fn pull_error_message_includes_daemon_message() {
+        // 4xx / 5xx のボディに載る daemon の message がエラー文言に含まれること。
+        // 認証失敗 (401 + unauthorized) の代表ケース。
+        let msg = pull_error_message(
+            "ghcr.io/org/app:1.0",
+            401,
+            br#"{"message":"unauthorized: authentication required"}"#,
+        );
+        assert_eq!(
+            msg,
+            "failed to pull image ghcr.io/org/app:1.0: 401: unauthorized: authentication required",
+            "status と message が含まれること: {msg}"
+        );
+        // 5xx + message の包含ケース (status に依存しないことの確認)。
+        let msg = pull_error_message(
+            "ghcr.io/org/app:1.0",
+            500,
+            br#"{"message":"registry is out of service"}"#,
+        );
+        assert_eq!(
+            msg, "failed to pull image ghcr.io/org/app:1.0: 500: registry is out of service",
+            "5xx でも message が含まれること: {msg}"
+        );
+    }
+
+    #[test]
+    fn pull_error_message_falls_back_without_message() {
+        // ボディ無し・非 JSON・トップレベルの message 欠落・空 message は現行文言に落ちること。
+        let status = 500;
+        let expected = format!("failed to pull image img:latest: {status}");
+        // ボディ無し。
+        assert_eq!(
+            pull_error_message("img:latest", status, &[]),
+            expected,
+            "ボディ無しは現行文言に落ちること"
+        );
+        // 非 JSON。
+        assert_eq!(
+            pull_error_message("img:latest", status, b"not json"),
+            expected,
+            "非 JSON は現行文言に落ちること"
+        );
+        // トップレベルの message 欠落 (errorDetail 形式はトップレベルに message を持たない)。
+        assert_eq!(
+            pull_error_message(
+                "img:latest",
+                status,
+                br#"{"errorDetail":{"message":"boom"}}"#
+            ),
+            expected,
+            "トップレベルの message 欠落は現行文言に落ちること"
+        );
+        // 空 message。
+        assert_eq!(
+            pull_error_message("img:latest", status, br#"{"message":""}"#),
+            expected,
+            "空 message は現行文言に落ちること"
+        );
+        // message が文字列でない (null / 数値) ケース。
+        assert_eq!(
+            pull_error_message("img:latest", status, br#"{"message":null}"#),
+            expected,
+            "null の message は現行文言に落ちること"
+        );
+        assert_eq!(
+            pull_error_message("img:latest", status, br#"{"message":42}"#),
+            expected,
+            "数値の message は現行文言に落ちること"
+        );
+        // トップレベルがオブジェクトでない (配列)・非 UTF-8。
+        assert_eq!(
+            pull_error_message("img:latest", status, b"[1,2,3]"),
+            expected,
+            "配列ボディは現行文言に落ちること"
+        );
+        assert_eq!(
+            pull_error_message("img:latest", status, b"\xff\xfe"),
+            expected,
+            "非 UTF-8 ボディは現行文言に落ちること"
         );
     }
 }
