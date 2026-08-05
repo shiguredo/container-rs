@@ -75,6 +75,8 @@
   - @voluntas
 - [ADD] macOS で OCI `maskedPaths` / `readonlyPaths` を `ImageExt::with_masked_paths` / `with_readonly_paths` で設定できるようにする（Apple container 1.2.0 以上）
   - @voluntas
+- [FIX] Linux exec の exit code 取得リトライを指数的バックオフ (最大 6 回・約 1.76 秒) に拡大し、デーモンの状態記録遅延でも exit code を取得できるようにする
+  - @voluntas
 - [FIX] `ContainerAsync::exec` の ready_conditions 待機がタイムアウト無しで永久待ちになり得るのを修正する (startup_timeout を適用し、ログ取得元欠如 + `WaitFor::Log` は実行前に明示エラーにする)
   - @voluntas
 - [FIX] Linux の `with_copy_to` でコピー対象 1 ファイルと tar 全体の蓄積に 64 MiB 上限が無く巨大ファイルで OOM し得るのを修正する
