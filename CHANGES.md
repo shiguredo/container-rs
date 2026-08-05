@@ -75,6 +75,8 @@
   - @voluntas
 - [ADD] macOS で OCI `maskedPaths` / `readonlyPaths` を `ImageExt::with_masked_paths` / `with_readonly_paths` で設定できるようにする（Apple container 1.2.0 以上）
   - @voluntas
+- [FIX] Linux の HTTP 待機戦略で 10 MiB 超のレスポンスが `body too large` エラーになり待機が失敗するのを修正する (1 MiB で切り詰めて続行する)
+  - @voluntas
 - [FIX] Linux の LogConsumer 配信タスクで `accept` が panic した場合に `active_consumers` が減少せず `all_done()` が永久に false になるのを修正する (Drop ガードで panic 経路でもカウンタを確実に減算する)
   - @voluntas
 - [FIX] macOS の exec で `containerWait` 失敗時に読み取りスレッド 2 本と pipe FD がプロセス終了まで残るのを修正する (キャンセルフラグ + poll ベースの読み取りで有限時間内に FD を回収する)

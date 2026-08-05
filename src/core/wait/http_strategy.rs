@@ -714,6 +714,67 @@ mod tests {
             .await
             .expect("レスポンスを受信できる");
 
+        assert_eq!(
+            response.status(),
+            200,
+            "切り詰め後もステータスが読み取れること"
+        );
+        assert_eq!(response.body().len(), MAX_HTTP_RESPONSE_BODY_BYTES);
+        assert!(response.body().iter().all(|byte| *byte == b'x'));
+        server.await.expect("TCP サーバーが完了する");
+    }
+
+    /// 10 MiB 超のレスポンスでも 1 MiB で切り詰めて続行し、エラーにならないこと。
+    ///
+    /// 修正前はデコーダの既定 `max_body_size` (10 MiB) が先に発動し、Content-Length
+    /// フレーミングの 10 MiB 超応答で `body too large` エラーになっていた。
+    #[tokio::test]
+    async fn response_body_over_ten_mebibytes_is_truncated_to_one_mebibyte() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("TCP リスナーを確保できる");
+        let port = listener
+            .local_addr()
+            .expect("TCP リスナーのアドレスを取得できる")
+            .port();
+        // デコーダ既定上限 (10 MiB) を超えるサイズ。保持量は 1 MiB に切り詰められる。
+        let body = vec![b'x'; 10 * 1024 * 1024 + 1];
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("TCP 接続を受け付ける");
+            let mut request = [0_u8; 1024];
+            let _ = stream
+                .read(&mut request)
+                .await
+                .expect("リクエストを受信できる");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("レスポンスヘッダを送信できる");
+            // 10 MiB 超のボディを一括送信する (request_timeout 内に収まる)。
+            stream
+                .write_all(&body)
+                .await
+                .expect("レスポンスボディを送信できる");
+        });
+        let strategy = HttpWaitStrategy::new("/health");
+        let request = strategy
+            .build_request_bytes("127.0.0.1", port)
+            .expect("リクエストを構築できる");
+
+        let response = strategy
+            .send_request("127.0.0.1", port, &request)
+            .await
+            .expect("10 MiB 超のレスポンスでもエラーにならないこと");
+
+        assert_eq!(
+            response.status(),
+            200,
+            "切り詰め後もステータスが読み取れること"
+        );
         assert_eq!(response.body().len(), MAX_HTTP_RESPONSE_BODY_BYTES);
         assert!(response.body().iter().all(|byte| *byte == b'x'));
         server.await.expect("TCP サーバーが完了する");
