@@ -75,6 +75,8 @@
   - @voluntas
 - [ADD] macOS で OCI `maskedPaths` / `readonlyPaths` を `ImageExt::with_masked_paths` / `with_readonly_paths` で設定できるようにする（Apple container 1.2.0 以上）
   - @voluntas
+- [FIX] Linux のレジストリ認証で資格情報 (username / password / identitytoken) に制御文字が含まれても X-Registry-Auth の JSON が構文として有効になるようにエスケープを修正する
+  - @voluntas
 - [FIX] Linux の HTTP 待機戦略で 10 MiB 超のレスポンスが `body too large` エラーになり待機が失敗するのを修正する (1 MiB で切り詰めて続行する)
   - @voluntas
 - [FIX] Linux の LogConsumer 配信タスクで `accept` が panic した場合に `active_consumers` が減少せず `all_done()` が永久に false になるのを修正する (Drop ガードで panic 経路でもカウンタを確実に減算する)

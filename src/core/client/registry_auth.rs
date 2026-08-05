@@ -140,9 +140,28 @@ fn extract_auth_entry(config_json: &str, key: &str) -> Option<String> {
     Some(encoded)
 }
 
-/// JSON 文字列値をエスケープする (最小限: バックスラッシュとダブルクォート)。
+/// JSON 文字列値をエスケープする (引用符なし。呼び出し側の `format!` で包む)。
+///
+/// バックスラッシュ・ダブルクォートに加え、JSON 文字列内でエスケープ必須の制御文字
+/// (0x00-0x1F) を処理する。短縮エスケープ (`\b` / `\f` / `\n` / `\r` / `\t`) と、
+/// それ以外の `< 0x20` は `\uXXXX` 化する。`docker_client::escape_json` と同じ
+/// エスケープロジック (制御文字を含む)。
 fn escape_json_value(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut escaped = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\u{0008}' => escaped.push_str("\\b"),
+            '\u{000c}' => escaped.push_str("\\f"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c if (c as u32) < 0x20 => escaped.push_str(&format!("\\u{:04x}", c as u32)),
+            c => escaped.push(c),
+        }
+    }
+    escaped
 }
 
 #[cfg(test)]
@@ -285,5 +304,117 @@ mod tests {
         // auths が空の場合は None を返すこと。
         let config = r#"{"auths":{}}"#;
         assert!(extract_auth_entry(config, "https://index.docker.io/v1/").is_none());
+    }
+
+    #[test]
+    fn escape_json_value_escapes_control_characters() {
+        // 制御文字が JSON 文字列内で合法なエスケープになること。
+        // 短縮エスケープ (\n / \r / \t 等) と \uXXXX 化の両系統を検証する。
+        assert_eq!(escape_json_value("a\nb"), "a\\nb");
+        assert_eq!(escape_json_value("a\rb"), "a\\rb");
+        assert_eq!(escape_json_value("a\tb"), "a\\tb");
+        assert_eq!(escape_json_value("a\u{0008}b"), "a\\bb");
+        assert_eq!(escape_json_value("a\u{000c}b"), "a\\fb");
+        // 短縮エスケープの無い制御文字は \uXXXX になる。
+        assert_eq!(escape_json_value("a\u{0001}b"), "a\\u0001b");
+        // バックスラッシュとダブルクォートもエスケープされる。
+        assert_eq!(escape_json_value("a\"b\\c"), "a\\\"b\\\\c");
+        // 通常文字はそのまま。
+        assert_eq!(escape_json_value("plain"), "plain");
+    }
+
+    #[test]
+    fn escape_json_value_roundtrips_through_nojson() {
+        // エスケープ済み文字列が JSON 文字列値としてパースできること (往復)。
+        // 制御文字の代表ケースに加え、境界値 (\u0000 / \u001f)・短縮エスケープ
+        // 全種・空文字列を検証する。
+        for s in [
+            "",
+            "a\nb",
+            "a\rb",
+            "a\tb",
+            "a\u{0008}b",
+            "a\u{000c}b",
+            "a\u{0000}b",
+            "a\u{001f}b",
+            "a\u{0001}b",
+            "a\"b\\c",
+            "plain",
+        ] {
+            let escaped = escape_json_value(s);
+            let json = format!("\"{escaped}\"");
+            let parsed = nojson::RawJson::parse(&json)
+                .expect("escape_json_value の出力は JSON 文字列としてパースできること");
+            let value = String::try_from(parsed.value()).expect("JSON 文字列値として読めること");
+            assert_eq!(value, s, "往復で元の文字列が復元されること");
+        }
+    }
+
+    #[test]
+    fn extract_auth_entry_with_control_chars_in_credentials() {
+        // auth フィールド経路: 資格情報 (username / password) に制御文字が含まれても、
+        // 生成される X-Registry-Auth の JSON が構文として有効であること。
+        // base64 経由で config.json に auth フィールドを埋め込む。
+        let credentials = Base64::encode_string("user\nline:pa\tss\u{0001}".as_bytes());
+        let config =
+            format!(r#"{{"auths":{{"https://index.docker.io/v1/":{{"auth":"{credentials}"}}}}}}"#);
+        let result = extract_auth_entry(&config, "https://index.docker.io/v1/")
+            .expect("認証エントリが取得できること");
+
+        // 生成されたヘッダ JSON がパース可能 (構文として有効) であること。
+        let decoded = Base64::decode_vec(&result).expect("デコードできること");
+        let parsed =
+            nojson::RawJson::parse(std::str::from_utf8(&decoded).expect("UTF-8 であること"))
+                .expect("制御文字入り資格情報でもヘッダ JSON が有効であること");
+        let value = parsed.value();
+        let username: String = value
+            .to_member("username")
+            .and_then(|m| m.required())
+            .ok()
+            .and_then(|v| TryInto::<String>::try_into(v).ok())
+            .expect("username が復元できること");
+        let password: String = value
+            .to_member("password")
+            .and_then(|m| m.required())
+            .ok()
+            .and_then(|v| TryInto::<String>::try_into(v).ok())
+            .expect("password が復元できること");
+        assert_eq!(
+            username, "user\nline",
+            "改行を含む username が復元されること"
+        );
+        assert_eq!(
+            password, "pa\tss\u{0001}",
+            "タブと制御文字を含む password が復元されること"
+        );
+    }
+
+    #[test]
+    fn extract_auth_entry_with_control_chars_in_identitytoken() {
+        // identitytoken 経路: トークンに制御文字が含まれても、生成される
+        // X-Registry-Auth の JSON が構文として有効であること。
+        // config.json の identitytoken は JSON エスケープ表記 (\n 等) で書く
+        // (nojson は生の制御文字を拒否するため)。
+        let config =
+            r#"{"auths":{"https://index.docker.io/v1/":{"identitytoken":"tok\nen\u0001"}}}"#;
+        let result = extract_auth_entry(config, "https://index.docker.io/v1/")
+            .expect("identitytoken が取得できること");
+
+        // identitytoken 経路は {"identitytoken":"..."} 形式の JSON を返す。
+        let decoded = Base64::decode_vec(&result).expect("デコードできること");
+        let parsed =
+            nojson::RawJson::parse(std::str::from_utf8(&decoded).expect("UTF-8 であること"))
+                .expect("制御文字入り identitytoken でもヘッダ JSON が有効であること");
+        let token: String = parsed
+            .value()
+            .to_member("identitytoken")
+            .and_then(|m| m.required())
+            .ok()
+            .and_then(|v| TryInto::<String>::try_into(v).ok())
+            .expect("identitytoken が復元できること");
+        assert_eq!(
+            token, "tok\nen\u{0001}",
+            "改行と制御文字を含む identitytoken が復元されること"
+        );
     }
 }
