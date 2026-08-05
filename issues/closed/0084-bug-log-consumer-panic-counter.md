@@ -1,7 +1,7 @@
 # バグ: LogConsumer の `accept` panic で `active_consumers` が減少せず、Drop の完了待ちが毎回無駄になる
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-log-consumer-panic-counter
 - Polished: 2026-08-04
 
@@ -31,7 +31,8 @@ Linux の LogConsumer 配信タスクで、ユーザーコールバック (`LogC
 
 ## 解決方法
 
-- `src/core/client/docker_log_stream.rs` の `spawn_log_consumer_task` で、配信ループの終了処理を `TerminateOnDrop` と同型の Drop ガードに変更し、`consumer_finished()` の呼び出しを保証する (ガードは async block 内・配信ループの前で生成する。正常系の明示呼び出しは削除する)
-- `tokio::spawn` は失敗を返さない (Runtime コンテキスト不在時は panic する) ため、spawn 失敗時のカウンタ戻しは不要
-- 単体テストに panic するコールバックのケースを追加する (テストは配信対象の行を共有バッファに追記して通知し、`terminate_all()` で `demux_done` を立てたうえで、`all_done()` をタイムアウト付きでポーリングして検証する。`all_done()` は `demux_done && active_consumers == 0` を要求するため、`terminate_all()` の前に `active_consumers == 0` をポーリングして「EOF を経ずにタスクが終了した = panic 経由で減算された」ことを独立に検証する。正常終了テスト (完了条件の「ちょうど 1 回だけ減算されること」) でも `terminate_all()` が必要。`spawn_log_consumer_task` は JoinHandle を返さないため)
-- 注意: 0096 (refactor) は両プラットフォームの LogConsumer 行配信ループの共通化を予定しており、実装順序によっては干渉し得る
+- `src/core/client/docker_log_stream.rs` の `spawn_log_consumer_task` に、`TerminateOnDrop` と同型の Drop ガード `ConsumerFinishedOnDrop` を導入した。ガードは async ブロック内・配信ループの前に生成し、正常終了・panic・タスクキャンセルのいずれの経路でも future の drop とともに `consumer_finished()` をちょうど 1 回呼ぶ (`std::panic::catch_unwind` は使わない)
+- 正常終了時の明示的な `consumer_finished()` 呼び出しを削除し、ガードに一本化した (二重減算による `usize` アンダーフローを防ぐ)
+- panic 自体は tokio の既定どおり stderr にログ出力される (握り潰さない)
+- `register_consumer()` は `tokio::spawn` の外で呼ぶため、spawn 自体の panic / 初回 poll 前の cancel ではカウンタが増えたままになるが、呼び出し元は全て async 文脈であり実害がない旨をガードの doc に明記した
+- テスト: `consumer_panic_still_decrements_active_consumers` (panic 経路で `active_consumers` が 0 に戻り `all_done()` が true) と `consumer_normal_finish_decrements_active_consumers_once` (正常終了でちょうど 1 回だけ減算) を追加した
