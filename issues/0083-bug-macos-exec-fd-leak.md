@@ -1,7 +1,7 @@
 # バグ: macOS の exec で `containerWait` 失敗時に読み取りスレッド 2 本と FD 2 個がプロセス終了まで残る
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-macos-exec-fd-leak
 - Polished: 2026-08-04
 
@@ -32,6 +32,9 @@ macOS の `ContainerAsync::exec` で `containerWait` がエラーを返した場
 
 ## 解決方法
 
-- `src/core/client/xpc_client.rs` の `exec` の `containerWait` エラーパス (プロセスが継続実行されている可能性があるため読み取り端 FD を閉じる必要があるケース。join エラー時はプロセス終了済みで EOF により自然終了するため対象外) でキャンセルフラグ (`Arc<AtomicBool>`) を立て、読み取りスレッドは poll ベースの読み取り (`libc::poll`) で FD の読み取り可能性とフラグを監視するよう変更する (フラグが立ったら上限時間以内に終了する)
-- `src/core/client/xpc_client.rs` の `#[cfg(test)]` モジュールに、キャンセルフラグを立てたときに読み取りスレッドが終了し FD が回収されることを検証する単体テストを追加する (モックやスタブは使わない)
-- 既存の exec 統合テスト (`tests/container_macos.rs` の exec 系) が引き続き通ることで正常系の挙動不変を確認する
+- `src/core/client/xpc_client.rs` の `exec` に、エラーパス専用のキャンセルフラグ (`Arc<AtomicBool>`) を導入した。`containerWait` 失敗時にフラグを立ててから `Err` を返す
+- 読み取りスレッドを `read_file_to_vec_cancellable` (新設) に変更し、`libc::poll` で FD の読み取り可能性を監視しつつ、poll のタイムアウト (100ms) ごとにフラグを確認する。フラグが立っているのを観測したら即座に読み取りを打ち切って `Ok(None)` を返し、FD を閉じて終了する (最悪でも poll 間隔 + read 1 回以内)
+- 正常系 (フラグが立たない) では EOF まで読み切って `Ok(Some(bytes))` を返し、従来の読み取り契約を維持する。時間による打ち切りは行わない (5 秒超の exec でも出力を失わない)
+- POLLERR / POLLNVAL は明示エラーにした。既存の `read_file_to_vec` は本番から未使用になったため削除し、64 MiB 上限・境界のテストを `read_file_to_vec_cancellable` に移行した
+- デタッチの意図 (join によるハング回避) は維持する (エラーパスでは join しない)
+- テスト: `read_file_to_vec_cancellable` の単体テスト 6 件 (キャンセルで終了・正常系 EOF・5 秒超の非打ち切り・小ファイル・64 MiB 上限超過・ちょうど 64 MiB 境界) を追加し、既存の exec 統合テスト (macOS) で正常系の挙動不変を確認した
