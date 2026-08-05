@@ -1,7 +1,7 @@
 # バグ: 同期ログリーダーに再入検出が無く、LogConsumer コールバック内で呼ぶと共有ランタイムの worker が凍結する
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-sync-log-reader-reentry
 - Polished: 2026-08-04
 
@@ -32,5 +32,9 @@
 
 ## 解決方法
 
-- `src/core/containers/sync_container.rs` の `Container::stdout` / `stderr` で、`block_on_runtime` と同じ再入判定 (共通関数化) を行い、再入時は read 時に `io::Error` を返す専用リーダーを返す
-- 回帰テストを追加する (LogConsumer コールバック内から `Container::stdout` / `stderr` を呼び、read でエラーが返りランタイムが凍結しないことを検証する。`tests/container_sync_drop_macos.rs` は最終 drop 検証専用バイナリのため使わない。macOS は `tests/container_macos.rs` 等、Linux は `tests/container_linux.rs` 等の blocking feature ゲート付きテストに配置する)
+- `src/core/containers/sync_container.rs` の `Container::stdout` / `stderr` で、`block_on_runtime` と同じ再入判定 (`Handle::try_current()` の id 一致) を共通関数 `is_reentering_shared_runtime` に切り出し、再入時は読み取りで `io::Error` を返す専用リーダー `ReentryErrorReader` を返すようにした (公開 API の形状 `Box<dyn BufRead + Send>` は不変)
+- `block_on_runtime` も `is_reentering_shared_runtime` を使うよう共通化した
+- `ReentryErrorReader` は `read` / `fill_buf` と、それらに委譲する `read_line` / `read_until` / `read_to_end` 等の全読み取り経路で再入検出エラーを返す (`consume` は `fill_buf` 成功後にしか呼ばれない契約のため no-op)
+- 検出はリーダー取得時のみ。コールバック外で取得したリーダーをコールバック内で読むケースは対象外 (README / rustdoc に明記)
+- README と `consumer.rs` / `sync_container.rs` の rustdoc を新挙動に合わせて更新した (同期ログリーダーの再入・`spawn_blocking` 上での安全側検出の注意を含む)
+- テスト: `ReentryErrorReader` / `is_reentering_shared_runtime` の単体テストと、LogConsumer コールバック内から `Container::stdout` / `stderr` を呼んで再入検出エラーを検証する統合テスト (Linux / macOS) を追加した
