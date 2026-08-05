@@ -1,6 +1,6 @@
 ---
 name: shiguredo-container
-description: 時雨堂のテスト用コンテナライブラリ shiguredo_container の機能・API リファレンス。Apple container (macOS XPC) / Docker Engine API (Linux) でのコンテナ起動、待機戦略 (WaitFor / Healthcheck)、exec、ログ、ポート解決、ファイルコピー、feature 構成に関する質問時に使用。
+description: 時雨堂のテスト用コンテナライブラリ shiguredo_container の機能・API リファレンス。Apple container (macOS XPC) / Docker Engine API (Linux) でのコンテナ起動、イメージ pull・プライベートレジストリ認証、待機戦略 (WaitFor / Healthcheck)、exec、ログ、ポート解決、ファイルコピー、feature 構成に関する質問時に使用。
 ---
 
 # shiguredo_container
@@ -18,7 +18,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 ## バージョン情報
 
 - crate 名: `shiguredo_container`
-- バージョン: 2026.1.0-canary.6
+- バージョン: 2026.1.0-canary.8
 - Rust Edition: 2024
 - 最小 Rust バージョン: 1.93
 - ライセンス: Apache-2.0
@@ -63,11 +63,13 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 
 | メソッド | macOS (XPC) | Linux (Docker) |
 |:--|:--|:--|
-| `with_cmd`, `with_name`, `with_tag`, `with_container_name`, `with_label(s)`, `with_env_var`, `with_mapped_port`, `with_startup_timeout`, `with_working_dir`, `with_ready_conditions` | 対応 | 対応 |
-| `with_platform` | 対応 (`"linux/amd64"` で rosetta / pull / architecture に反映) | 対応 (pull / create の platform クエリパラメータに反映) |
+| `with_cmd`, `with_name`, `with_tag`, `with_container_name`, `with_label(s)`, `with_startup_timeout`, `with_working_dir`, `with_ready_conditions` | 対応 | 対応 |
+| `with_env_var` | 対応 (`Image::env_vars` と同名の場合は `with_env_var` 側で上書き) | 対応 |
+| `with_platform` | 対応 (`"linux/amd64"` で rosetta / pull / architecture に反映。一致する manifest が無ければ異なる architecture へフォールバックせずエラー) | 対応 (pull / create の platform クエリパラメータに反映) |
 | `with_network` | 部分対応 (事前に `container network create` が必要。自動作成しない) | 対応 (事前に `docker network create` が必要。自動作成しない) |
 | `with_mount` | 対応 (Bind / Volume / Tmpfs) | 対応 (Bind は Binds、Volume / Tmpfs は Mounts に反映) |
-| `with_copy_to` | 対応 (XPC `containerCopyIn`。start 後 copy。起動前契約なし。親作成は `createParents`。ディレクトリ再帰投入可。`uid` / `gid` はコピー後 chown で反映 (非ゼロの場合のみ、ディレクトリ一括投入時は `chown -R`)) | 対応 (create → copy → start。`PUT /containers/{id}/archive?path=/`。親ディレクトリ自動作成・ディレクトリ一括投入。`mode` / `uid` / `gid` は regular file に反映。ターゲットパスに `..` / 終端 `.` / `//` は明示エラー) |
+| `with_copy_to` | 対応 (XPC `containerCopyIn`。start 後 copy。起動前契約なし。親作成は `createParents`。ディレクトリ再帰投入可。`uid` / `gid` はコピー後 chown で反映 (非ゼロの場合のみ、ディレクトリ一括投入時は `chown -R`)) | 対応 (create → copy → start。`PUT /containers/{id}/archive?path=/`。親ディレクトリ自動作成・ディレクトリ一括投入。`mode` / `uid` / `gid` は regular file に反映。ターゲットパスに `..` / 終端 `.` / `//` は明示エラー。1 ファイルと 1 ソース分の tar は各 64 MiB 上限) |
+| `with_mapped_port` | 対応 (`host_port = 0` は空きポートを事前割当。bind 解放後から start までの競合には自動再試行なし) | 対応 (`host_port = 0` は Docker Engine のランダム割当に委譲) |
 | `with_log_consumer` | 対応 (行単位で `LogFrame` を配信) | 対応 (demux 済み共有バッファから行単位で配信。行末 `\n` / `\r` 剥がし、終端後の非改行残余は破棄) |
 | `with_privileged` | 部分対応 (`capAdd: ["ALL"]` 相当) | 対応 |
 | `with_cap_add`, `with_cap_drop`, `with_shm_size`, `with_readonly_rootfs` | 対応 | 対応 |
@@ -80,6 +82,12 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `with_health_check` | 未実装 (XPC 制約)。start 時に明示エラー | 対応 (Config.Healthcheck)。`WaitFor::healthcheck` と併用可 |
 
 本家にあって存在しないもの: `with_ulimit` / `with_cgroupns_mode` / `with_userns_mode` / `with_security_opt` / `with_host_config_modifier` / `with_reuse` / `with_exposed_host_port(s)` / `with_device_requests` (XPC に設定口が無い、または方針で未対応)。
+
+## イメージ pull とレジストリ認証
+
+- Linux の private registry 認証は `DOCKER_AUTH_CONFIG`、`DOCKER_CONFIG/config.json`、`~/.docker/config.json` の順で `auths` の静的エントリを探索し、`X-Registry-Auth` を付与する。credential helper は未対応
+- `docker.io/...` / `index.docker.io/...` は Docker CLI と同じ `https://index.docker.io/v1/` の認証キーへ正規化する
+- Linux の pull が HTTP エラーになった場合は、Docker daemon のレスポンスに `message` があればエラー文へ含める
 
 ### `ContainerAsync<I>` / `Container<I>` のメソッド
 
@@ -118,12 +126,14 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 
 - `LogWaitStrategy`: `stdout(msg)`, `stderr(msg)`, `stdout_or_stderr(msg)`, `new(source, msg)`, `with_times(n)`
 - `HttpWaitStrategy`: `new(path)`, `with_port`, `with_method` (文字列), `with_header`, `with_body`, `with_basic_auth`, `with_bearer_auth`, `with_poll_interval`, `with_expected_status_code`, `with_response_matcher(Fn(&HttpResponse) -> bool)`。reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` で実装。TLS / `with_client` / `with_response_matcher_async` は無い
+- `HttpWaitStrategy::with_request_timeout` で 1 リクエスト単位のタイムアウトを変更できる (既定 10 秒)。`HttpResponse` は `status()` / `headers()` / `header(name)` / `body()` を持ち、body は先頭 1 MiB まで保持して超過分を切り詰める
 - `ExitWaitStrategy`: `new()`, `with_poll_interval`, `with_exit_code`
 - `HealthWaitStrategy`: Linux は inspect ポーリングで判定。macOS は常に `HealthCheckNotConfigured` エラー (XPC 制約)
 
 ### `ExecCommand` / `ExecResult` / `CmdWaitFor`
 
 - `ExecCommand::new(["cmd", "arg"])`, `with_container_ready_conditions(Vec<WaitFor>)`, `with_cmd_ready_condition(CmdWaitFor)`, `with_env_vars(iter)` (macOS: コンテナ env にマージされ同名は ExecCommand 側優先。Linux: コンテナ env を inspect で取得し exec 分で上書きマージして `ExecConfig.Env` に設定。空ならコンテナ env を継承)
+- `with_container_ready_conditions` の待機には `ContainerRequest::startup_timeout` (未指定時 60 秒) が適用される。ログ取得元が無い状態で `WaitFor::Log` を指定した場合は、exec 実行前に明示エラーを返す
 - `ExecResult`: `exit_code()`, `stdout()`, `stderr()`, `stdout_to_vec()`, `stderr_to_vec()`。exec 完了時点の全出力を保持したバッファ上のリーダーを返す (消費型)。Linux も multiplexed stream demux で stdout / stderr を返す
 - `CmdWaitFor`: `message_on_stdout(msg)` / `message_on_stderr(msg)` (両 OS とも取得済みバッファへの部分一致)、`exit()`, `exit_code(n)`, `seconds(n)`, `millis(n)`
 - **出力上限**: exec 出力のクライアント側蓄積には上限があり、超過時はエラーを返す (切り詰めない)。Linux は stdout + stderr の合計 (multiplexed stream 全体、フレームヘッダ込み) で 64 MiB (蓄積超過の時点で即座にエラー)、macOS は stdout / stderr 各 64 MiB (非対称。エラーはプロセス終了後に返る)。上限超過時は exit code を取得できない (コンテナ内のプロセスが継続するかは実測されていない)
@@ -133,6 +143,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 - `Mount::bind_mount(host, container)` / `volume_mount(name, container)` / `tmpfs_mount(container)`, `with_access_mode(AccessMode::ReadOnly | ReadWrite)`。tmpfs は `with_size_bytes` / `with_size("20g")` / `with_mode(0o770)`
 - `ContainerPort::Tcp(u16)` / `Udp(u16)` / `Sctp(u16)`。`IntoContainerPort` により `80.tcp()` / `53.udp()` と書ける。SCTP は Apple container 非対応で明示エラー
 - `Ports`: `map_to_host_port_ipv4(port)` / `map_to_host_port_ipv6(port)`
+- 同一コンテナポート (protocol 込み) への `with_mapped_port` の重複指定は、両 OS とも pull 前に明示エラーを返す
 
 ### `LogConsumer` / `LoggingConsumer`
 
@@ -225,6 +236,7 @@ let image = GenericImage::new("alpine", "latest")
 ```
 
 Linux は親ディレクトリ自動作成とディレクトリ一括投入に対応する。`with_copy_to` の起動前投入は Linux のみの公開契約である。
+Linux の `CopyDataSource::File` は 1 ファイル 64 MiB、1 ソースから生成する tar 全体も 64 MiB を上限とする。`CopyDataSource::Data` は 1 ファイル上限の対象外だが tar 全体上限は受け、超過時は `CopyToContainerError::SizeLimitExceeded` を返す。
 
 macOS で起動前にファイルを見せたい場合は `with_mount(Mount::bind_mount(host_path, container_path))` を使うこと (virtiofs として起動前に見えるようになる)。
 host_path は絶対パスかつ実ファイル / 実ディレクトリ必須。
@@ -269,12 +281,13 @@ let container = GenericImage::new("nginx", "latest")
 - `WaitContainerError`: `WaitLog`, `StateUnavailable`, `HttpWait(HttpWaitError)` (feature), `HealthCheckNotConfigured`, `Unhealthy`, `StartupTimeout`, `UnexpectedExitCode { expected, actual }`
 - `ExecError`: `ExitCodeMismatch { expected, actual }`, `WaitLog(WaitLogError)`
 - `WaitLogError`: `EndOfStream(Vec<Vec<u8>>)` (本家は `Vec<Bytes>`。意図的差分), `Io`
+- `CopyToContainerError`: `IoError`, `PathNameError`, `SizeLimitExceeded { limit, name }`
 
 ## 既知の制限事項
 
 - **macOS のコンテナ ID 制約**: コンテナ ID (`with_container_name` の値) は Apple container 1.2.0 の `nameValid` と同じ制約 (先頭は英数字・実質 2 文字以上・63 文字以下・文字種は英数字 / `_` / `.` / `-`) を持つ。違反すると `AsyncRunner::start` が pull / resolve より前に明示エラーを返す
 - **macOS の Local Network Privacy (LNP)**: `HttpWaitStrategy` や published port への接続は macOS 15+ の LNP にブロックされ得る。LNP は TCC / MDM で事前付与できない。CI ではコンテナ IP 直結テストを基本とし、published port 依存テストは許可済み環境でのみ実行する
-- **blocking の再入 deadlock**: `LogConsumer` コールバック内や既存の tokio ランタイムコンテキストから `SyncRunner::start` 等の同期 API を呼ぶと共有 Runtime への再入で deadlock する。ライブラリは再入を検出して即エラーにするが、コールバック内での同期 API 呼び出しは避けること。共有 Runtime ワーカースレッド上で最後の同期 `Container` を drop するとハングし得る既知の限界もある
+- **blocking の再入 deadlock**: `LogConsumer` コールバック内や既存の tokio ランタイムコンテキストから `SyncRunner::start` 等の同期 API を呼ぶと共有 Runtime への再入で deadlock する。ライブラリは再入を検出して即エラーにする。共有 Runtime 内から `spawn_blocking` したスレッドでも安全側に倒して再入エラーになる。同期ログリーダー (`Container::stdout` / `stderr`) はコールバック内で取得すると読み取り時に `io::Error` を返すが、コールバック外で取得済みのリーダーをコールバック内で読むケースは検出しない。共有 Runtime ワーカースレッド上で最後の同期 `Container` を drop するとハングし得る既知の限界もある
 - **Linux の残ギャップ**: `with_ssh` / `with_masked_paths` / `with_readonly_paths` とネットワークの自動作成・自動削除が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
 - **イメージビルド未対応**: `GenericBuildableImage` / `BuildableImage` 等の build 系 API は無い
 - **reuse 未対応**: `reusable-containers` 相当の feature・型は無い
