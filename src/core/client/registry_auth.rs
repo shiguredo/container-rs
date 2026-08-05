@@ -3,23 +3,38 @@
 //! `DOCKER_AUTH_CONFIG` / `DOCKER_CONFIG` / `~/.docker/config.json` から
 //! 静的エントリ (`auths`) のみを読む。credential helper は対象外。
 
+/// Docker Hub の auths 参照キー。docker login が config.json に書き込む形式。
+const DOCKER_HUB_AUTH_KEY: &str = "https://index.docker.io/v1/";
+
 /// イメージ参照から auths の参照キーを抽出する。
 ///
 /// Docker Hub の場合は `https://index.docker.io/v1/`、
 /// それ以外は先頭コンポーネント (レジストリホスト) を返す。
 /// `/` を含まない参照 (例: `alpine:latest`) は常に Docker Hub。
+///
+/// 先頭コンポーネントが `docker.io` / `index.docker.io` の場合は
+/// docker CLI の `getAuthConfigKey` と同じく Docker Hub のキーに正規化する
+/// (この 2 ドメインのみが対象。`registry-1.docker.io` やポート付きホストは
+/// 正規化しない)。
 pub(crate) fn auths_key(descriptor: &str) -> String {
-    // `/` を含まない場合は Docker Hub 固有。
-    let Some(first) = descriptor.split('/').next() else {
-        return "https://index.docker.io/v1/".to_string();
-    };
+    // split は空文字でも常に 1 要素以上を返すため、ここは到達しない。
+    let first = descriptor
+        .split('/')
+        .next()
+        .expect("split は必ず 1 要素以上を返すため到達しない");
     // `/` で分割して 2 コンポーネント以上ある場合のみホスト判定する。
     if descriptor.contains('/')
         && (first.contains('.') || first.contains(':') || first == "localhost")
     {
-        first.to_string()
+        // docker login が config.json に書き込む Hub のキーは DOCKER_HUB_AUTH_KEY
+        // であり、そのまま `docker.io` をキーにすると認証ヘッダに拾えないため。
+        if first == "docker.io" || first == "index.docker.io" {
+            DOCKER_HUB_AUTH_KEY.to_string()
+        } else {
+            first.to_string()
+        }
     } else {
-        "https://index.docker.io/v1/".to_string()
+        DOCKER_HUB_AUTH_KEY.to_string()
     }
 }
 
@@ -114,16 +129,12 @@ fn extract_auth_entry(config_json: &str, key: &str) -> Option<String> {
     let (username, password) = decoded.split_once(':')?;
 
     // X-Registry-Auth ヘッダ用の JSON を構築する。
-    let serveraddress = if key == "https://index.docker.io/v1/" {
-        "https://index.docker.io/v1/"
-    } else {
-        key
-    };
+    // serveraddress には照合に使ったキーをそのまま使う (auths_key が正規化済みの値を返す)。
     let header_json = format!(
         "{{\"username\":\"{}\",\"password\":\"{}\",\"serveraddress\":\"{}\"}}",
         escape_json_value(username),
         escape_json_value(password),
-        escape_json_value(serveraddress)
+        escape_json_value(key)
     );
     let encoded = Base64::encode_string(header_json.as_bytes());
     Some(encoded)
@@ -137,12 +148,34 @@ fn escape_json_value(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64ct::{Base64, Encoding};
+
+    // 親テストから子プロセスへ「子として起動されたこと」を伝える環境変数。
+    // wait モジュールの run_env_case と同じ分離方式で、環境変数を直接書き換えずに済ます。
+    const DOCKER_HUB_TEST_CHILD_ENV: &str = "SHIGUREDO_CONTAINER_REGISTRY_AUTH_TEST_CHILD";
 
     #[test]
     fn auths_key_docker_hub_for_plain_image() {
         // Docker Hub のイメージは https://index.docker.io/v1/ を返すこと。
         assert_eq!(auths_key("alpine:latest"), "https://index.docker.io/v1/");
         assert_eq!(auths_key("library/nginx"), "https://index.docker.io/v1/");
+    }
+
+    #[test]
+    fn auths_key_docker_hub_normalizes_docker_io_references() {
+        // docker.io / index.docker.io 形式は Docker Hub のキーに正規化すること。
+        assert_eq!(
+            auths_key("docker.io/org/private"),
+            "https://index.docker.io/v1/"
+        );
+        assert_eq!(
+            auths_key("index.docker.io/org/private"),
+            "https://index.docker.io/v1/"
+        );
+        assert_eq!(
+            auths_key("docker.io/library/nginx:latest"),
+            "https://index.docker.io/v1/"
+        );
     }
 
     #[test]
@@ -157,10 +190,21 @@ mod tests {
     }
 
     #[test]
+    fn auths_key_does_not_normalize_docker_hub_subdomains() {
+        // doc コメントで正規化対象外と明記したケースを固定する。
+        // registry-1.docker.io は Docker Hub の実 API ホストだが、
+        // docker CLI と同じく正規化しない。
+        assert_eq!(
+            auths_key("registry-1.docker.io/org/img"),
+            "registry-1.docker.io"
+        );
+        // ポート付きホストも正規化しない (プライベートレジストリ扱い)。
+        assert_eq!(auths_key("docker.io:5000/img"), "docker.io:5000");
+    }
+
+    #[test]
     fn extract_auth_entry_decodes_base64_auth() {
         // auth フィールドの base64 デコードとヘッダ構築を検証する。
-        use base64ct::{Base64, Encoding};
-
         let credentials = Base64::encode_string(b"user:pass");
         let config =
             format!(r#"{{"auths":{{"https://index.docker.io/v1/":{{"auth":"{credentials}"}}}}}}"#);
@@ -168,7 +212,8 @@ mod tests {
         assert!(result.is_some(), "認証エントリが取得できること");
 
         // 結果を base64 デコードして JSON 構造を検証する。
-        let decoded = Base64::decode_vec(&result.expect("Some")).expect("デコードできること");
+        let decoded = Base64::decode_vec(&result.expect("認証エントリを取得できたこと"))
+            .expect("デコードできること");
         let json_str = String::from_utf8(decoded).expect("UTF-8 であること");
         assert!(
             json_str.contains("\"username\":\"user\""),
@@ -177,6 +222,54 @@ mod tests {
         assert!(
             json_str.contains("\"password\":\"pass\""),
             "password が含まれること: {json_str}"
+        );
+    }
+
+    #[test]
+    fn x_registry_auth_picks_docker_hub_entry_for_docker_io_reference() {
+        // 環境変数はプロセスグローバルなため、親プロセスで書き換えると
+        // 並列実行中の他テストが読む environ と競合する (Rust 2024 では UB)。
+        // 既存の wait モジュールと同じく、子プロセスに DOCKER_AUTH_CONFIG を
+        // 渡してから子テストで検証する。
+        let credentials = Base64::encode_string(b"user:pass");
+        let config =
+            format!(r#"{{"auths":{{"https://index.docker.io/v1/":{{"auth":"{credentials}"}}}}}}"#);
+        let executable = std::env::current_exe().expect("テストバイナリのパスを取得できること");
+        let status = std::process::Command::new(executable)
+            .args([
+                "--exact",
+                "core::client::registry_auth::tests::x_registry_auth_docker_hub_child",
+            ])
+            .env(DOCKER_HUB_TEST_CHILD_ENV, "1")
+            .env("DOCKER_AUTH_CONFIG", config)
+            .status()
+            .expect("環境変数を渡す子テストを起動できること");
+        assert!(status.success(), "子テストが成功すること: {status}");
+    }
+
+    #[test]
+    fn x_registry_auth_docker_hub_child() {
+        // 親テストから専用フラグを渡された場合のみ検証する。
+        // 通常のテスト実行ではスキップし、子プロセスとして起動されたときだけ
+        // DOCKER_AUTH_CONFIG を読んで検証する。
+        if std::env::var_os(DOCKER_HUB_TEST_CHILD_ENV).is_none() {
+            return;
+        }
+        let result = x_registry_auth("docker.io/org/private")
+            .expect("docker.io 形式でも Docker Hub エントリを取得できること");
+        let decoded = Base64::decode_vec(&result).expect("デコードできること");
+        let json_str = String::from_utf8(decoded).expect("UTF-8 であること");
+        assert!(
+            json_str.contains("\"username\":\"user\""),
+            "username が含まれること: {json_str}"
+        );
+        assert!(
+            json_str.contains("\"password\":\"pass\""),
+            "password が含まれること: {json_str}"
+        );
+        assert!(
+            json_str.contains("\"serveraddress\":\"https://index.docker.io/v1/\""),
+            "serveraddress が含まれること: {json_str}"
         );
     }
 
