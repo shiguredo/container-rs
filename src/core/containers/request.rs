@@ -17,6 +17,12 @@ use crate::{
     },
 };
 
+/// 起動待機 (ready_conditions) の既定タイムアウト。
+///
+/// start 側 (`run_ready_sequence`) と exec 側 (`ContainerAsync::exec`) で共用する。
+/// `ContainerRequest::startup_timeout` 未設定時にこの値が使われる。
+pub(crate) const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// コンテナ起動のリクエスト。`Image` に設定を重ねて作る。
 #[must_use]
 pub struct ContainerRequest<I: Image> {

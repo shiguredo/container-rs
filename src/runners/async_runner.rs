@@ -10,7 +10,7 @@ use crate::{
     ContainerAsync, ContainerRequest, Image,
     core::{
         client::Client,
-        containers::async_container::ContainerLogSource,
+        containers::{async_container::ContainerLogSource, request::DEFAULT_STARTUP_TIMEOUT},
         error::{Result, WaitContainerError},
         wait::WaitFor,
     },
@@ -31,8 +31,6 @@ use crate::core::{
 
 #[cfg(target_os = "linux")]
 use crate::core::copy::{CopyDataSource, CopyToContainer};
-
-const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// コンテナを非同期に起動するトレイト。
 #[expect(async_fn_in_trait)]
@@ -209,7 +207,9 @@ where
                     stderr: err,
                 },
                 Err(e) => {
-                    if ready_conditions_require_log_fds(&ready_conditions) {
+                    if crate::core::containers::async_container::ready_conditions_require_log(
+                        &ready_conditions,
+                    ) {
                         rollback_remove(&id, client.remove(&id, true)).await;
                         return Err(log_fd_required_error(&e));
                     }
@@ -517,18 +517,6 @@ fn build_container_config<I: Image>(
             .map(|(hostname, host)| format!("{hostname}:{host}"))
             .collect(),
     }
-}
-
-/// ready_conditions に `WaitFor::Log` が含まれているか (macOS)。
-///
-/// ログ FD 取得失敗時に Log 戦略へ進むと EOF 後もポーリングし続け、
-/// `startup_timeout` まで原因不明に待つため、事前判定に使う。
-/// Linux はログストリームで Log 待機が成立するため macOS 限定。
-#[cfg(target_os = "macos")]
-fn ready_conditions_require_log_fds(ready_conditions: &[WaitFor]) -> bool {
-    ready_conditions
-        .iter()
-        .any(|c| matches!(c, WaitFor::Log(_)))
 }
 
 /// ログ FD 取得失敗かつ Log 戦略がある場合の明示エラーを組み立てる。
@@ -1083,8 +1071,6 @@ async fn copy_to_sources_linux<I: Image>(
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use crate::core::wait::WaitFor;
-
     use super::*;
 
     #[test]
@@ -1101,25 +1087,6 @@ mod tests {
         all.sort();
         all.dedup();
         assert_eq!(all.len(), total, "unique_suffix should never collide");
-    }
-
-    #[test]
-    fn ready_conditions_require_log_fds_detects_log_strategy() {
-        // WaitFor::Log があれば true、無ければ false になること。
-        assert!(ready_conditions_require_log_fds(&[
-            WaitFor::message_on_stdout("ready")
-        ]));
-        assert!(ready_conditions_require_log_fds(&[
-            WaitFor::seconds(1),
-            WaitFor::message_on_stderr("err"),
-        ]));
-        assert!(ready_conditions_require_log_fds(&[
-            WaitFor::message_on_either_std("either")
-        ]));
-        assert!(!ready_conditions_require_log_fds(&[]));
-        assert!(!ready_conditions_require_log_fds(&[WaitFor::Nothing]));
-        assert!(!ready_conditions_require_log_fds(&[WaitFor::seconds(1)]));
-        assert!(!ready_conditions_require_log_fds(&[WaitFor::healthcheck()]));
     }
 
     #[cfg(target_os = "macos")]

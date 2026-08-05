@@ -409,7 +409,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `pub fn new(cmd: impl IntoIterator<Item = impl Into<String>>) -> Self` | あり | 対応 | 対応 |  |
-| `pub fn with_container_ready_conditions(mut, Vec<WaitFor>)` | あり | 対応 | 対応 |  |
+| `pub fn with_container_ready_conditions(mut, Vec<WaitFor>)` | あり | 対応 | 対応 | 待機には `ContainerRequest::startup_timeout` (未設定時は既定 60 秒) が適用され、超過時は `WaitContainerError::StartupTimeout`。ログ取得元が無いのに `WaitFor::Log` を含む場合はコンテナ内コマンド実行前に明示エラー (10.1 参照) |
 | `pub fn with_cmd_ready_condition(mut, impl Into<CmdWaitFor>)` | あり | 対応 | 対応 |  |
 | `pub fn with_env_vars(mut, iter)` | あり | 対応 | 対応 | コンテナ env にマージして XPC `ProcessConfiguration.environment` へ送る。同名キーは ExecCommand 側が優先 / Docker: コンテナ env を inspect で取得し exec 分で上書きマージして `ExecConfig.Env` に設定。空ならコンテナ env を継承 |
 | `impl Default` | あり | 対応 | 対応 |  |
