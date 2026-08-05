@@ -4,6 +4,7 @@
 - Completed: {YYYY-MM-DD}
 - Branch: feature/refactor-merge-duplicate-implementations
 - Polished: {YYYY-MM-DD}
+- Updated: 2026-08-05
 
 ## 目的
 
@@ -19,13 +20,15 @@
 - **exec の env マージ** (`src/core/containers/async_container.rs` の `exec` 内 macOS / Linux 分岐): BTreeMap に積んで `KEY=VALUE` にする処理が同一形。ベース (コンテナ env vs リクエスト env) だけが違い、`split_once('=')` の展開と `format!("{k}={v}")` の収束が重複
 - **Linux の pull の二重構造** (`src/runners/async_runner.rs` の `resolve_or_pull_linux` と `src/core/client/docker_client.rs` の `resolve_image_descriptor`): どちらも 404 → pull → 再解決を行う (コメントで「二重構造は維持する」と自認)。正常系で pull が必要なケースに pull が 2 回走り得る
 - **`xpc::Filters.labels`** (`src/core/client/xpc_client.rs`): 常に空の `HashMap` で渡され、設定箇所が皆無。フィールドごと削除するか、実際に使うまで消す
+- **`escape_json_value` と `escape_json`** (`src/core/client/registry_auth.rs` と `src/core/client/docker_client.rs`): 引用符の有無以外は完全に同一の制御文字エスケープロジック。片方の修正が他方に反映されないドリフト源 (0086 で `escape_json_value` が制御文字対応になり、両者がほぼ同一になった)
 
 ## 設計方針
 
 - 各重複を共通関数・共通ヘルパーに統合する (挙動は変更しない)
 - ログ配信ループはプラットフォーム共通のヘルパーに抽出する
-- `resolve_or_pull_linux` は macOS 側と同じく「`ImageNotFound` のときのみ pull」に揃え、二重構造を解消する
+- `resolve_or_pull_linux` は macOS 側と同じく「`ImageNotFound` のときのみ pull」に揃え、二重構造を解消する (amd64 明示時の強制 pull は macOS 側のみの分岐であり、Linux 側への導入有無を確認する)
 - `Filters.labels` は未使用のため削除する
+- `escape_json_value` と `escape_json` は共通の内部関数 (引用符なしのエスケープ本体) に集約し、`escape_json_value` は引用符なし・`escape_json` は引用符付きの薄いラッパーにする
 
 ## 完了条件
 
@@ -39,3 +42,4 @@
 - `exec` の env マージを共通処理にまとめる
 - `src/runners/async_runner.rs` の `resolve_or_pull_linux` を macOS 側と同じ条件 (404 限定) に揃える
 - `xpc::Filters` の `labels` フィールドを削除する
+- `escape_json_value` と `escape_json` を共通のエスケープ本体に集約する (引用符の有無は呼び出し側で付ける)
