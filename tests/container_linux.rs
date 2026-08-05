@@ -39,6 +39,20 @@ fn assert_path_name_error(err: &Error) {
     );
 }
 
+/// エラーが `CopyToContainerError::SizeLimitExceeded` であることを検証する。
+fn assert_size_limit_error(err: &Error) {
+    let inner = err
+        .source()
+        .and_then(|s| s.downcast_ref::<shiguredo_container::core::CopyToContainerError>());
+    assert!(
+        matches!(
+            inner,
+            Some(shiguredo_container::core::CopyToContainerError::SizeLimitExceeded { .. })
+        ),
+        "エラー型が SizeLimitExceeded であること"
+    );
+}
+
 /// `docker inspect` を 1 回実行してコンテナ不在を assert する。
 ///
 /// Runtime 外 Drop や明示 `rm` の後で使う。両者とも呼び出し復帰時点で削除試行 (または
@@ -1121,6 +1135,117 @@ async fn copy_to_directory_source_with_missing_parents() {
 
     container.rm().await.expect("rm に失敗した");
     let _ = fs::remove_dir_all(&host_dir);
+}
+
+/// 単一ファイルが 64 MiB 上限を超える場合は、OOM せず明示エラーになること (パス含有)。
+#[tokio::test]
+async fn copy_to_single_file_over_size_limit_is_rejected() {
+    use std::fs;
+
+    // sparse ファイルで 64 MiB + 1 バイトを生成する (実データは数バイトでメモリを圧迫しない)。
+    let big_file =
+        std::env::temp_dir().join(format!("container-rs-copy-big-{}", std::process::id()));
+    let file = fs::File::create(&big_file).expect("大きなファイルの作成に失敗した");
+    file.set_len(64 * 1024 * 1024 + 1)
+        .expect("大きなファイルのサイズ設定に失敗した");
+
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/big.txt", big_file.clone())
+        .start()
+        .await
+        .expect_err("64 MiB 超のファイル投入は失敗すること");
+    assert_size_limit_error(&err);
+    assert!(
+        err.to_string().contains("copy-big"),
+        "エラーに失敗したホストパスが含まれること: {err}"
+    );
+
+    fs::remove_file(&big_file).expect("大きなファイルの削除に失敗した");
+}
+
+/// ディレクトリ配下のファイルが 64 MiB 上限を超える場合は、明示エラーになること。
+#[tokio::test]
+async fn copy_to_directory_with_over_size_limit_file_is_rejected() {
+    use std::fs;
+
+    let host_dir =
+        std::env::temp_dir().join(format!("container-rs-copy-dir-big-{}", std::process::id()));
+    fs::create_dir_all(&host_dir).expect("ホスト一時ディレクトリの作成に失敗した");
+    fs::write(host_dir.join("small.txt"), b"ok\n").expect("small.txt の書き込みに失敗した");
+    let big = host_dir.join("big.bin");
+    let file = fs::File::create(&big).expect("大きなファイルの作成に失敗した");
+    file.set_len(64 * 1024 * 1024 + 1)
+        .expect("大きなファイルのサイズ設定に失敗した");
+
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/big-dir", host_dir.clone())
+        .start()
+        .await
+        .expect_err("64 MiB 超のファイルを含むディレクトリ投入は失敗すること");
+    assert_size_limit_error(&err);
+    assert!(
+        err.to_string().contains("big.bin"),
+        "エラーに失敗したホストパスが含まれること: {err}"
+    );
+
+    fs::remove_dir_all(&host_dir).expect("ホスト一時ディレクトリの削除に失敗した");
+}
+
+/// tar 全体の蓄積が 64 MiB を超える場合は、明示エラーになること。
+///
+/// 単一ファイルは per-file 上限 (64 MiB) を超えないが、祖先ディレクトリのヘッダ
+/// (512 バイト) とファイルヘッダ (512 バイト) のオーバーヘッド分で tar 全体が
+/// 64 MiB を超えるケースを検証する (copy_from と同じ定義)。
+#[tokio::test]
+async fn copy_to_tar_total_over_size_limit_is_rejected() {
+    // ちょうど 64 MiB のファイルは per-file 上限を超えない。
+    let big_file =
+        std::env::temp_dir().join(format!("container-rs-copy-tar-big-{}", std::process::id()));
+    let file = std::fs::File::create(&big_file).expect("大きなファイルの作成に失敗した");
+    file.set_len(64 * 1024 * 1024)
+        .expect("大きなファイルのサイズ設定に失敗した");
+
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/tar-over.txt", big_file.clone())
+        .start()
+        .await
+        .expect_err("tar 全体で 64 MiB を超える投入は失敗すること");
+    assert_size_limit_error(&err);
+    // ホストパスではなく、UstarBuilder の蓄積 (tar エントリ名) で発動したこと。
+    // エラー名は tar エントリ名 (tar-over.txt) であり、ホストパス (copy-tar-big) を含まない。
+    assert!(
+        err.to_string().contains("tar-over.txt"),
+        "エラーに tar エントリ名が含まれること: {err}"
+    );
+    assert!(
+        !err.to_string().contains("copy-tar-big"),
+        "エラーにホストパスが含まれないこと (tar 全体上限の発動): {err}"
+    );
+
+    std::fs::remove_file(&big_file).expect("大きなファイルの削除に失敗した");
+}
+
+/// `CopyDataSource::Data` ソースは per-file 上限の対象外だが、tar 全体上限は受けること。
+#[tokio::test]
+async fn copy_to_data_source_respects_tar_total_limit() {
+    // ちょうど 64 MiB の Data ソースは per-file 上限の対象外 (読み込みを伴わない) だが、
+    // 祖先ディレクトリヘッダ (512) とファイルヘッダ (512) の分で tar 全体が
+    // 64 MiB を超え、投入時にエラーになる。
+    let data = vec![0u8; 64 * 1024 * 1024];
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/data.bin", data)
+        .start()
+        .await
+        .expect_err("Data ソースの tar 全体が 64 MiB を超える投入は失敗すること");
+    assert_size_limit_error(&err);
+    assert!(
+        err.to_string().contains("data.bin"),
+        "エラーに tar エントリ名が含まれること: {err}"
+    );
 }
 
 /// ディレクトリソース内の symlink は PathNameError で拒否されること。

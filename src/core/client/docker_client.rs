@@ -25,7 +25,7 @@ const DOCKER_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 
 /// Docker Engine API レスポンスボディの蓄積上限。macOS 経路 (`read_file_to_vec`) と同じ 64 MiB の値。
 ///
-/// 適用対象は以下の 4 経路で共有する (将来の上限変更で一部だけが変わる非対称を防ぐ):
+/// 適用対象は以下の 6 経路で共有する (将来の上限変更で一部だけが変わる非対称を防ぐ):
 /// - exec start の出力: demux 前の multiplexed stream 全体 (stdout + stderr の合計、
 ///   フレームヘッダ込み) で、macOS の stdout / stderr 各ストリーム別 64 MiB より実効上限が
 ///   厳しい (この非対称は許容する)。超過時は切り詰めずエラーにする。multiplexed stream を
@@ -33,6 +33,8 @@ const DOCKER_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 ///   出力が欠損するため。判定は macOS 側と同じ `>` 境界 (ちょうど 64 MiB は成功)
 /// - 1-shot ログ取得 (`?follow=false`) の各ストリーム蓄積
 /// - `copy_from` の tar 全体 (ヘッダ + データ + トレーラ)
+/// - `copy_to` の tar 全体 (ヘッダ + データ + トレーラ、`UstarBuilder` の蓄積)
+/// - `copy_to` の per-file 読み込み (コピー対象 1 ファイルあたり)
 /// - イメージ pull の進捗ストリーム (JSON Lines)
 pub(crate) const DOCKER_RESPONSE_BODY_LIMIT: usize = 64 * 1024 * 1024;
 

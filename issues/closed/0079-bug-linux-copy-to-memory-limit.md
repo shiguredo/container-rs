@@ -1,7 +1,7 @@
 # バグ: Linux の `with_copy_to` にメモリ上限がなく巨大ファイルで OOM し得る
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-linux-copy-to-memory-limit
 - Polished: 2026-08-04
 
@@ -29,6 +29,8 @@ issue 0064 で修正した「無制限メモリ蓄積」と同じクラスの問
 
 ## 解決方法
 
-- `copy_to_sources_linux` でファイル読み込み前にメタデータからサイズを確認し、上限 (64 MiB、既存の `DOCKER_RESPONSE_BODY_LIMIT` と同値) 超過ならエラーを返す (メタデータ確認と読み込みの間にファイルが成長する TOCTOU に備え、読み込み側でも上限を担保する)。per-file の上限超過エラーには該当ホストパスを含める
-- `UstarBuilder` の蓄積に 64 MiB 上限を設け、tar 全体の超過をエラーにする (上限判定はトレーラを含む tar 全体で行い、`copy_from` と同じ定義に合わせる)
-- テスト: `tests/container_linux.rs` に上限超過のテストを追加する (sparse ファイルで 64 MiB + 1 バイトのファイルを生成して投入し、エラーとパス含有を検証する。ディレクトリ配下のファイルが個別上限を超えるケースと、tar 全体の蓄積が上限を超えるケースも検証する)
+- `copy_to_sources_linux` で、ファイル読み込み前にメタデータサイズで 64 MiB 上限を確認し (`check_file_size_limit`)、`Read::take` / `AsyncReadExt::take` で上限 + 1 バイトまでしか読まない上限付き読み込み (`read_file_limited` / `read_file_limited_async`) を導入した。メタデータ確認と読み込みの間のファイル成長 (TOCTOU) も、上限超のメモリを確保せずに検出できる
+- `UstarBuilder` に蓄積上限を設け、1 ソースにつき生成する tar 全体 (ヘッダ + データ + トレーラ) が 64 MiB を超える場合は `SizeLimitExceeded` エラーにした。`append_file` は追記前に合計サイズを予測判定して fail-fast する (Data ソースの過渡的な二重確保を防ぐ)
+- 公開エラー型 `CopyToContainerError` に `SizeLimitExceeded { limit, name }` バリアントを追加した (後方互換のない変更)
+- 上限値は既存の `DOCKER_RESPONSE_BODY_LIMIT` (64 MiB) を共用し、doc の適用経路一覧を更新した
+- テスト: `UstarBuilder` の単体テスト 2 件 (蓄積上限・トレーラ経路) と、Linux 統合テスト 4 件 (単一ファイル 64 MiB+1・ディレクトリ配下・File ソースの tar 全体・Data ソースの tar 全体) を追加した

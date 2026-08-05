@@ -825,8 +825,70 @@ async fn copy_to_sources_linux<I: Image>(
 ) -> Result<()> {
     use std::path::{Path, PathBuf};
 
+    use crate::core::client::docker_client::DOCKER_RESPONSE_BODY_LIMIT;
     use crate::core::client::docker_tar::UstarBuilder;
     use crate::core::copy::CopyToContainerError;
+
+    /// 上限超過エラーをホストパス付きで返す短縮形。
+    fn size_limit_err(path: &Path) -> crate::Error {
+        crate::Error::other(CopyToContainerError::SizeLimitExceeded {
+            limit: DOCKER_RESPONSE_BODY_LIMIT,
+            name: path.display().to_string(),
+        })
+    }
+
+    /// 読み込み前のメタデータサイズが 64 MiB 上限を超える場合はエラーを返す。
+    /// エラーにはホストパスを含めて、どのファイルが失敗したか特定できるようにする。
+    /// メタデータ確認と読み込みの間にファイルが成長する TOCTOU に備え、
+    /// 読み込み側 (`read_file_limited` / `read_file_limited_async`) も上限付きにする。
+    fn check_file_size_limit(path: &Path, size: u64) -> Result<()> {
+        if size > DOCKER_RESPONSE_BODY_LIMIT as u64 {
+            return Err(size_limit_err(path));
+        }
+        Ok(())
+    }
+
+    /// ファイルを 64 MiB 上限付きでメモリへ読み込む (同期)。
+    ///
+    /// `Read::take` で上限 + 1 バイトまでしか読まないため、メタデータ確認後に
+    /// ファイルが成長した場合 (TOCTOU) も、上限超のメモリを確保せずに検出できる。
+    fn read_file_limited(path: &Path) -> Result<Vec<u8>> {
+        use std::io::Read;
+
+        let file = std::fs::File::open(path)
+            .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+        let mut data = Vec::new();
+        let read = file
+            .take(DOCKER_RESPONSE_BODY_LIMIT as u64 + 1)
+            .read_to_end(&mut data)
+            .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+        if read > DOCKER_RESPONSE_BODY_LIMIT {
+            return Err(size_limit_err(path));
+        }
+        Ok(data)
+    }
+
+    /// ファイルを 64 MiB 上限付きでメモリへ読み込む (非同期)。
+    ///
+    /// `AsyncReadExt::take` で上限 + 1 バイトまでしか読まないため、同期版
+    /// (`read_file_limited`) と同じく TOCTOU のファイル成長をメモリ確保前に検出できる。
+    async fn read_file_limited_async(path: &Path) -> Result<Vec<u8>> {
+        use tokio::io::AsyncReadExt;
+
+        let file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+        let mut data = Vec::new();
+        let read = file
+            .take(DOCKER_RESPONSE_BODY_LIMIT as u64 + 1)
+            .read_to_end(&mut data)
+            .await
+            .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+        if read > DOCKER_RESPONSE_BODY_LIMIT {
+            return Err(size_limit_err(path));
+        }
+        Ok(data)
+    }
 
     fn name_err(msg: impl Into<String>) -> crate::Error {
         crate::Error::other(CopyToContainerError::PathNameError(msg.into()))
@@ -918,8 +980,10 @@ async fn copy_to_sources_linux<I: Image>(
                         "copy_to source contains a non-regular file".to_string(),
                     ));
                 }
-                let data = std::fs::read(&path)
-                    .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+                // ディレクトリ配下のファイルにも 1 ファイルあたりの 64 MiB 上限を適用する。
+                // 巨大ディレクトリ配下をまとめて投入して OOM するのを防ぐ。
+                check_file_size_limit(&path, meta.len())?;
+                let data = read_file_limited(&path)?;
                 builder
                     .append_file(&tar_path, &data, mode, uid, gid)
                     .map_err(crate::Error::other)?;
@@ -990,9 +1054,9 @@ async fn copy_to_sources_linux<I: Image>(
                     append_host_directory(&mut builder, path, &relative, mode, uid, gid)?;
                 } else if ft.is_file() {
                     append_ancestor_directories(&mut builder, &relative, uid, gid)?;
-                    let data = tokio::fs::read(path)
-                        .await
-                        .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+                    // 1 ファイルあたりの 64 MiB 上限を読み込み前にメタデータで確認する。
+                    check_file_size_limit(path, meta.len())?;
+                    let data = read_file_limited_async(path).await?;
                     builder
                         .append_file(&relative, &data, mode, uid, gid)
                         .map_err(crate::Error::other)?;
