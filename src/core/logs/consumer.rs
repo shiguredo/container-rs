@@ -20,6 +20,10 @@ use crate::core::logs::LogFrame;
 /// `blocking` feature 使用時、コールバック内で同期 API (`SyncRunner::start` 等) を
 /// 呼び出すと共有 Runtime への再入によって deadlock する。実装側は再入を検出して
 /// 即座にエラーにする (fail-fast) が、コールバック内では同期 API の呼び出しを避けること。
+///
+/// コールバック内で `Container::stdout` / `stderr` (同期ログリーダー) を取得して読む
+/// 場合も同様に再入検出が働き、読み取り時点で `io::Error` を返す。コールバック外で
+/// 取得したリーダーをコールバック内で読むケースは検出されない点に注意すること。
 pub trait LogConsumer: Send + Sync {
     /// ログフレームを 1 件受け取って処理する。
     fn accept<'a>(&'a self, record: &'a LogFrame) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;

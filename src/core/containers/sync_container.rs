@@ -8,6 +8,22 @@ use std::sync::Arc;
 
 use crate::{ContainerAsync, Image, core::error::Result};
 
+/// 現在のスレッドが共有ランタイムのコンテキスト内かを判定する。
+///
+/// 共有ランタイムは `worker_threads(1)` のため、その worker 上でブロックする同期処理を
+/// 呼ぶと唯一のワーカースレッドが塞がれて timer 依存の処理が進まなくなり deadlock する。
+/// `block_on_runtime` と同期ログリーダー (`Container::stdout` / `stderr`) の両方で
+/// この再入を検出して fail-fast する。
+///
+/// `Handle::try_current()` が共有ランタイムの handle を返す文脈 (worker 上・同じランタイムの
+/// `block_on` 中・`spawn_blocking` スレッド上) で true になる (id 比較)。
+fn is_reentering_shared_runtime(runtime: &tokio::runtime::Runtime) -> bool {
+    matches!(
+        tokio::runtime::Handle::try_current(),
+        Ok(current) if current.id() == runtime.handle().id()
+    )
+}
+
 /// 既存 tokio ランタイムコンテキスト内から呼ばれた場合は別スレッドで `block_on` し、
 /// そうでなければ与えられたランタイム上で直接 `block_on` する。
 ///
@@ -20,10 +36,12 @@ where
     F: std::future::Future + Send,
     F::Output: Send,
 {
-    match tokio::runtime::Handle::try_current() {
-        Ok(current) if current.id() == runtime.handle().id() => Err(crate::Error::other(
+    if is_reentering_shared_runtime(runtime) {
+        return Err(crate::Error::other(
             "cannot call sync API from within the shared runtime context (LogConsumer callback or async context): this would deadlock",
-        )),
+        ));
+    }
+    match tokio::runtime::Handle::try_current() {
         Ok(_) => {
             // 既存ランタイム内からの呼び出しは `Runtime::block_on` が panic するため、
             // 一時的に別スレッドに移してから実行する。
@@ -66,6 +84,38 @@ pub(crate) fn drop_shared_runtime(runtime: Arc<tokio::runtime::Runtime>) {
         }
         Err(_) => drop(runtime),
     }
+}
+
+/// 共有ランタイムの worker 上での読み取り再入を検出したときに返す専用リーダー。
+///
+/// `read` / `fill_buf` と、それらに委譲する BufRead / Read の既定メソッド
+/// (`read_line` / `read_until` / `read_to_end` 等) で一貫して `io::Error` を返す。
+/// `consume` は `fill_buf` 成功後にしか呼ばれない契約のため no-op。
+/// 共有ランタイムの唯一のワーカースレッド上で同期ログリーダーを
+/// 読むとランタイム全体が凍結するため、fail-fast で防ぐ (README / `consumer.rs` の
+/// 「再入を検出して即座にエラーにする」方針と同じ)。
+struct ReentryErrorReader;
+
+impl std::io::Read for ReentryErrorReader {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        Err(reentry_io_error())
+    }
+}
+
+impl std::io::BufRead for ReentryErrorReader {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        Err(reentry_io_error())
+    }
+
+    fn consume(&mut self, _amt: usize) {}
+}
+
+/// 再入検出エラーの `io::Error` を作る。
+fn reentry_io_error() -> std::io::Error {
+    std::io::Error::other(
+        "cannot read sync log reader from within the shared runtime context \
+         (LogConsumer callback or async context): this would deadlock",
+    )
 }
 
 /// 同期コンテナハンドル。`ContainerAsync` を包む。
@@ -277,8 +327,12 @@ impl<I: Image> Container<I> {
     /// stdout の同期リーダーを返す。
     ///
     /// リーダーは独立した読み取り位置を持ち、常にログ先頭から読む。
-    /// `follow = true` のときは末尾到達後も追記をポーリングする。呼び出しスレッドをブロックするため、
-    /// tokio ランタイムワーカー上や LogConsumer コールバックからは呼ばないこと。
+    /// `follow = true` のときは末尾到達後も追記をポーリングする。呼び出しスレッドをブロックする。
+    ///
+    /// 共有ランタイムの worker 上 (LogConsumer コールバック内) から呼ばれた場合は、
+    /// ランタイムを凍結させず、読み取り時に `io::Error` を返す専用リーダーを返す
+    /// (ランタイム凍結を防ぐため、コールバック内ではこの API を呼ばないのが推奨)。
+    /// コールバック外で取得したリーダーをコールバック内で読むケースは検出されない。
     ///
     /// # Linux
     ///
@@ -292,14 +346,22 @@ impl<I: Image> Container<I> {
     /// ストリームの超過で両方の取得が失敗し、合計最大 128 MiB が一時保持され得る)。
     /// macOS 側にこの上限は無い。
     pub fn stdout(&self, follow: bool) -> Box<dyn std::io::BufRead + Send> {
-        self.inner().stdout_sync(follow)
+        if is_reentering_shared_runtime(self.runtime()) {
+            Box::new(ReentryErrorReader)
+        } else {
+            self.inner().stdout_sync(follow)
+        }
     }
 
     /// stderr の同期リーダーを返す。
     ///
     /// リーダーは独立した読み取り位置を持ち、常にログ先頭から読む。
-    /// `follow = true` のときは末尾到達後も追記をポーリングする。呼び出しスレッドをブロックするため、
-    /// tokio ランタイムワーカー上や LogConsumer コールバックからは呼ばないこと。
+    /// `follow = true` のときは末尾到達後も追記をポーリングする。呼び出しスレッドをブロックする。
+    ///
+    /// 共有ランタイムの worker 上 (LogConsumer コールバック内) から呼ばれた場合は、
+    /// ランタイムを凍結させず、読み取り時に `io::Error` を返す専用リーダーを返す
+    /// (ランタイム凍結を防ぐため、コールバック内ではこの API を呼ばないのが推奨)。
+    /// コールバック外で取得したリーダーをコールバック内で読むケースは検出されない。
     ///
     /// 注意: macOS の stderr は Apple container の bootlog であり、
     /// アプリケーションの stderr は stdout 側のログに混流する。
@@ -315,7 +377,11 @@ impl<I: Image> Container<I> {
     /// ストリームの超過で両方の取得が失敗し、合計最大 128 MiB が一時保持され得る)。
     /// macOS 側にこの上限は無い。
     pub fn stderr(&self, follow: bool) -> Box<dyn std::io::BufRead + Send> {
-        self.inner().stderr_sync(follow)
+        if is_reentering_shared_runtime(self.runtime()) {
+            Box::new(ReentryErrorReader)
+        } else {
+            self.inner().stderr_sync(follow)
+        }
     }
 
     /// 停止済みなら再起動し、`Image::exec_after_start` を実行する。
@@ -584,5 +650,55 @@ mod tests {
             result.is_err(),
             "同一 Runtime への再入は fail-fast で Err になること"
         );
+    }
+
+    /// `ReentryErrorReader` がすべての読み取り経路で再入検出エラーを返すこと。
+    #[test]
+    fn reentry_error_reader_errors_on_all_read_paths() {
+        use std::io::{BufRead, Read};
+
+        // read。
+        let mut reader = ReentryErrorReader;
+        let mut buf = [0u8; 16];
+        let err = reader.read(&mut buf).expect_err("read がエラーになること");
+        assert!(
+            err.to_string().contains("cannot read sync log reader"),
+            "再入検出エラーであること: {err}"
+        );
+
+        // fill_buf。
+        let mut reader = ReentryErrorReader;
+        let err = reader.fill_buf().expect_err("fill_buf がエラーになること");
+        assert!(
+            err.to_string().contains("cannot read sync log reader"),
+            "再入検出エラーであること: {err}"
+        );
+
+        // read_line (fill_buf に委譲)。
+        let mut reader = ReentryErrorReader;
+        let mut line = String::new();
+        let err = reader
+            .read_line(&mut line)
+            .expect_err("read_line がエラーになること");
+        assert!(
+            err.to_string().contains("cannot read sync log reader"),
+            "再入検出エラーであること: {err}"
+        );
+    }
+
+    /// `is_reentering_shared_runtime` が共有ランタイムのコンテキスト内で true を返すこと。
+    #[test]
+    fn is_reentering_shared_runtime_detects_worker_context() {
+        let runtime = build_runtime();
+        // ランタイム外では false。
+        assert!(
+            !is_reentering_shared_runtime(&runtime),
+            "ランタイム外では false であること"
+        );
+        // 同一ランタイムの block_on 中 (Handle::try_current が当該ランタイムを返す文脈)
+        // では true。Runtime::block_on はワーカーではなく呼び出しスレッド上で実行されるが、
+        // id 比較の判定は同じ (LogConsumer コールバックは worker 上で同様に true になる)。
+        let result = runtime.block_on(async { is_reentering_shared_runtime(&runtime) });
+        assert!(result, "同一ランタイムの block_on 中は true であること");
     }
 }
