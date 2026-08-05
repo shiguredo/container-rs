@@ -769,6 +769,54 @@ mod test_container_xpc {
         eprintln!("XPC ランタイムモジュールを SIGABRT なしで読み込んだ");
     }
 
+    /// 同一コンテナポートへの重複マッピングが pull 前に明示エラーになること。
+    ///
+    /// 実在しないイメージ名を使うのは、イメージ解決 (pull) より先に重複検出が
+    /// 走ることを確認するため (pull が先ならイメージ解決 (pull) 失敗エラーになる)。
+    #[tokio::test]
+    async fn xpc_duplicate_mapped_ports_fail_before_pull() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        use shiguredo_container::core::IntoContainerPort;
+        let container = GenericImage::new("no-such-image-for-duplicate-mapped-ports", "latest")
+            .with_mapped_port(8080, 80.tcp())
+            .with_mapped_port(8081, 80.tcp());
+        let err = container
+            .start()
+            .await
+            .expect_err("重複マッピングは start で失敗すること");
+        assert!(
+            err.to_string().contains("duplicate container port mapping"),
+            "pull 前に重複マッピングエラーが返ること: {err}"
+        );
+    }
+
+    /// SCTP マッピングが pull 前に明示エラーになること。
+    ///
+    /// 実在しないイメージ名を使うのは、イメージ解決 (pull) より先に SCTP 未対応
+    /// エラーが走ることを確認するため。
+    #[tokio::test]
+    async fn xpc_sctp_mapped_port_fails_before_pull() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        use shiguredo_container::core::IntoContainerPort;
+        let container = GenericImage::new("no-such-image-for-sctp-mapped-port", "latest")
+            .with_mapped_port(8080, 80.sctp());
+        let err = container
+            .start()
+            .await
+            .expect_err("SCTP マッピングは start で失敗すること");
+        assert!(
+            err.to_string()
+                .contains("SCTP port publishing is not supported"),
+            "pull 前に SCTP 未対応エラーが返ること: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn xpc_alpine_copy_file_from() {
         if super::helpers::skip_if_ci() {

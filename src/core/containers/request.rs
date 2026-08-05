@@ -340,6 +340,38 @@ impl PortMapping {
     }
 }
 
+/// 同一コンテナポート (proto 込み) への重複マッピングを検出してエラーにする。
+///
+/// `with_mapped_port(8080, 80.tcp()).with_mapped_port(8081, 80.tcp())` のように
+/// 同一コンテナポートへ複数のホストポートをマッピングすると、Linux の
+/// `build_port_bindings` は後勝ちで 1 本だけを送信し (先のマッピングが黙って消える)、
+/// macOS の `build_config` は重複 `PortCfg` をそのまま XPC に送る。
+/// 黙って潰れる挙動をなくすため、pull 前検証 (Linux は `linux_unsupported_request_reason` の
+/// 直後、macOS は `reject_sctp_ports` の直後) で明示エラーにする (fail-fast)。
+///
+/// 判定は `ContainerPort` 完全一致 (proto 込み)。同番号・異プロトコルは別エントリ
+/// として共存させる (既存の mapped vs expose の異プロトコル共存テスト
+/// `different_protocol_same_number_keeps_both` を維持)。
+///
+/// ホストポート側の重複 (同一ホストポートへの複数マッピング) はこの関数の対象外。
+/// macOS は `build_config` が `duplicate host port mapping` で、Linux は Docker が
+/// `port is already allocated` で明示エラーにする。
+pub(crate) fn reject_duplicate_mapped_ports(
+    ports: &[PortMapping],
+) -> crate::core::error::Result<()> {
+    let mut seen: BTreeMap<ContainerPort, u16> = BTreeMap::new();
+    for p in ports {
+        if let Some(previous) = seen.insert(p.container_port, p.host_port) {
+            return Err(Error::other(format!(
+                "duplicate container port mapping: container port {} is mapped to \
+                 both host ports {previous} and {}",
+                p.container_port, p.host_port
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl<I: Image + Debug> Debug for ContainerRequest<I> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut repr = f.debug_struct("ContainerRequest");
@@ -386,5 +418,96 @@ impl<'a> Iterator for CmdIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.front.next().or_else(|| self.back.next())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reject_duplicate_mapped_ports_detects_same_container_port() {
+        // 同一コンテナポート (proto 込み) への重複マッピングはエラーになること。
+        let ports = vec![
+            PortMapping::new(8080, ContainerPort::Tcp(80)),
+            PortMapping::new(8081, ContainerPort::Tcp(80)),
+        ];
+        let err = reject_duplicate_mapped_ports(&ports).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate container port mapping"),
+            "エラーに duplicate container port mapping を含むこと: {msg}"
+        );
+        assert!(
+            msg.contains("80/tcp"),
+            "エラーにコンテナポートを含むこと: {msg}"
+        );
+        assert!(
+            msg.find("8080")
+                .expect("先に登録したホストポート 8080 が現れること")
+                < msg
+                    .find("8081")
+                    .expect("後に登録したホストポート 8081 が現れること"),
+            "先に登録したホストポートが先に現れること: {msg}"
+        );
+    }
+
+    #[test]
+    fn reject_duplicate_mapped_ports_detects_identical_mapping() {
+        // 完全同一のマッピング (同一ホストポート + 同一コンテナポート) もエラーになること。
+        let ports = vec![
+            PortMapping::new(8080, ContainerPort::Tcp(80)),
+            PortMapping::new(8080, ContainerPort::Tcp(80)),
+        ];
+        reject_duplicate_mapped_ports(&ports).expect_err("完全同一マッピングも重複であること");
+    }
+
+    #[test]
+    fn reject_duplicate_mapped_ports_detects_triple_mapping() {
+        // 3 重以上の重複もエラーになること (最初の競合ペアを報告する)。
+        let ports = vec![
+            PortMapping::new(8080, ContainerPort::Tcp(80)),
+            PortMapping::new(8081, ContainerPort::Tcp(80)),
+            PortMapping::new(8082, ContainerPort::Tcp(80)),
+        ];
+        let err = reject_duplicate_mapped_ports(&ports).unwrap_err();
+        assert!(
+            err.to_string().contains("8080") && err.to_string().contains("8081"),
+            "最初の競合ペア (8080 / 8081) を報告すること: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_duplicate_mapped_ports_detects_sctp_duplicate() {
+        // SCTP 同士の重複も検出されること (Linux ではこの経路が実経路になる)。
+        let ports = vec![
+            PortMapping::new(8080, ContainerPort::Sctp(80)),
+            PortMapping::new(8081, ContainerPort::Sctp(80)),
+        ];
+        reject_duplicate_mapped_ports(&ports).expect_err("SCTP の重複もエラーになること");
+    }
+
+    #[test]
+    fn reject_duplicate_mapped_ports_keeps_different_protocol() {
+        // 同番号・異プロトコルは別エントリとして共存できること。
+        let ports = vec![
+            PortMapping::new(8080, ContainerPort::Tcp(80)),
+            PortMapping::new(8081, ContainerPort::Udp(80)),
+            PortMapping::new(8082, ContainerPort::Sctp(80)),
+        ];
+        reject_duplicate_mapped_ports(&ports).expect("異プロトコルは重複とみなさないこと");
+    }
+
+    #[test]
+    fn reject_duplicate_mapped_ports_accepts_single_mapping() {
+        // 単一マッピングはエラーにならないこと。
+        let ports = vec![PortMapping::new(8080, ContainerPort::Tcp(80))];
+        reject_duplicate_mapped_ports(&ports).expect("単一マッピングはエラーにならないこと");
+    }
+
+    #[test]
+    fn reject_duplicate_mapped_ports_accepts_empty() {
+        // 空リストはエラーにならないこと。
+        reject_duplicate_mapped_ports(&[]).expect("空リストはエラーにならないこと");
     }
 }

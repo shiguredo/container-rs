@@ -75,8 +75,9 @@ fn allocate_unique_free_host_port(
 /// Apple container は SCTP ポート公開に未対応のため、検出時は明示エラーにする。
 ///
 /// `with_mapped_port(..., *.sctp())` と `with_exposed_port(*.sctp())` の両方を対象にする。
-/// XPC の分かりにくいエラーを待たず、`build_config` 時点で落とす。
-fn reject_sctp_ports<I: Image>(req: &ContainerRequest<I>) -> Result<()> {
+/// XPC の分かりにくいエラーを待たず、pull 前検証 (`AsyncRunner`) と `build_config` の
+/// 両方で落とす。
+pub(crate) fn reject_sctp_ports<I: Image>(req: &ContainerRequest<I>) -> Result<()> {
     let mapped_has_sctp = req.ports().is_some_and(|ps| {
         ps.iter()
             .any(|p| matches!(p.container_port(), ContainerPort::Sctp(_)))
@@ -154,6 +155,13 @@ pub(crate) fn build_config<I: Image>(
     // Apple container は SCTP 未対応。XPC に渡す前に明示エラーで落とす。
     reject_sctp_ports(req)?;
 
+    // 同一コンテナポートへの重複マッピングは黙って潰れないよう明示エラーにする。
+    // pull 前検証 (AsyncRunner) にも防御があるが、build_config を直接呼ぶ経路
+    // (テスト等) でも検出できるようここでも確認する。
+    if let Some(ports) = req.ports() {
+        crate::core::containers::request::reject_duplicate_mapped_ports(ports)?;
+    }
+
     // ports。明示的なマッピング (with_mapped_port) に加え、`Image::expose_ports` /
     // `with_exposed_port` で宣言されたポートには空きホストポートを自動で割り当てる
     // (本家のランダムポート公開に相当。以前は expose_ports が黙って無視されていた)。
@@ -177,7 +185,7 @@ pub(crate) fn build_config<I: Image>(
                             return Err(crate::Error::other(format!(
                                 "duplicate host port mapping for container port {}: \
                                  host port {} is already mapped",
-                                p.container_port().as_u16(),
+                                p.container_port(),
                                 p.host_port()
                             )));
                         }
@@ -1377,6 +1385,32 @@ mod tests {
         assert!(
             err.to_string().contains("duplicate host port mapping"),
             "重複ホストポートのエラーメッセージであること: {err}"
+        );
+    }
+
+    #[test]
+    fn duplicate_container_ports_are_rejected_by_build_config() {
+        // 同一コンテナポートへの重複マッピングは build_config でも明示エラーになること
+        // (pull 前検証をすり抜けて直接 build_config を呼ぶ経路の防御)。
+        use crate::core::ports::IntoContainerPort;
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_mapped_port(18080, 80.tcp())
+            .with_mapped_port(18081, 80.tcp())
+            .with_cmd(["sleep", "1"]);
+        let result = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        );
+        let err = match result {
+            Ok(_) => panic!("重複コンテナポートのマッピングはエラーになること"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("duplicate container port mapping"),
+            "重複コンテナポートのエラーメッセージであること: {err}"
         );
     }
 

@@ -1699,3 +1699,23 @@ async fn exit_wait_strategy_no_code_check() {
         "終了後は running でないこと"
     );
 }
+
+/// 同一コンテナポートへの重複マッピングが pull 前に明示エラーになること。
+///
+/// 実在しないイメージ名を使うのは、イメージ解決 (pull) より先に重複検出が走る
+/// ことを確認するため (pull が先ならイメージ解決 (pull) 失敗エラーになる)。
+#[tokio::test]
+async fn duplicate_mapped_ports_fail_before_pull() {
+    use shiguredo_container::core::IntoContainerPort;
+    let container = GenericImage::new("no-such-image-for-duplicate-mapped-ports", "latest")
+        .with_mapped_port(8080, 80.tcp())
+        .with_mapped_port(8081, 80.tcp());
+    let err = container
+        .start()
+        .await
+        .expect_err("重複マッピングは start で失敗すること");
+    assert!(
+        err.to_string().contains("duplicate container port mapping"),
+        "pull 前に重複マッピングエラーが返ること: {err}"
+    );
+}
