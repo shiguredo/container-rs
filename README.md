@@ -133,7 +133,9 @@ fn test_with_nginx_blocking() {
 
 #### 制約
 
-`blocking` feature 使用時、`LogConsumer` コールバック内や既存の tokio ランタイムコンテキスト内から `SyncRunner::start` などの同期 API を呼び出すと、共有 Runtime への再入によって deadlock します。ライブラリ側は再入を検出して即座にエラーにしますが、コールバック内での同期 API 呼び出しは避けてください。
+`blocking` feature 使用時、`LogConsumer` コールバック内や既存の tokio ランタイムコンテキスト内から `SyncRunner::start` などの同期 API を呼び出すと、共有 Runtime への再入によって deadlock します。ライブラリ側は再入を検出して即座にエラーにしますが、コールバック内での同期 API 呼び出しは避けてください。なお、共有 Runtime のコンテキスト内から `tokio::task::spawn_blocking` したスレッド上でも再入検出は発動します (実際には凍結しませんが、安全側に倒します)。
+
+同期ログリーダー (`Container::stdout` / `stderr`) も同様の再入対象です。`LogConsumer` コールバック内で取得した同期ログリーダーは、読み取り時点でエラーになります (ランタイム凍結の防止)。コールバック外で取得したリーダーをコールバック内で読むケースはエラーにならない点に注意してください。
 
 ### コンテナの掃除契約
 

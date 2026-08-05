@@ -877,6 +877,87 @@ fn sync_stdout_to_vec_returns_logs() {
     container.rm().expect("rm に失敗した");
 }
 
+/// 共有ランタイムの worker 上 (LogConsumer コールバック内) から同期ログリーダーを
+/// 呼んでもランタイムが凍結せず、read 時にエラーが返ること。
+///
+/// `Container` は start 後にしか得られないため、`Arc<Mutex<Option<Container>>>` の共有
+/// ハンドル経由でコールバックへ渡す。コールバックは worker 上で実行されるため、
+/// `Container::stdout` の再入検出が発動し、専用リーダーがエラーを返す。
+/// コールバック内の panic は tokio が捕捉してテストへ伝播しないため、エラーを
+/// `AtomicBool` フラグで記録して検証する。
+#[cfg(feature = "blocking")]
+#[test]
+fn sync_log_reader_reentry_in_consumer_callback_errors() {
+    use shiguredo_container::SyncRunner;
+
+    let holder: std::sync::Arc<std::sync::Mutex<Option<shiguredo_container::Container<_>>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let saw_error = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let callback_holder = holder.clone();
+    let callback_saw_error = saw_error.clone();
+
+    // コールバックが複数回走るよう、周期的に出力するコマンドにする。
+    // Container 未セット時に走ったコールバックは何もしない。
+    let request = GenericImage::new("alpine", "latest")
+        .with_cmd([
+            "sh",
+            "-c",
+            "i=0; while true; do echo REENTRY$i; i=$((i+1)); sleep 0.2; done",
+        ])
+        .with_log_consumer(move |_: &shiguredo_container::core::logs::LogFrame| {
+            let guard = callback_holder
+                .lock()
+                .expect("holder の mutex が poisoning されていないこと");
+            let Some(container) = guard.as_ref() else {
+                return; // start 完了前に呼ばれた場合は何もしない
+            };
+            // stdout / stderr の再入検出エラー (メッセージで由来を確認)。
+            // 両方とも同一コードパスのため、いずれかのエラー確認で十分。
+            for reader in [container.stdout(false), container.stderr(false)] {
+                let mut reader = reader;
+                let mut buf = [0u8; 16];
+                let err = match reader.read(&mut buf) {
+                    Ok(_) => continue,
+                    Err(e) => e,
+                };
+                if err.to_string().contains("cannot read sync log reader") {
+                    callback_saw_error.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        })
+        .with_startup_timeout(Duration::from_secs(15));
+    let container = SyncRunner::start(request).expect("同期起動に失敗した");
+    {
+        let mut guard = holder
+            .lock()
+            .expect("holder の mutex が poisoning されていないこと");
+        *guard = Some(container);
+    }
+
+    // コールバックがエラーを記録するまでポーリングする。
+    // 再入検出が無ければ worker が凍結し、タイムアウトで失敗する (凍結しないことの検証)。
+    // 失敗時はコールバックが worker 上で凍結したまま Arc を保持するため、同一テスト
+    // バイナリ内の後続の同期系テストも巻き込まれ得る点に注意する。
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if saw_error.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker 上での同期ログリーダー読み取りがエラーにならない (ランタイム凍結の疑い)"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let container = holder
+        .lock()
+        .expect("holder の mutex が poisoning されていないこと")
+        .take()
+        .expect("container が設定されていること");
+    container.rm().expect("rm に失敗した");
+}
+
 /// `with_copy_to` (Data ソース) で投入したファイルを `copy_file_from` (Vec<u8>) で回収できること。
 #[tokio::test]
 async fn copy_to_data_and_copy_file_from_round_trip() {
