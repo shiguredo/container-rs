@@ -2309,6 +2309,40 @@ mod test_container_xpc {
         container.rm().await.ok();
     }
 
+    /// `with_mapped_port(0, ...)` (Docker のランダム割当の慣用) に空きホストポートが
+    /// 自動割当されること。expose 経路と同じ事前割当に流す (Apple container には
+    /// hostPort: 0 のランダム割当が無いため)。
+    #[tokio::test]
+    async fn xpc_alpine_mapped_port_zero_gets_auto_allocated() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        use shiguredo_container::core::IntoContainerPort;
+        let container = GenericImage::new("alpine", "latest")
+            .with_mapped_port(0, 80.tcp())
+            .with_cmd(["sleep", "30"])
+            .start()
+            .await
+            .expect("マッピング付き alpine コンテナの起動に失敗した");
+
+        let ports = container.ports().await.expect("ポート情報の取得に失敗した");
+        let host_port = ports
+            .map_to_host_port_ipv4(80_u16)
+            .expect("ポート 80 がホストポートへマッピングされること");
+        assert_ne!(
+            host_port, 0,
+            "ホストポート 0 の明示マッピングにホストポートが割り当てられること"
+        );
+        eprintln!("自動割当されたホストポート: {host_port}");
+
+        container
+            .stop_with_timeout(Some(0))
+            .await
+            .expect("コンテナの停止に失敗した");
+        container.rm().await.expect("コンテナの削除に失敗した");
+    }
+
     #[cfg(feature = "http_wait_plain")]
     #[tokio::test]
     async fn nginx_starts_without_with_cmd() {
@@ -3392,6 +3426,48 @@ mod test_container_http_wait {
             .start()
             .await
             .expect("nginx が HTTP 待機で利用可能になること");
+
+        container
+            .stop_with_timeout(Some(0))
+            .await
+            .expect("コンテナの停止に失敗した");
+        container.rm().await.expect("コンテナの削除に失敗した");
+    }
+
+    /// `with_mapped_port(0, ...)` で割り当てられたホストポートで実際に HTTP 応答が
+    /// 得られること。
+    ///
+    /// published port 経由の実接続は Local Network Privacy により CI で使えないため、
+    /// `RUN_HOST_NETWORK_TESTS=1` を指定した許可済み環境でのみ実行する。
+    #[tokio::test]
+    async fn xpc_nginx_mapped_port_zero_reachable_over_published_port() {
+        if super::helpers::skip_if_ci() || super::skip_unless_host_network() {
+            return;
+        }
+
+        // WaitFor::http で nginx の起動と published port 経由の HTTP 応答を待つ。
+        // (ポート未指定では最初の公開ポートを使うが、ここでは明示する)
+        let container = GenericImage::new("nginx", "latest")
+            .with_wait_for(WaitFor::http(
+                HttpWaitStrategy::new("/")
+                    .with_port(80.tcp())
+                    .with_expected_status_code(200_u16),
+            ))
+            .with_mapped_port(0, 80.tcp())
+            .with_cmd(["nginx", "-g", "daemon off;"])
+            .with_startup_timeout(std::time::Duration::from_secs(180))
+            .start()
+            .await
+            .expect("nginx が HTTP 待機で利用可能になること");
+
+        // WaitFor::http が published port 経由の HTTP 200 を確認済み。
+        // 割当ポートが非 0 で公開されていることも確認する。
+        let host_port = container
+            .get_host_port_ipv4(80_u16)
+            .await
+            .expect("ホストポートの取得に失敗した");
+        assert_ne!(host_port, 0, "ホストポートが割り当てられること");
+        eprintln!("自動割当されたホストポート {host_port} で HTTP 200 を確認した");
 
         container
             .stop_with_timeout(Some(0))

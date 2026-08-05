@@ -75,6 +75,8 @@
   - @voluntas
 - [ADD] macOS で OCI `maskedPaths` / `readonlyPaths` を `ImageExt::with_masked_paths` / `with_readonly_paths` で設定できるようにする（Apple container 1.2.0 以上）
   - @voluntas
+- [FIX] macOS の `with_mapped_port(0, ...)` がホストポート 0 のまま XPC に送られ自動割当されないのを修正する (expose 経路と同じ空きホストポートの事前割当に統一する)
+  - @voluntas
 - [FIX] macOS の `blocking` feature で共有ランタイムの worker 上から同期ログリーダー (`Container::stdout` / `stderr`) を読むとランタイムが凍結するのを修正する (再入検出で読み取り時点のエラーにする)
   - @voluntas
 - [FIX] macOS で明示 platform 指定時に一致する manifest が無い場合、要求と異なるアーキテクチャへフォールバックして選ぶのをやめ `no matching manifest` エラーを返すようにする
