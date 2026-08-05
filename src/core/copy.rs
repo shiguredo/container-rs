@@ -199,6 +199,14 @@ pub enum CopyToContainerError {
     IoError(std::io::Error),
     /// パス名のエラー。
     PathNameError(String),
+    /// 投入サイズの上限超過。
+    SizeLimitExceeded {
+        /// バイト単位の上限。
+        limit: usize,
+        /// 上限超過した対象名。ホストパス・tar エントリ名・固定文字列 `"tar trailer"`
+        /// (トレーラで超過した場合) のいずれか。
+        name: String,
+    },
 }
 
 impl std::fmt::Display for CopyToContainerError {
@@ -207,6 +215,9 @@ impl std::fmt::Display for CopyToContainerError {
             CopyToContainerError::IoError(e) => write!(f, "I/O error: {e}"),
             CopyToContainerError::PathNameError(s) => {
                 write!(f, "copy path error: {s}")
+            }
+            CopyToContainerError::SizeLimitExceeded { limit, name } => {
+                write!(f, "copy size exceeds {limit} bytes: {name}")
             }
         }
     }

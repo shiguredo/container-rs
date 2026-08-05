@@ -11,6 +11,8 @@
 
 ## develop
 
+- [CHANGE] 公開エラー型 `CopyToContainerError` に `SizeLimitExceeded` バリアントを追加する（投入サイズ上限超過を表す。公開 enum へのバリアント追加のため後方互換のない変更）
+  - @voluntas
 - [CHANGE] MSRV (`rust-version`) を 1.88.0 から 1.93.0 に上げる
   - @voluntas
 - [CHANGE] Linux の `with_copy_to` 投入を create 後・start 前完了の公開契約へ変更する（macOS は start 後のまま）
@@ -73,6 +75,8 @@
   - @voluntas
 - [ADD] macOS で OCI `maskedPaths` / `readonlyPaths` を `ImageExt::with_masked_paths` / `with_readonly_paths` で設定できるようにする（Apple container 1.2.0 以上）
   - @voluntas
+- [FIX] Linux の `with_copy_to` でコピー対象 1 ファイルと tar 全体の蓄積に 64 MiB 上限が無く巨大ファイルで OOM し得るのを修正する
+  - @voluntas
 - [FIX] canary.py のバージョン抽出が `rust-version` の末尾 `version` に誤マッチして MSRV を書き換え得るのを修正する
   - @voluntas
 - [FIX] Linux のレジストリ認証で `docker.io` / `index.docker.io` 形式の Docker Hub 参照を `https://index.docker.io/v1/` に正規化して認証を拾えるようにする
@@ -117,6 +121,8 @@
 - [UPDATE] `copy_file_from` の rustdoc に archive 404 の分類 (`ContainerPathNotFound` / `ContainerNotFound`) と Linux 限定である旨を明記する
   - @voluntas
 - [UPDATE] `with_copy_to` の rustdoc に macOS で起動前にファイルを見せたい場合は `Mount::bind_mount` を使う旨と制約を明記する
+  - @voluntas
+- [UPDATE] `with_copy_to` の rustdoc に Linux の投入上限 (per-file 64 MiB / tar 全体 64 MiB) と `DOCKER_RESPONSE_BODY_LIMIT` の適用経路を明記する
   - @voluntas
 - [UPDATE] canary.py のバージョン変換ロジックを純粋関数 `next_canary_version` として抽出し unittest テストを追加する
   - @voluntas

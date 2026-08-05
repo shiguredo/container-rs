@@ -9,6 +9,7 @@
 
 use std::io::{Error as IoError, ErrorKind};
 
+use crate::core::client::docker_client::DOCKER_RESPONSE_BODY_LIMIT;
 use crate::core::copy::{CopyFromContainerError, CopyToContainerError};
 
 /// tar ブロックサイズ (バイト)。
@@ -235,6 +236,10 @@ fn append_header(
 ///
 /// `append_*` のたびにヘッダ (+ データ) をバッファへ書き、`finish` で終端 NUL ブロック 2 個を
 /// 一度だけ付ける。複数回の `build_single_file_ustar` 連結はしてはならない。
+///
+/// archive 全体の蓄積は `DOCKER_RESPONSE_BODY_LIMIT` (64 MiB) を上限とし、超過時は
+/// `SizeLimitExceeded` を返す (OOM 防止)。上限はトレーラを含む archive 全体で判定する
+/// (`copy_from` の tar 全体 64 MiB 上限と同じ定義)。
 pub(crate) struct UstarBuilder {
     buf: Vec<u8>,
 }
@@ -243,6 +248,19 @@ impl UstarBuilder {
     /// 空のビルダーを返す。
     pub(crate) fn new() -> Self {
         Self { buf: Vec::new() }
+    }
+
+    /// 追記後の蓄積が 64 MiB 上限を超えないかを検証する。
+    ///
+    /// 上限を超える場合は `SizeLimitExceeded` を返す。`name` は上限超過を報告する対象名。
+    fn check_limit(&self, name: &str) -> Result<(), CopyToContainerError> {
+        if self.buf.len() > DOCKER_RESPONSE_BODY_LIMIT {
+            return Err(CopyToContainerError::SizeLimitExceeded {
+                limit: DOCKER_RESPONSE_BODY_LIMIT,
+                name: name.to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// directory エントリを追記する。`relative_path` は末尾 `/` 必須。
@@ -266,10 +284,15 @@ impl UstarBuilder {
             mode,
             uid,
             gid,
-        )
+        )?;
+        self.check_limit(relative_path_with_trailing_slash)
     }
 
     /// regular file エントリを追記する。
+    ///
+    /// 追記前に「現バッファ + ヘッダ + データ + pad」の合計で上限超過を判定する
+    /// (fail-fast)。`CopyDataSource::Data` は読み込みを伴わずサイズが既知のため、
+    /// 事前判定で過渡的に上限超のデータをコピーせずに拒否できる。
     pub(crate) fn append_file(
         &mut self,
         relative_path: &str,
@@ -282,6 +305,21 @@ impl UstarBuilder {
             return Err(path_err(
                 "file tar entry path must not end with a slash".to_string(),
             ));
+        }
+        let pad = (BLOCK_SIZE - (data.len() % BLOCK_SIZE)) % BLOCK_SIZE;
+        // ヘッダ 512 バイト + データ + pad の合計で事前判定する (OOM 防止)。
+        let projected = self
+            .buf
+            .len()
+            .checked_add(BLOCK_SIZE)
+            .and_then(|n| n.checked_add(data.len()))
+            .and_then(|n| n.checked_add(pad))
+            .ok_or_else(|| overflow_err("tar size overflow".to_string()))?;
+        if projected > DOCKER_RESPONSE_BODY_LIMIT {
+            return Err(CopyToContainerError::SizeLimitExceeded {
+                limit: DOCKER_RESPONSE_BODY_LIMIT,
+                name: relative_path.to_string(),
+            });
         }
         append_header(
             &mut self.buf,
@@ -301,6 +339,7 @@ impl UstarBuilder {
     /// archive 終端 (NUL 512×2) を付けてバイト列を返す。
     pub(crate) fn finish(mut self) -> Result<Vec<u8>, CopyToContainerError> {
         self.buf.extend(std::iter::repeat_n(0u8, BLOCK_SIZE * 2));
+        self.check_limit("tar trailer")?;
         Ok(self.buf)
     }
 }
@@ -655,6 +694,52 @@ mod tests {
         assert_eq!(
             field_str(header, PREFIX_OFF, PREFIX_LEN),
             prefix_part.as_bytes()
+        );
+    }
+
+    #[test]
+    fn builder_rejects_accumulated_size_over_limit() {
+        // 蓄積が 64 MiB を超える追記は SizeLimitExceeded になること。
+        // ちょうど 64 MiB のデータは per-file 読み込み上限では成功するが、
+        // ヘッダ (512) 分で蓄積が 64 MiB を超えるため追記で失敗する。
+        let mut builder = UstarBuilder::new();
+        let data = vec![0u8; DOCKER_RESPONSE_BODY_LIMIT];
+        let err = builder
+            .append_file("big.bin", &data, 0o644, 0, 0)
+            .expect_err("蓄積 64 MiB 超の追記は失敗すること");
+        assert!(
+            matches!(err, CopyToContainerError::SizeLimitExceeded { limit, ref name }
+                if limit == DOCKER_RESPONSE_BODY_LIMIT && name == "big.bin"),
+            "SizeLimitExceeded で tar エントリ名を持つこと: {err}"
+        );
+    }
+
+    #[test]
+    fn builder_trailer_can_trip_limit() {
+        // finish のトレーラ (1024) が加わった時点で 64 MiB を超える場合は、
+        // finish で SizeLimitExceeded になること。
+        // append 直後の蓄積がちょうど 64 MiB に収まるように、データ量を調整する。
+        // ヘッダ (512) + データ + pad = 64 MiB ちょうどになるようにする。
+        let mut builder = UstarBuilder::new();
+        // 祖先ディレクトリヘッダ (512) + ファイルヘッダ (512) + データ + pad が 64 MiB ちょうど
+        // になるようにデータ量を調整する。append は 64 MiB ちょうどで成功し、
+        // finish のトレーラで初めて上限を超える。
+        let data_len = DOCKER_RESPONSE_BODY_LIMIT - 1024;
+        assert_eq!(data_len % 512, 0, "データ長が 512 の倍数であること");
+        let data = vec![0u8; data_len];
+        builder
+            .append_directory("tmp/", 0o755, 0, 0)
+            .expect("directory 追記が成功すること");
+        builder
+            .append_file("tmp/big.bin", &data, 0o644, 0, 0)
+            .expect("蓄積が 64 MiB ちょうどの追記が成功すること");
+        // ここで蓄積はちょうど 64 MiB のため append は成功する。
+        let err = builder
+            .finish()
+            .expect_err("トレーラで 64 MiB を超える finish は失敗すること");
+        assert!(
+            matches!(err, CopyToContainerError::SizeLimitExceeded { .. }),
+            "SizeLimitExceeded であること: {err}"
         );
     }
 
