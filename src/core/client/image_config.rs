@@ -137,6 +137,17 @@ struct Descriptor {
 /// 3. soft 先頭: `os` だけ一致する先頭 (architecture 欠落も可、attestation 除外)
 /// 4. hard 先頭: 先頭の非 attestation manifest (os 不問の最後の手段)
 ///
+/// `platform` が明示指定 (`Some`) の場合は主経路のみで判定し、一致しなければ
+/// `no matching manifest for {platform}` エラーを返す (Docker Engine と同じ挙動。
+/// フォールバックで要求と異なるアーキテクチャを黙って選ぶのを防ぐ)。
+/// フォールバック 2〜4 は `platform` 未指定 (`None`) の場合のみ適用する
+/// (実行ホストのアーキテクチャに応じた選択のため)。
+///
+/// 照合は `target_os_and_architecture` による正規化後の (os, arch) で行う。許可外の
+/// arch (例: `linux/arm/v7`) はホスト arch に正規化されるため、`Some` 指定でも
+/// ホスト arch の manifest があれば主経路で一致して成功し得る (実経路では
+/// `normalize_platform` が許可外を `None` にするため顕在化しない)。
+///
 /// attestation manifest (`architecture == "unknown"`) は 3・4 のフォールバック経路で
 /// 候補から除外する。architecture 欠落は attestation とみなさない。
 fn select_manifest_digest(index_bytes: &[u8], platform: Option<&str>) -> Result<String> {
@@ -162,6 +173,11 @@ fn select_manifest_digest(index_bytes: &[u8], platform: Option<&str>) -> Result<
         if os == target_os && arch == target_arch {
             return manifest_digest(item);
         }
+    }
+
+    // 明示 platform 指定時は主経路のみで判定し、一致しなければエラー (フォールバックしない)。
+    if let Some(p) = platform {
+        return Err(ClientError::Other(format!("no matching manifest for {p}")).into());
     }
 
     // preferred フォールバック: 同じ os 条件で arm64 → amd64。
@@ -433,13 +449,14 @@ mod tests {
     }
 
     #[test]
-    fn select_manifest_digest_prefers_arm64_fallback() {
+    fn select_manifest_digest_defaults_to_host_arch() {
         let index = r#"{"manifests":[
             {"digest":"sha256:amd64","platform":{"architecture":"amd64","os":"linux"}},
             {"digest":"sha256:arm64","platform":{"architecture":"arm64","os":"linux"}}
         ]}"#;
-        // platform 未指定時はホスト arch。Apple Silicon では arm64、それ以外でも
-        // preferred フォールバックで arm64 が先に選ばれる。
+        // platform 未指定時はホスト arch。このテストは ARM64 ホスト (Apple Silicon /
+        // CI の self-hosted runner) を前提とし、arm64 が主経路で選ばれることを検証する
+        // (x86_64 ホストでは主経路で先頭の amd64 が選ばれるためこの期待値は成立しない)。
         let digest = select_manifest_digest(index.as_bytes(), None).expect("処理に失敗しないこと");
         assert_eq!(digest, "sha256:arm64");
     }
@@ -491,25 +508,24 @@ mod tests {
     #[test]
     fn select_manifest_digest_matches_os_on_preferred_fallback() {
         // 主経路不一致 → preferred の arm64 は windows をスキップ → linux/amd64
+        // platform 未指定 (None) のときだけフォールバックが適用されること。
         let index = r#"{"manifests":[
             {"digest":"sha256:win-arm64","platform":{"architecture":"arm64","os":"windows"}},
             {"digest":"sha256:linux-amd64","platform":{"architecture":"amd64","os":"linux"}}
         ]}"#;
-        let digest = select_manifest_digest(index.as_bytes(), Some("linux/arm64"))
-            .expect("処理に失敗しないこと");
+        let digest = select_manifest_digest(index.as_bytes(), None).expect("処理に失敗しないこと");
         assert_eq!(digest, "sha256:linux-amd64");
     }
 
     #[test]
     fn select_manifest_digest_soft_first_matches_os() {
-        // preferred 失敗後、linux 側の先頭 (s390x) を選ぶ
+        // preferred 失敗後、linux 側の先頭 (s390x) を選ぶ (platform 未指定時のみ)。
         let index = r#"{"manifests":[
             {"digest":"sha256:win-arm64","platform":{"architecture":"arm64","os":"windows"}},
             {"digest":"sha256:win-amd64","platform":{"architecture":"amd64","os":"windows"}},
             {"digest":"sha256:linux-s390x","platform":{"architecture":"s390x","os":"linux"}}
         ]}"#;
-        let digest = select_manifest_digest(index.as_bytes(), Some("linux/arm64"))
-            .expect("処理に失敗しないこと");
+        let digest = select_manifest_digest(index.as_bytes(), None).expect("処理に失敗しないこと");
         assert_eq!(digest, "sha256:linux-s390x");
     }
 
@@ -596,12 +612,12 @@ mod tests {
 
     #[test]
     fn select_manifest_digest_errors_when_all_attestation() {
-        // 全 manifest が attestation の場合はエラーになること
+        // 全 manifest が attestation の場合はエラーになること (platform 未指定時のみ)。
         let index = r#"{"manifests":[
             {"digest":"sha256:att1","platform":{"architecture":"unknown","os":"unknown"}},
             {"digest":"sha256:att2","platform":{"architecture":"unknown","os":"unknown"}}
         ]}"#;
-        let err = select_manifest_digest(index.as_bytes(), Some("linux/amd64"))
+        let err = select_manifest_digest(index.as_bytes(), None)
             .expect_err("全 attestation はエラーであること");
         assert!(
             err.to_string().contains("no valid manifests"),
@@ -612,41 +628,69 @@ mod tests {
     #[test]
     fn select_manifest_digest_soft_first_skips_unknown_arch() {
         // soft 先頭経路で os: "linux", architecture: "unknown" のエントリがスキップされ、
-        // 正常な linux/s390x が選ばれること
+        // 正常な linux/s390x が選ばれること (platform 未指定時のみ)。
         let index = r#"{"manifests":[
             {"digest":"sha256:linux-unknown","platform":{"architecture":"unknown","os":"linux"}},
             {"digest":"sha256:linux-s390x","platform":{"architecture":"s390x","os":"linux"}}
         ]}"#;
-        let digest = select_manifest_digest(index.as_bytes(), Some("linux/arm64"))
-            .expect("処理に失敗しないこと");
+        let digest = select_manifest_digest(index.as_bytes(), None).expect("処理に失敗しないこと");
         assert_eq!(digest, "sha256:linux-s390x");
     }
 
     #[test]
     fn select_manifest_digest_hard_first_skips_attestation() {
         // hard 先頭経路で attestation manifest がスキップされ、
-        // 別 os の非 attestation manifest が選ばれること
+        // 別 os の非 attestation manifest が選ばれること (platform 未指定時のみ)。
         let index = r#"{"manifests":[
             {"digest":"sha256:attestation","platform":{"architecture":"unknown","os":"unknown"}},
             {"digest":"sha256:win-amd64","platform":{"architecture":"amd64","os":"windows"}}
         ]}"#;
-        let digest = select_manifest_digest(index.as_bytes(), Some("linux/amd64"))
-            .expect("処理に失敗しないこと");
+        let digest = select_manifest_digest(index.as_bytes(), None).expect("処理に失敗しないこと");
         assert_eq!(digest, "sha256:win-amd64");
     }
 
     #[test]
     fn select_manifest_digest_soft_first_keeps_missing_arch() {
         // soft 先頭経路で platform.architecture が欠落しているエントリは
-        // attestation とみなされず、引き続き選択されること。
+        // attestation とみなされず、引き続き選択されること (platform 未指定時のみ)。
         // preferred フォールバック (arm64/amd64) に一致するエントリを置かず、
         // soft 先頭経路に到達させる。
         let index = r#"{"manifests":[
             {"digest":"sha256:linux-no-arch","platform":{"os":"linux"}},
             {"digest":"sha256:linux-s390x","platform":{"architecture":"s390x","os":"linux"}}
         ]}"#;
-        let digest = select_manifest_digest(index.as_bytes(), Some("linux/arm64"))
-            .expect("処理に失敗しないこと");
+        let digest = select_manifest_digest(index.as_bytes(), None).expect("処理に失敗しないこと");
         assert_eq!(digest, "sha256:linux-no-arch");
+    }
+
+    #[test]
+    fn select_manifest_digest_errors_when_explicit_platform_has_no_match() {
+        // 明示 platform 指定 (Some) で主経路に一致する manifest が無い場合は、
+        // フォールバックせず no matching manifest エラーになること。
+        // Docker Engine と同じ挙動 (要求と異なるアーキテクチャを黙って選ばない)。
+        let index = r#"{"manifests":[
+            {"digest":"sha256:linux-arm64","platform":{"architecture":"arm64","os":"linux"}},
+            {"digest":"sha256:linux-s390x","platform":{"architecture":"s390x","os":"linux"}}
+        ]}"#;
+        let err = select_manifest_digest(index.as_bytes(), Some("linux/amd64"))
+            .expect_err("amd64 が無い明示指定はエラーになること");
+        assert!(
+            err.to_string()
+                .contains("no matching manifest for linux/amd64"),
+            "エラーメッセージに platform が含まれること: {err}"
+        );
+
+        // hard フォールバック (os 不問) も抑止されること。旧実装では win-amd64 が
+        // os 不問の最後の手段として選ばれていた。
+        let win_only = r#"{"manifests":[
+            {"digest":"sha256:win-amd64","platform":{"architecture":"amd64","os":"windows"}}
+        ]}"#;
+        let err = select_manifest_digest(win_only.as_bytes(), Some("linux/amd64"))
+            .expect_err("linux/amd64 が無い明示指定は os 不問でもエラーになること");
+        assert!(
+            err.to_string()
+                .contains("no matching manifest for linux/amd64"),
+            "hard フォールバック抑止のエラーであること: {err}"
+        );
     }
 }
