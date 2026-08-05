@@ -1,7 +1,7 @@
 # バグ: watchdog の reaper への書き込みが SIGPIPE でテストプロセスごと死ぬ
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-04
 - Branch: feature/fix-watchdog-sigpipe
 - Polished: {YYYY-MM-DD}
 
@@ -25,6 +25,14 @@ watchdog feature 有効時、reaper プロセスが親プロセス生存中に�
 
 - reaper が親プロセス生存中に終了しても、次の `register` が SIGPIPE でプロセスを殺さず、respawn 経路 (`write_id` の `Err` → 再 spawn) に進むこと
 - `container rm --force` が実行されない環境 (reaper 死亡後の書き込み) でもテストプロセスが生存すること
+
+## 解決方法
+
+バグが実在しないため修正しない (closed)。
+
+- 実測 (macOS / rustc 1.97.0。watchdog は macOS 専用 feature のため環境整合): Rust の std は起動時 (`std::rt::init`) に SIGPIPE を **SIG_IGN に設定**しており、`libc::signal(SIGPIPE, SIG_DFL)` の戻り値で確認すると disposition = 1 (SIG_IGN)。閉じた pipe への書き込みは `Err(BrokenPipe)` が返りプロセスは生存する。SIG_DFL を強制した場合のみ exit 141 (SIGPIPE で死亡)
+- クレート内に `#[unix_sigpipe]` や disposition を変更する C コードは存在しない (grep 確認)
+- つまり「SIGPIPE でテストプロセスが終了する」バグはデフォルト構成では発生せず、修正 (`libc::signal(SIGPIPE, SIG_IGN)`) は no-op。既存の respawn 経路 (write_id の Err → 再 spawn) は SIG_IGN 下で EPIPE が返るため既に正常動作する
 
 ## 解決方法
 
