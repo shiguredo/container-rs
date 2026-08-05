@@ -17,6 +17,51 @@ use crate::core::healthcheck::Healthcheck;
 use crate::core::ports::{ContainerPort, Ports};
 
 const DEFAULT_DOCKER_SOCKET: &str = "/var/run/docker.sock";
+/// exec の exit code 取得リトライにおける、失敗ごとのバックオフ間隔列。
+///
+/// 初回試行は即時で、失敗するたびにこの列の値を sleep して再試行する。
+/// ループは `0..=len` で回るため、試行回数は列の長さ + 1 (最大 6 回)、
+/// sleep は列の合計 (約 1.76 秒) がすべて実行される。
+/// Docker daemon は exec ストリーム閉塞直後に `Running` / `ExitCode` をまだ
+/// 記録していない場合があるため、指数的に伸ばすバックオフで待つ。
+const EXEC_EXIT_CODE_BACKOFF_MILLIS: &[u64] = &[10, 50, 200, 500, 1000];
+
+/// `GET /exec/{id}/json` の応答 (JSON 文字列) から exec の実行状態を読み取る。
+///
+/// 戻り値は `(running, exit_code)`。`Running` フィールドのパース失敗 (欠落・型不一致)
+/// は終了扱い (`false`) として扱う (現行挙動の維持)。`ExitCode` は `Running == false`
+/// のときのみ意味を持つ。ボディ全体が非 UTF-8 / JSON として不正な場合は
+/// `ClientError::Json` を返す (デーモン異常の診断情報を失わないため、従来どおり即エラー)。
+fn parse_exec_inspect_state(body: &[u8]) -> Result<(bool, Option<i64>)> {
+    let text = std::str::from_utf8(body).map_err(|e| ClientError::Json(e.to_string()))?;
+    let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
+    let value = parsed.value();
+    let running = value
+        .to_member("Running")
+        .ok()
+        .and_then(|m| m.optional())
+        .and_then(|v| bool::try_from(v).ok())
+        .unwrap_or(false);
+    let exit_code = value
+        .to_member("ExitCode")
+        .ok()
+        .and_then(|m| m.optional())
+        .and_then(|v| i64::try_from(v).ok());
+    Ok((running, exit_code))
+}
+
+/// パース済みの exec 状態列を先頭から順に消化し、最初に `Running == false` になった
+/// 状態の `ExitCode` を返す (純粋関数)。
+///
+/// `Running == true` の状態は無視して次へ進む。すべて `Running == true` のまま
+/// 打ち切られた場合は `None` を返す。`Running` のパース失敗を終了扱い (`false`) に
+/// した結果は、`(false, exit_code)` の状態としてこの列に現れる。
+fn resolve_exec_exit_code(states: &[(bool, Option<i64>)]) -> Option<i64> {
+    states
+        .iter()
+        .find(|(running, _)| !running)
+        .and_then(|(_, exit_code)| *exit_code)
+}
 
 /// `remove_blocking` 専用の UnixStream 読み書きタイムアウト。
 /// Drop 経路から呼ばれるため、デーモン無応答時に呼び出しスレッドが恒久ブロックするのを防ぐ。
@@ -434,10 +479,16 @@ impl DockerClient {
 
         // ストリーム EOF 後に inspect で exit code を取得する。
         // Docker daemon はストリーム閉塞直後に ExitCode をまだ記録していない場合があるため、
-        // Running == false になるまで短期リトライする (最大 5 回、10ms 間隔)。
+        // Running == false になるまで指数的バックオフで再試行する。
+        // 初回は即時、失敗ごとに 10ms → 50ms → 200ms → 500ms → 1s の sleep を挟む
+        // (試行最大 6 回・合計約 1.76 秒)。超過時は warn ログ + exit_code: None に倒す。
         let inspect_path = format!("/exec/{}/json", percent_encode_path_segment(&exec_id));
-        let mut exit_code: Option<i64> = None;
-        for _ in 0..5 {
+        let mut states: Vec<(bool, Option<i64>)> = Vec::new();
+        // 初回試行は即時。バックオフ列の長さ分の再試行 (sleep) を挟むため、
+        // 試行回数はバックオフ列の長さ + 1 (最大 6 回) になる。列のイテレートでは
+        // 初回 (sleep 前) の試行を表現できないため、範囲ループでインデックス参照する。
+        #[expect(clippy::needless_range_loop)]
+        for attempt in 0..=EXEC_EXIT_CODE_BACKOFF_MILLIS.len() {
             let response = self.request("GET", &inspect_path, None).await?;
             if response.status_code() >= 400 {
                 return Err(ClientError::Other(format!(
@@ -449,27 +500,21 @@ impl DockerClient {
             let body = response
                 .body_bytes()
                 .ok_or_else(|| ClientError::Other("empty exec inspect body".into()))?;
-            let text = std::str::from_utf8(body).map_err(|e| ClientError::Json(e.to_string()))?;
-            let parsed =
-                nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
-            let running = parsed
-                .value()
-                .to_member("Running")
-                .ok()
-                .and_then(|m| m.optional())
-                .and_then(|v| bool::try_from(v).ok())
-                .unwrap_or(false);
+            let state = parse_exec_inspect_state(body)?;
+            let (running, _) = state;
+            states.push(state);
             if !running {
-                exit_code = parsed
-                    .value()
-                    .to_member("ExitCode")
-                    .ok()
-                    .and_then(|m| m.optional())
-                    .and_then(|v| i64::try_from(v).ok());
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            // 最終試行の後は sleep しない。
+            if attempt < EXEC_EXIT_CODE_BACKOFF_MILLIS.len() {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    EXEC_EXIT_CODE_BACKOFF_MILLIS[attempt],
+                ))
+                .await;
+            }
         }
+        let exit_code = resolve_exec_exit_code(&states);
         if exit_code.is_none() {
             tracing::warn!("exec {exec_id} still running after stream EOF, exit code unavailable");
         }
@@ -2142,6 +2187,92 @@ mod tests {
         assert_eq!(
             parse_daemon_error_message(br#"{"message":"No such container: abc"}"#).as_deref(),
             Some("No such container: abc")
+        );
+    }
+
+    #[test]
+    fn resolve_exec_exit_code_picks_first_finished_state() {
+        // パース済み状態列のうち、最初に Running == false になった状態の ExitCode を返すこと。
+        // デーモンの状態記録が遅れ、EOF 直後は Running == true のままでも、
+        // 後続の試行で Running == false を観測できれば exit code を取得できる。
+        let states = [(true, None), (true, None), (false, Some(3))];
+        assert_eq!(resolve_exec_exit_code(&states), Some(3));
+    }
+
+    #[test]
+    fn resolve_exec_exit_code_returns_none_when_always_running() {
+        // すべて Running == true のまま打ち切られた場合は None を返すこと。
+        let states = [(true, None), (true, None), (true, None)];
+        assert_eq!(resolve_exec_exit_code(&states), None);
+    }
+
+    #[test]
+    fn resolve_exec_exit_code_handles_first_state_finished() {
+        // 先頭の状態がすでに Running == false なら即座にその ExitCode を返すこと。
+        let states = [(false, Some(0))];
+        assert_eq!(resolve_exec_exit_code(&states), Some(0));
+    }
+
+    #[test]
+    fn exec_exit_code_backoff_sequence_matches_spec() {
+        // バックオフ間隔列が仕様どおりの値を持つことを検証する (間隔列・試行回数・
+        // 合計 sleep 時間)。ループは `for attempt in 0..=EXEC_EXIT_CODE_BACKOFF_MILLIS.len()`
+        // で回り、attempt が列長に達した最終試行の後だけ sleep しない。よって:
+        // - 試行回数 = 列の長さ + 1 (初回即時 + 各列値で 1 回ずつの再試行)
+        // - 合計 sleep = 列の全要素の合計 (末尾 1000ms も sleep される)
+        // このテストは定数と、そこから導出した試行回数・合計のみを検証する
+        // (ループ本体は HTTP を伴うためモック禁止規約により直接テストできない)。
+        // ループ側は `0..=len` で列長に追従する構造になっており、列長の仕様を
+        // ここで固定することで、off-by-one への回帰時に実装と仕様のずれを
+        // コードレビューで検出しやすくする。
+        assert_eq!(EXEC_EXIT_CODE_BACKOFF_MILLIS, &[10, 50, 200, 500, 1000]);
+        let attempts = EXEC_EXIT_CODE_BACKOFF_MILLIS.len() + 1;
+        let total_sleep: u64 = EXEC_EXIT_CODE_BACKOFF_MILLIS.iter().sum();
+        assert_eq!(
+            attempts, 6,
+            "試行回数が 6 回であること (初回即時 + 5 回の再試行)"
+        );
+        assert_eq!(total_sleep, 1760, "合計 sleep が約 1.76 秒であること");
+    }
+
+    #[test]
+    fn parse_exec_inspect_state_reads_running_and_exit_code() {
+        // 正常な inspect 応答から Running / ExitCode が読み取れること。
+        let (running, exit_code) = parse_exec_inspect_state(br#"{"Running":false,"ExitCode":7}"#)
+            .expect("正常応答はパースできること");
+        assert!(!running, "Running == false が読み取れること");
+        assert_eq!(exit_code, Some(7), "ExitCode が読み取れること");
+
+        let (running, _exit_code) = parse_exec_inspect_state(br#"{"Running":true,"ExitCode":0}"#)
+            .expect("正常応答はパースできること");
+        assert!(running, "Running == true が読み取れること");
+    }
+
+    #[test]
+    fn parse_exec_inspect_state_treats_missing_running_as_finished() {
+        // Running フィールド欠落・型不一致は終了扱い (false) として扱うこと (現行挙動)。
+        // ExitCode が取れない場合は None になる。
+        let (running, exit_code) = parse_exec_inspect_state(br#"{"Running":"yes"}"#)
+            .expect("型不一致でも JSON として有効ならパースできること");
+        assert!(!running, "型不一致の Running は false 扱いであること");
+        assert_eq!(exit_code, None, "ExitCode が無い場合は None であること");
+
+        let (running, _) =
+            parse_exec_inspect_state(br#"{}"#).expect("空オブジェクトはパースできること");
+        assert!(!running, "Running 欠落は false 扱いであること");
+    }
+
+    #[test]
+    fn parse_exec_inspect_state_rejects_invalid_json() {
+        // 非 UTF-8・JSON パース失敗は ClientError::Json で即エラーになること (従来挙動)。
+        // デーモン異常の診断情報を失わないため、終了扱い (false) に倒さない。
+        assert!(
+            parse_exec_inspect_state(b"\xff\xfe").is_err(),
+            "非 UTF-8 は Json エラーになること"
+        );
+        assert!(
+            parse_exec_inspect_state(b"not json").is_err(),
+            "JSON パース失敗は Json エラーになること"
         );
     }
 }
