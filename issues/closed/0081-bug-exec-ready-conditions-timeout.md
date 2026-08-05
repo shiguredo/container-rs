@@ -1,7 +1,7 @@
 # バグ: exec の `container_ready_conditions` にタイムアウトが無く、ログ FD が無い場合に永久待ちになり得る
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-exec-ready-conditions-timeout
 - Polished: 2026-08-04
 
@@ -31,6 +31,9 @@
 
 ## 解決方法
 
-- `src/core/containers/async_container.rs` の `exec` で、事前エラー (ログ FD 欠如 + `WaitFor::Log`) の検査をコンテナ内コマンド実行 (`c.exec`) の**前**に行い、ready_conditions 待機を `startup_timeout` 付きに変更する (検査をコマンド実行の前に置くことで、単体テストで XPC を呼ばずに検証できる)
-- `src/core/containers/async_container.rs` (または `src/runners/async_runner.rs`) の `#[cfg(test)]` モジュールに、ログ FD 欠如 + exec Log 待機のテストを追加する
-- `tests/container_macos.rs` にタイムアウト打ち切りの統合テストを追加する
+- `src/core/containers/async_container.rs` の `exec` で、コンテナ内コマンド実行 (`c.exec`) の**前**に、ログ取得元が無い (`log_source = None`) のに `WaitFor::Log` を含む ready_conditions を指定した場合の明示エラーを追加した (start 側と同じ趣旨の OS 中立文言)
+- ready_conditions 待機 (`block_until_ready`) を `ContainerRequest::startup_timeout` (未設定時は既定 60 秒) 付きに変更し、超過時は `WaitContainerError::StartupTimeout` を返すようにした
+- 既定タイムアウト `DEFAULT_STARTUP_TIMEOUT` を `core::containers::request` に移動して start 側 (`run_ready_sequence`) と exec 側で共有し、二重定義によるドリフトを避けた
+- `WaitFor::Log` 判定の共通述語 `ready_conditions_require_log` を `async_container.rs` に置き、macOS の start 側判定 (`ready_conditions_require_log_fds`) を統合して削除した
+- テスト: クレート内単体テスト (ログ取得元欠如 + `WaitFor::Log` の明示エラー。macOS / Linux 両方で実行) と、macOS 統合テスト (ready_conditions 待機の `StartupTimeout` 打ち切り + ハング保護) を追加した
+- `exec` の rustdoc と `docs/TESTCONTAINERS.md` の記述を更新した

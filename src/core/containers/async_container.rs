@@ -26,13 +26,14 @@ use tokio::io::{AsyncBufRead, AsyncReadExt};
 use tokio::io::{AsyncBufReadExt, ReadBuf};
 
 use crate::core::client::Client;
+use crate::core::containers::request::DEFAULT_STARTUP_TIMEOUT;
 use crate::core::host::Host;
 use crate::{
     ContainerRequest, Image,
     core::{
         WaitFor,
         copy::CopyFileFromContainer,
-        error::{Error, Result},
+        error::{Error, Result, WaitContainerError},
         image::{ContainerState, ExecCommand},
         ports::{ContainerPort, Ports},
     },
@@ -359,8 +360,11 @@ impl<I: Image> ContainerAsync<I> {
 
     /// コンテナ内でコマンドを実行する。
     ///
-    /// `ExecCommand::container_ready_conditions` には start 時の `startup_timeout` が
-    /// 適用されない。http / log 待機などを置くと無期限に待ち得る。
+    /// `ExecCommand::container_ready_conditions` の待機には start 時の `startup_timeout`
+    /// (未設定の場合は既定値 60 秒) が適用され、超過時は `WaitContainerError::StartupTimeout`
+    /// になる。ログ取得元が無い (macOS の `containerLogs` 失敗時 / Linux のログストリーム
+    /// 欠如時) のに `WaitFor::Log` を含む ready_conditions を指定した場合は、コンテナ内
+    /// コマンドの実行前に明示エラーで打ち切る。
     ///
     /// # Linux
     ///
@@ -381,6 +385,16 @@ impl<I: Image> ContainerAsync<I> {
             cmd_ready_condition,
             env_vars,
         } = cmd;
+
+        // ログ取得元が無い (log_source = None) のに WaitFor::Log を含む ready_conditions を
+        // 待機すると、空リーダー + exit_code_hint 未観測のままポーリングが永久に回る
+        // (コンテナ生存中は exit_code_hint が None のままのため)。start 側と同じ趣旨の
+        // 明示エラーで、コンテナ内コマンドの実行前に打ち切る。
+        if self.log_source_is_none() && ready_conditions_require_log(&container_ready_conditions) {
+            return Err(crate::Error::other(
+                "log wait requires a log source, but none is available",
+            ));
+        }
 
         let cmd_owned: Vec<String> = cmd;
         let raw = match &self.client {
@@ -430,8 +444,22 @@ impl<I: Image> ContainerAsync<I> {
             }
         };
 
-        // container_ready_conditions を待機
-        self.block_until_ready(container_ready_conditions).await?;
+        // container_ready_conditions を待機。start 側 (run_ready_sequence) と同じ
+        // startup_timeout を適用して無期限待ちを防ぐ。未設定 (None) の場合は
+        // start 側と同じ既定値 60 秒を使う。
+        let startup_timeout = self
+            .image
+            .startup_timeout()
+            .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
+        tokio::time::timeout(
+            startup_timeout,
+            self.block_until_ready(container_ready_conditions),
+        )
+        .await
+        .map_err(|_| WaitContainerError::StartupTimeout {
+            id: self.id.to_string(),
+            timeout: startup_timeout,
+        })??;
 
         // cmd_ready_condition の処理。
         match cmd_ready_condition {
@@ -1162,6 +1190,15 @@ impl<I: Image> ContainerAsync<I> {
         Ok(stderr)
     }
 
+    /// ログ取得元が無い (空リーダーを返す) 状態かどうか。
+    fn log_source_is_none(&self) -> bool {
+        let source = self
+            .log_source
+            .lock()
+            .expect("log source mutex must not be poisoned");
+        matches!(*source, ContainerLogSource::None)
+    }
+
     /// コンテナの準備完了まで待機する。
     pub(crate) async fn block_until_ready(&self, ready_conditions: Vec<WaitFor>) -> Result<()> {
         for condition in ready_conditions {
@@ -1198,6 +1235,21 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         return true;
     }
     haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// ready_conditions が `WaitFor::Log` を 1 つでも含むか。
+///
+/// start 側 (macOS のログ FD 欠如判定) と exec 側で共用する共通述語。
+/// ログ取得元が無い場合にこの条件を含む待機は永久に回るため、事前に明示エラーにする。
+///
+/// 空メッセージの `WaitFor::Log` (`message_on_stdout("")` 等) はログ取得元が無くても
+/// 即成立するが、判定はメッセージの内容を見ず `WaitFor::Log` の存在だけで true に
+/// する (start 側と同粒度。空メッセージ待機は実用頻度が低く、事前エラー側に倒しても
+/// 実害は小さい)。
+pub(crate) fn ready_conditions_require_log(ready_conditions: &[WaitFor]) -> bool {
+    ready_conditions
+        .iter()
+        .any(|c| matches!(c, WaitFor::Log(_)))
 }
 
 /// pread ベースの独立オフセットリーダー。
@@ -1657,6 +1709,82 @@ impl<I: Image> Drop for ContainerAsync<I> {
 #[cfg(test)]
 mod tests {
     use super::WaitState;
+
+    #[test]
+    fn ready_conditions_require_log_detects_log_strategy() {
+        // WaitFor::Log があれば true、無ければ false になること。
+        // start 側 / exec 側で共用する共通述語の動作を確認する。
+        use crate::core::wait::WaitFor;
+
+        assert!(super::ready_conditions_require_log(&[
+            WaitFor::message_on_stdout("ready")
+        ]));
+        assert!(super::ready_conditions_require_log(&[
+            WaitFor::seconds(1),
+            WaitFor::message_on_stderr("err"),
+        ]));
+        assert!(super::ready_conditions_require_log(&[
+            WaitFor::message_on_either_std("either")
+        ]));
+        assert!(!super::ready_conditions_require_log(&[]));
+        assert!(!super::ready_conditions_require_log(&[WaitFor::Nothing]));
+        assert!(!super::ready_conditions_require_log(&[WaitFor::seconds(1)]));
+        assert!(!super::ready_conditions_require_log(&[
+            WaitFor::healthcheck()
+        ]));
+    }
+
+    /// `ContainerLogSource::None` で構築した `ContainerAsync` に対して、
+    /// `WaitFor::Log` を含む ready_conditions 付き exec が明示エラーを返すこと。
+    ///
+    /// ログ取得元が無いコンテナに `WaitFor::Log` を待機させると、空リーダー +
+    /// `exit_code_hint` 未観測のままポーリングが永久に回るため、コンテナ内コマンドの
+    /// 実行前に明示エラーで打ち切る。`Client::detect` は接続しないため、exec 経路は
+    /// XPC / Docker を呼ばずに検証できる (テスト終了時の Drop はコンテナ削除を試みるが、
+    /// エラーは無視されテスト結果には影響しない)。
+    #[tokio::test]
+    async fn exec_log_wait_without_log_source_returns_error() {
+        use crate::core::client::Client;
+        use crate::core::containers::async_container::{ContainerAsync, ContainerLogSource};
+        use crate::core::image::ExecCommand;
+        use crate::core::image::image_ext::ImageExt;
+        use crate::core::wait::WaitFor;
+        use crate::images::GenericImage;
+
+        let req: crate::ContainerRequest<GenericImage> =
+            GenericImage::new("alpine", "latest").with_cmd(["sleep", "30"]);
+        let wait_state = crate::core::containers::async_container::new_wait_state();
+        let client = Client::detect().expect("クライアント生成に失敗した");
+        #[cfg(target_os = "linux")]
+        let container: ContainerAsync<GenericImage> = ContainerAsync::new(
+            "test-id".to_string(),
+            client,
+            req,
+            wait_state,
+            ContainerLogSource::None,
+            None,
+        );
+        #[cfg(target_os = "macos")]
+        let container: ContainerAsync<GenericImage> = ContainerAsync::new(
+            "test-id".to_string(),
+            client,
+            req,
+            wait_state,
+            ContainerLogSource::None,
+        );
+
+        let err = container
+            .exec(
+                ExecCommand::new(["echo", "hello"])
+                    .with_container_ready_conditions(vec![WaitFor::message_on_stdout("ready")]),
+            )
+            .await
+            .expect_err("ログ取得元なし + Log 待機は明示エラーになること");
+        assert!(
+            err.to_string().contains("log wait requires a log source"),
+            "ログ取得元欠如の明示エラーであること: {err}"
+        );
+    }
 
     #[test]
     fn store_if_current_accepts_matching_generation() {

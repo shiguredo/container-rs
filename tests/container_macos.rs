@@ -2420,6 +2420,63 @@ mod test_container_xpc {
         container.rm().await.ok();
     }
 
+    /// exec の container_ready_conditions 待機が startup_timeout で打ち切られること。
+    ///
+    /// コンテナは長寿命コマンドで生存させ、マッチしない WaitFor::Log を待機させる。
+    /// 修正前は ready_conditions 待機にタイムアウトが無く永久待ちになっていた。
+    /// 外側の `tokio::time::timeout` は、修正が退行して待機が永久待ちに戻った場合に
+    /// このテスト自身が CI をハングさせないための保護 (永久待ちしないこと自体の検証)。
+    #[tokio::test]
+    async fn xpc_alpine_exec_ready_conditions_timeout_returns_error() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        use shiguredo_container::core::error::WaitContainerError;
+
+        let timeout = Duration::from_secs(2);
+        let container = GenericImage::new("alpine", "latest")
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .with_startup_timeout(timeout)
+            .start()
+            .await
+            .expect("alpine コンテナの起動に失敗した");
+
+        // 修正が退行して ready 待機が永久待ちになっても、このテスト自体が
+        // CI をハングさせないよう外側に timeout を被せる。
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            container.exec(
+                ExecCommand::new(["echo", "hello"]).with_container_ready_conditions(vec![
+                    WaitFor::message_on_stdout("NO_SUCH_MESSAGE"),
+                ]),
+            ),
+        )
+        .await
+        .expect("exec の ready 待機が永久待ちせずに返ること (10 秒以内)");
+
+        match result {
+            Err(shiguredo_container::Error::WaitContainer(
+                WaitContainerError::StartupTimeout {
+                    id,
+                    timeout: actual,
+                },
+            )) => {
+                assert_eq!(id, container.id(), "コンテナ ID が一致すること");
+                assert_eq!(actual, timeout, "timeout が指定値と一致すること");
+            }
+            other => {
+                // ログ取得元欠如 (containerLogs 失敗) の環境では事前エラーになり、
+                // StartupTimeout にはならない。環境要因による失敗かどうか判別できるよう
+                // エラー内容を含めて panic する。
+                panic!("exec の ready 待機タイムアウトは StartupTimeout になること: {other:?}")
+            }
+        }
+
+        container.stop_with_timeout(Some(0)).await.ok();
+        container.rm().await.ok();
+    }
+
     #[tokio::test]
     async fn xpc_alpine_stdout_to_vec_twice() {
         if super::helpers::skip_if_ci() {
