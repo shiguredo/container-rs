@@ -1023,6 +1023,20 @@ fn parse_published_ports(item: &nojson::RawJsonValue<'_, '_>) -> Ports {
             "sctp" => ContainerPort::Sctp(container_port),
             _ => ContainerPort::Tcp(container_port),
         };
+        // ホストポート 0 / コンテナポート 0 のエントリは Ports に登録しない。
+        // - ホストポート 0: 自動割当 (build_config の事前割当) 後は到達不能な防御
+        //   (デーモン応答の異常系のみ)。
+        // - コンテナポート 0: そのまま登録すると Ports の最小キーになり、
+        //   ポート未指定フォールバックが接続を試みてしまうため必須。
+        // この防御は macOS 側のみ。Linux の Docker Engine は正常応答で 0 を返さない
+        // ため実害がない (構造上は first_container_port のフォールバックで同問題を持ち得る)。
+        if host_port == 0 || container_port.as_u16() == 0 {
+            tracing::debug!(
+                "skipping published port with zero host_port or container_port: \
+                 host_port={host_port}, container_port={container_port}"
+            );
+            continue;
+        }
         // hostAddress のアドレスファミリで IPv4 / IPv6 マッピングを分ける。
         // (以前は全部 IPv4 側に入り、ipv6_mapping は永遠に空だった)
         if host_address.parse::<std::net::Ipv6Addr>().is_ok() {
@@ -1342,6 +1356,24 @@ mod tests {
         assert_eq!(ports.map_to_host_port_ipv6(80u16), None);
         assert_eq!(ports.map_to_host_port_ipv6(81u16), Some(18081));
         assert_eq!(ports.map_to_host_port_ipv4(81u16), None);
+    }
+
+    #[test]
+    fn parse_published_ports_skips_zero_ports() {
+        // ホストポート 0 / コンテナポート 0 のエントリは Ports に登録されないこと。
+        // - ホストポート 0: 自動割当後は到達不能な防御 (デーモン応答の異常系のみ)。
+        // - コンテナポート 0: そのまま登録すると Ports の最小キーになり、
+        //   ポート未指定フォールバックが接続を試みてしまうため必須。
+        let json = r#"{"configuration":{"publishedPorts":[
+            {"hostAddress":"0.0.0.0","hostPort":0,"containerPort":80,"proto":"tcp"},
+            {"hostAddress":"0.0.0.0","hostPort":18081,"containerPort":0,"proto":"tcp"},
+            {"hostAddress":"0.0.0.0","hostPort":18082,"containerPort":82,"proto":"tcp"}
+        ]}}"#;
+        let parsed = nojson::RawJson::parse(json).expect("テスト用 JSON の解析に成功すること");
+        let ports = parse_published_ports(&parsed.value());
+        assert_eq!(ports.map_to_host_port_ipv4(80u16), None);
+        assert_eq!(ports.map_to_host_port_ipv4(0u16), None);
+        assert_eq!(ports.map_to_host_port_ipv4(82u16), Some(18082));
     }
 
     #[test]

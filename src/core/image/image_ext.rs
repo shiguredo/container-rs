@@ -97,6 +97,13 @@ pub trait ImageExt<I: Image> {
         source: impl Into<CopyDataSource>,
     ) -> ContainerRequest<I>;
     /// ホストポートとコンテナポートのマッピングを追加する。
+    ///
+    /// `host_port` に 0 を指定すると (Docker のランダム割当の慣用)、**macOS
+    /// (Apple container)** では起動時に空きホストポートを自動割当する (Apple
+    /// container には `hostPort: 0` のランダム割当が無いため)。**Linux (Docker
+    /// Engine API)** では 0 のまま Docker Engine に渡し、Engine 側のランダム割当に
+    /// 任せる。割当は bind(0) → 即 release のため、起動までにポートを奪われると
+    /// start が失敗し得る (自動再試行は無い)。
     fn with_mapped_port(self, host_port: u16, container_port: ContainerPort)
     -> ContainerRequest<I>;
     /// privileged モードを設定する。

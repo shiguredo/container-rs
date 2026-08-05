@@ -50,6 +50,28 @@ fn allocate_free_host_port(port: ContainerPort) -> Result<u16> {
     allocated.map_err(|e| crate::Error::other(format!("failed to allocate free host port: {e}")))
 }
 
+/// 割り当て済みホストポートと重複しない空きホストポートを確保する。
+///
+/// `allocate_free_host_port` は bind(0) → 即 release のため、連続呼び出しで同じ
+/// エフェメラルポートが再利用され得る。`with_mapped_port(0, ...)` の複数指定や
+/// expose の複数指定で重複しないように、割り当て済み集合と衝突しないポートを
+/// 再試行で確保する。再試行上限 64 回はエフェメラルレンジ (約 16,000 ポート) に
+/// 対して衝突が 64 回連続する確率が無視できるほど小さいため。上限到達時はエラー。
+fn allocate_unique_free_host_port(
+    port: ContainerPort,
+    allocated: &mut std::collections::HashSet<u16>,
+) -> Result<u16> {
+    for _ in 0..64 {
+        let candidate = allocate_free_host_port(port)?;
+        if allocated.insert(candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(crate::Error::other(
+        "failed to allocate a unique free host port after retries",
+    ))
+}
+
 /// Apple container は SCTP ポート公開に未対応のため、検出時は明示エラーにする。
 ///
 /// `with_mapped_port(..., *.sctp())` と `with_exposed_port(*.sctp())` の両方を対象にする。
@@ -135,18 +157,42 @@ pub(crate) fn build_config<I: Image>(
     // ports。明示的なマッピング (with_mapped_port) に加え、`Image::expose_ports` /
     // `with_exposed_port` で宣言されたポートには空きホストポートを自動で割り当てる
     // (本家のランダムポート公開に相当。以前は expose_ports が黙って無視されていた)。
+    // `with_mapped_port(0, port)` (Docker のランダム割当の慣用) も expose 経路と同じ
+    // 事前割当に流す。Apple container には `hostPort: 0` のランダム割当が無いため。
+    // ホストポートの重複 (固定ポート同士・固定ポートと割当結果の衝突) は明示エラーにし、
+    // 割当済みポートとの重複は `allocate_unique_free_host_port` で防ぐ。
+    let mut allocated_host_ports = std::collections::HashSet::new();
     let mut ports: Vec<PortCfg> = req
         .ports()
         .map(|ps| {
             ps.iter()
-                .map(|p| PortCfg {
-                    host_address: "0.0.0.0".into(),
-                    host_port: p.host_port(),
-                    container_port: p.container_port().as_u16(),
-                    proto: p.container_port().as_str().into(),
+                .map(|p| {
+                    let host_port = if p.host_port() == 0 {
+                        allocate_unique_free_host_port(
+                            p.container_port(),
+                            &mut allocated_host_ports,
+                        )?
+                    } else {
+                        if !allocated_host_ports.insert(p.host_port()) {
+                            return Err(crate::Error::other(format!(
+                                "duplicate host port mapping for container port {}: \
+                                 host port {} is already mapped",
+                                p.container_port().as_u16(),
+                                p.host_port()
+                            )));
+                        }
+                        p.host_port()
+                    };
+                    Ok(PortCfg {
+                        host_address: "0.0.0.0".into(),
+                        host_port,
+                        container_port: p.container_port().as_u16(),
+                        proto: p.container_port().as_str().into(),
+                    })
                 })
-                .collect()
+                .collect::<Result<Vec<_>>>()
         })
+        .transpose()?
         .unwrap_or_default();
     for exposed in req.expose_ports() {
         let proto = exposed.as_str();
@@ -158,7 +204,7 @@ pub(crate) fn build_config<I: Image>(
         }
         ports.push(PortCfg {
             host_address: "0.0.0.0".into(),
-            host_port: allocate_free_host_port(*exposed)?,
+            host_port: allocate_unique_free_host_port(*exposed, &mut allocated_host_ports)?,
             container_port: exposed.as_u16(),
             proto: proto.into(),
         });
@@ -1193,6 +1239,145 @@ mod tests {
         .expect("build_config が成功すること");
         assert_eq!(cfg.ports.len(), 1);
         assert_eq!(cfg.ports[0].host_port, 18080);
+    }
+
+    #[test]
+    fn multiple_exposed_ports_get_unique_host_ports() {
+        // with_exposed_port の複数指定でホストポートが重複しないこと。
+        use crate::core::ports::IntoContainerPort;
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_exposed_port(80.tcp())
+            .with_exposed_port(81.tcp())
+            .with_cmd(["sleep", "1"]);
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        )
+        .expect("build_config が成功すること");
+        assert_eq!(cfg.ports.len(), 2);
+        assert_ne!(
+            cfg.ports[0].host_port, cfg.ports[1].host_port,
+            "複数の expose が異なるホストポートを割り当てられること"
+        );
+    }
+
+    #[test]
+    fn mapped_port_zero_gets_auto_allocated_host_port() {
+        // with_mapped_port(0, port) (Docker のランダム割当の慣用) に空きホストポートが
+        // 自動割当されること。Apple container には hostPort: 0 のランダム割当が無いため、
+        // expose 経路と同じ事前割当に流す。
+        use crate::core::ports::IntoContainerPort;
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_mapped_port(0, 80.tcp())
+            .with_cmd(["sleep", "1"]);
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        )
+        .expect("build_config が成功すること");
+        assert_eq!(cfg.ports.len(), 1);
+        assert_eq!(cfg.ports[0].container_port, 80);
+        assert_ne!(
+            cfg.ports[0].host_port, 0,
+            "ホストポート 0 が自動割当されること"
+        );
+
+        // with_mapped_port(0, port) と with_exposed_port(port) の併用では
+        // 重複チェックにより expose 側がスキップされ、二重割当が起きないこと。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_exposed_port(80.tcp())
+            .with_mapped_port(0, 80.tcp())
+            .with_cmd(["sleep", "1"]);
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        )
+        .expect("build_config が成功すること");
+        assert_eq!(cfg.ports.len(), 1, "重複する expose はスキップされること");
+        assert_ne!(cfg.ports[0].host_port, 0);
+
+        // with_mapped_port(0, ...) の複数指定で同じホストポートが重複割当されないこと
+        // (allocate_free_host_port は bind(0) → 即 release のため、重複防止が無いと
+        // 同じエフェメラルポートが再利用され得る)。macOS のエフェメラルレンジは
+        // 約 16,000 ポートなので、2 個の指定では重複チェックが壊れていても偶然 pass
+        // し得る。多数の mapped(0) を指定し、OS が割当ポートを再利用する環境では
+        // 重複を検出できる。
+        let mut req: ContainerRequest<GenericImage> =
+            GenericImage::new("alpine", "latest").with_cmd(["sleep", "1"]);
+        for port in 80_u16..=143 {
+            req = req.with_mapped_port(0, port.tcp());
+        }
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        )
+        .expect("build_config が成功すること");
+        assert_eq!(cfg.ports.len(), 64);
+        let mut seen = std::collections::HashSet::new();
+        for p in &cfg.ports {
+            assert_ne!(p.host_port, 0);
+            assert!(
+                seen.insert(p.host_port),
+                "割当ホストポートが重複しないこと (host_port={})",
+                p.host_port
+            );
+        }
+
+        // UDP の mapped(0) にも空きホストポートが自動割当されること。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_mapped_port(0, 53.udp())
+            .with_cmd(["sleep", "1"]);
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        )
+        .expect("build_config が成功すること");
+        assert_eq!(cfg.ports.len(), 1);
+        assert_eq!(cfg.ports[0].container_port, 53);
+        assert_ne!(
+            cfg.ports[0].host_port, 0,
+            "UDP の mapped(0) にもホストポートが割り当てられること"
+        );
+    }
+
+    #[test]
+    fn duplicate_fixed_host_ports_are_rejected() {
+        // 固定ポート同士の重複 (with_mapped_port(18080, ...) × 2) は明示エラーになること。
+        use crate::core::ports::IntoContainerPort;
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_mapped_port(18080, 80.tcp())
+            .with_mapped_port(18080, 81.tcp())
+            .with_cmd(["sleep", "1"]);
+        let result = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        );
+        let err = match result {
+            Ok(_) => panic!("重複するホストポートのマッピングはエラーになること"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("duplicate host port mapping"),
+            "重複ホストポートのエラーメッセージであること: {err}"
+        );
     }
 
     #[test]
