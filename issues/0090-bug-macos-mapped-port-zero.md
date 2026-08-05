@@ -1,7 +1,7 @@
 # バグ: macOS の `with_mapped_port(0, ...)` が自動割当されず、ホストポート 0 のまま XPC に送られる
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-macos-mapped-port-zero
 - Polished: 2026-08-04
 
@@ -30,6 +30,10 @@ macOS で `with_mapped_port(0, container_port)` (Docker ではランダム割当
 
 ## 解決方法
 
-- `src/core/client/container_cfg.rs` の `build_config` で `host_port == 0` の明示マッピングを `allocate_free_host_port` 経由の自動割当に変更する (SCTP は `reject_sctp_ports` が先に落とすため到達しない)
-- `src/core/client/xpc_client.rs` の `parse_published_ports` でホストポート 0 / コンテナポート 0 のエントリをスキップする
-- それぞれ単体テストと、macOS の統合テスト (`tests/container_macos.rs`) を追加する
+- `src/core/client/container_cfg.rs` の `build_config` で `host_port == 0` の明示マッピングを `allocate_unique_free_host_port` 経由の自動割当に変更した (SCTP は `reject_sctp_ports` が先に落とすため到達しない)。expose 経路も同じ関数を使う
+- ホストポートの重複 (固定ポート同士・固定ポートと割当結果の衝突) は `duplicate host port mapping` の明示エラーにした
+- `allocate_unique_free_host_port` は割当済み集合と衝突しないポートを最大 64 回再試行で確保する (bind(0) → 即 release の再利用防止)
+- `src/core/client/xpc_client.rs` の `parse_published_ports` でホストポート 0 / コンテナポート 0 のエントリをスキップし、`tracing::debug` でログを残す
+- テスト: `build_config` の単体テスト (mapped(0) の自動割当・expose 併用の重複スキップ・64 個の mapped(0) のユニーク検証・UDP・固定ポート重複エラー・expose 複数) と `parse_published_ports` の単体テスト (0 スキップ) を追加した
+- macOS の統合テスト (`tests/container_macos.rs`) に、alpine の mapped(0) 自動割当検証と、nginx の mapped(0) → published port 経由 HTTP 200 検証 (`test_container_http_wait` モジュール、`RUN_HOST_NETWORK_TESTS=1` ゲート) を追加した
+- `docs/TESTCONTAINERS.md` と `with_mapped_port` の rustdoc を新挙動に合わせて更新した
