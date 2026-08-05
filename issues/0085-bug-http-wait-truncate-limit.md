@@ -1,7 +1,7 @@
 # バグ: HttpWaitStrategy の「1 MiB で切り詰め」契約が 10 MiB 超の応答でエラーに化ける
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-http-wait-truncate-limit
 - Polished: 2026-08-04
 
@@ -32,6 +32,8 @@
 
 ## 解決方法
 
-- `src/core/client/http_decode.rs` の `ResponseAccumulator::new` で、`BodyLimit::Truncate(max)` に `DecoderLimits { max_body_size: u64::MAX, ..Default::default() }` を適用する (デコーダの受信総量チェックを無効化し、切り詰めは既存の `drain_body` に任せる)
-- `src/core/wait/http_strategy.rs` の単体テストに 10 MiB 超レスポンス (Content-Length フレーミング) の切り詰めケースを追加する (ボディ長が 1 MiB に切り詰められ、マッチ判定が成立することを検証する)
-- `src/core/client/http_decode.rs` の `ResponseAccumulator::new` のコメント (58-64 行付近) に、Truncate のデコーダ上限方針 (無効化) を追記する
+- `src/core/client/http_decode.rs` の `ResponseAccumulator::new` で、`BodyLimit::Truncate(_)` に `DecoderLimits { max_body_size: u64::MAX, ..Default::default() }` を適用した (デコーダの受信総量チェックを無効化し、切り詰めは既存の `drain_body` の Truncate 分岐に任せる。`docker_log_stream` の非有界ログデコーダと同じ方針)
+- `BodyLimit::Unlimited` は従来どおり `ResponseDecoder::new()` (デコーダ既定 10 MiB 上限) のままとした (Docker Engine API 経路は小さい JSON 応答のみで、受信総量の安全弁として維持)。`BodyLimit::Error` は既存の上限値揃えを維持
+- `DecoderLimits::unlimited()` は使わず `max_body_size` のみ `u64::MAX` にした (`max_buffer_size` / `max_headers_count` 等のガードを維持するため)
+- 受信総量ガード喪失のトレードオフ (呼び出し側の `request_timeout` と保持量上限で実質 bounded) をコメントに明記した
+- テスト: `http_strategy.rs` に 10 MiB 超レスポンス (Content-Length フレーミング) の切り詰めテストを追加し、1 MiB に切り詰められて status 200 でマッチ判定できることを検証した。既存の 1 MiB 切り詰めテストも通ることを確認した
