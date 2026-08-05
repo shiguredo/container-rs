@@ -1,7 +1,7 @@
 # バグ: Linux exec の ExitCode 取得リトライが短く、デーモンの状態記録が遅れると exit code を取得できない
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-exec-exit-code-retry
 - Polished: 2026-08-04
 
@@ -29,5 +29,7 @@ Linux の `ContainerAsync::exec` で、ストリーム EOF 後に exit code を�
 
 ## 解決方法
 
-- `src/core/client/docker_client.rs` の `exec` のリトライ間隔・回数を拡大する (指数的バックオフ)
-- バックオフの間隔列 (10ms → 50ms → 200ms → 500ms → 1s) は定数として切り出し、リトライの判定ロジック (パース済みの `(Running, ExitCode)` の応答列を順に消化し、`Running == false` で `ExitCode` を返す) は純粋関数として切り出し、それぞれ単体テストで検証できるようにする。`Running` のパース失敗 (フィールド欠落・型不一致) は現行どおり終了扱い (`false`) として扱う。「EOF 直後は `Running`、数回後に `Running == false` になる」応答列を入力として、exit code が取得できることを検証する (モックやスタブは使わない)
+- `src/core/client/docker_client.rs` の `exec` の exit code 取得リトライを、固定 5 回 × 10ms から指数的バックオフ (10ms → 50ms → 200ms → 500ms → 1s、試行最大 6 回・合計約 1.76 秒) に拡大した。バックオフ間隔列 `EXEC_EXIT_CODE_BACKOFF_MILLIS` を定数として切り出し、ループは `0..=len` で消化する (初回即時 + 各列値で 1 回ずつの再試行)
+- 打ち切り時は現行どおり `warn` ログ + `exit_code: None` を返す。リトライ中の HTTP エラーは即エラー、`Running == false` になった時点の `ExitCode` パース失敗は `None` のまま打ち切る (現行どおり)
+- inspect 応答のパーサ `parse_exec_inspect_state` (非 UTF-8 / JSON パース失敗は従来どおり `ClientError::Json` で即エラー、`Running` フィールド欠落・型不一致は終了扱い `false`) と、パース済み状態列から最初の終了状態の ExitCode を返す純粋関数 `resolve_exec_exit_code` を切り出した
+- テスト: `resolve_exec_exit_code` 3 件 (最初の終了状態・すべて Running・先頭終了)、`parse_exec_inspect_state` 3 件 (正常読み取り・Running 欠落/型不一致・非 UTF-8/JSON 失敗)、バックオフシーケンス 1 件 (間隔列・試行回数・合計 sleep) を追加した
