@@ -21,9 +21,11 @@ use shiguredo_http11::{BodyKind, BodyProgress, DecoderLimits, ResponseDecoder};
 )]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum BodyLimit {
-    /// 上限なし。
+    /// 上限超過時に切り詰めず、エラーも返さない。ただしデコーダ既定の 10 MiB が
+    /// 受信総量の安全弁として働く (Docker Engine API 経路は小さい JSON 応答のみ)。
     Unlimited,
     /// 上限超過分を切り詰めて続行する。判定は `>` (ちょうど上限は成功)。
+    /// 上限値は呼び出し側が指定する (HTTP 待機戦略では 1 MiB)。
     Truncate(usize),
     /// 上限超過時に即座にエラーを返す。判定は `>` (ちょうど上限は成功)。
     Error(usize),
@@ -62,12 +64,31 @@ impl ResponseAccumulator {
         // Content-Length ヘッダで宣言された上限超過はヘッダ解析時点でデコーダ側の
         // `body too large` が先に返るため、文言はフレーミング依存になる
         // (copy_from / pull は Content-Length フレーミングで返るため `body too large` になり得る)。
+        //
+        // `BodyLimit::Truncate` は「上限値で切り詰めて続行」の契約である。デコーダの
+        // `max_body_size` は受信総量の制限で超過は常に `BodyTooLarge` エラーになるため、
+        // 既定の 10 MiB のままだと 10 MiB 超の応答でエラーに化ける。切り詰めは
+        // `drain_body` の Truncate 分岐が担うため、デコーダの `max_body_size` を無効化
+        // (`u64::MAX`) してエラーを出さないようにする (docker_log_stream の非有界
+        // ログデコーダと同じ方針)。
+        // 受信総量のガードは失われるが、呼び出し側 (HTTP 待機戦略) は `request_timeout`
+        // と保持量上限で実質 bounded になる。メモリは保持量上限 (1 MiB) + デコーダ
+        // バッファ (64 KiB) で bounded のまま。呼び出し側のタイムアウトが受信時間の
+        // 責務である点に注意 (タイムアウト無し経路で Truncate を使うと無制限 read に
+        // なり得る)。
         let mut decoder = match body_limit {
             BodyLimit::Error(max) => ResponseDecoder::with_limits(DecoderLimits {
                 max_body_size: max as u64,
                 ..Default::default()
             }),
-            _ => ResponseDecoder::new(),
+            BodyLimit::Truncate(_) => ResponseDecoder::with_limits(DecoderLimits {
+                max_body_size: u64::MAX,
+                ..Default::default()
+            }),
+            // Unlimited は従来どおりデコーダ既定の 10 MiB 上限のまま (受信総量の安全弁)。
+            // 名前的に「上限なし」だが、Docker Engine API 経路 (小さい JSON 応答) での
+            // 肥大化ガードを意図しており、u64::MAX に揃えるのは誤り。
+            BodyLimit::Unlimited => ResponseDecoder::new(),
         };
         decoder.set_request_method(method);
         Self {
