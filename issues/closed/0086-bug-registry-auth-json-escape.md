@@ -1,7 +1,7 @@
 # バグ: レジストリ認証の JSON エスケープが制御文字を無視し、資格情報に改行等が含まれると認証が失敗する
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-registry-auth-json-escape
 - Polished: 2026-08-04
 
@@ -29,6 +29,6 @@
 
 ## 解決方法
 
-- `src/core/client/registry_auth.rs` の `escape_json_value` を `escape_json` と同じエスケープロジックに修正する (統合はしない)。あわせて `escape_json_value` の doc コメント (「最小限: バックスラッシュとダブルクォート」) を更新する
-- 制御文字入り資格情報の単体テストを追加する (auth フィールド経路は base64 で auth フィールドを組み立て、identitytoken 経路は config.json に identitytoken を直接埋め込み (base64 を経由しない。nojson は JSON 文字列内の生制御文字を拒否するため、フィクスチャは `\n` / `\uXXXX` 等の JSON エスケープ表記で書く)、それぞれ結果の JSON をパースして往復できることを検証する)
-- 注意: 0076 (bug) も同一ファイル (`registry_auth.rs`) を対象とするため、実装順序によっては干渉し得る
+- `src/core/client/registry_auth.rs` の `escape_json_value` を、`docker_client.rs` の `escape_json` と同じエスケープロジック (制御文字の短縮エスケープ `\b` / `\f` / `\n` / `\r` / `\t` と、それ以外の `< 0x20` の `\uXXXX` 化) に修正した。返り値は現行どおり引用符なし (呼び出し側の `format!` で包む) を維持する
+- `docker_client.rs` の `escape_json` との統合 (共通ヘルパー化) は本 issue のスコープ外とした (両者の重複は既知のドリフト源であり、別 issue として追跡が必要)
+- テスト: `escape_json_value` の直接テスト (短縮エスケープ全種 + `\u0001` + 引用符/バックスラッシュ)、nojson 往復テスト (境界値 `\u0000` / `\u001f`・空文字列を含む)、auth フィールド経路 (base64) と identitytoken 経路 (JSON エスケープ表記) の制御文字入り資格情報テストを追加した
