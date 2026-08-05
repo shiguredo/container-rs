@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import re
 import subprocess
@@ -5,8 +7,21 @@ from typing import Optional
 
 
 # バージョン文字列を受け取り、次の canary バージョンを返す純粋関数。
-# ファイル I/O や input() を含まないため、単体テストで直接検証できる。
+# ファイル I/O や input() を含まないため、doctest で直接検証できる。
 def next_canary_version(version: str) -> str:
+    """次の canary バージョンを返す。
+
+    >>> next_canary_version("2026.1.0-canary.3")
+    '2026.1.0-canary.4'
+    >>> next_canary_version("2026.1.0-canary.99")
+    '2026.1.0-canary.100'
+    >>> next_canary_version("2026.1.0")
+    '2026.2.0-canary.0'
+    >>> next_canary_version("abc")
+    Traceback (most recent call last):
+        ...
+    ValueError: Invalid version format: abc
+    """
     # -canary.N が含まれる場合は N をインクリメントする
     canary_match = re.fullmatch(r"(\d+\.\d+\.\d+-canary\.)(\d+)", version)
     if canary_match:
@@ -20,50 +35,77 @@ def next_canary_version(version: str) -> str:
     raise ValueError(f"Invalid version format: {version}")
 
 
+# [package] セクション文字列を受け取り、行頭の `version` キーを次の canary バージョンに
+# 更新して (更新後セクション, 現在バージョン, 新バージョン) を返す純粋関数。
+# 行頭アンカー (`(?m)^`) で `version` キーに限定するため、`rust-version` の末尾
+# `version` に誤マッチしない。マッチの span で値だけを置き換えるため、リテラル一致に
+# 依存しない。ファイル I/O や input() を含まないため、doctest で直接検証できる。
+def update_package_section(package_content: str) -> tuple[str, str, str]:
+    """[package] セクション内の `version` を次の canary に更新する。
+
+    `rust-version` が `version` より前に並んでも、`version` だけが更新されること
+    (旧実装は `rust-version` の末尾 `version` に誤マッチして MSRV を書き換えた)。
+
+    >>> update_package_section(
+    ...     '[package]\\nname = "x"\\nrust-version = "1.93.0"\\nversion = "2026.1.0-canary.7"'
+    ... )
+    ('[package]\\nname = "x"\\nrust-version = "1.93.0"\\nversion = "2026.1.0-canary.8"', '2026.1.0-canary.7', '2026.1.0-canary.8')
+    """
+    version_match = re.search(
+        r'(?m)^[ \t]*version\s*=\s*"([\d\.\w-]+)"', package_content
+    )
+    if not version_match:
+        raise ValueError("Version not found in [package] section of Cargo.toml")
+    current_version: str = version_match.group(1)
+    new_version: str = next_canary_version(current_version)
+    value_start, value_end = version_match.span(1)
+    updated_package: str = (
+        package_content[:value_start] + new_version + package_content[value_end:]
+    )
+    return updated_package, current_version, new_version
+
+
+# Cargo.toml 全体文字列を受け取り、[package] セクションと前後に分離する純粋関数。
+# 戻り値は (package セクション, 前方, 後方)。後方は [package] 以外の次のセクション
+# (例: [dependencies]) 以降。`[package.metadata.*]` は `[package` で始まるため
+# セクション区切りにせず package セクションに含める (Cargo.toml では直接キーは
+# サブテーブルより前に書かれるため、誤更新の影響は受けない)。
+# ファイル I/O や input() を含まないため、doctest で直接検証できる。
+def split_package_section(content: str) -> tuple[str, str, str]:
+    """Cargo.toml 全体から [package] セクションと前後を分離する。
+
+    後続の [dependencies] などは package セクションに含めないこと。
+
+    >>> split_package_section(
+    ...     '[package]\\nversion = "1.0.0"\\n\\n[dependencies]\\ntokio = { version = "1.53" }'
+    ... )
+    ('[package]\\nversion = "1.0.0"\\n', '', '\\n[dependencies]\\ntokio = { version = "1.53" }')
+    """
+    package_start = content.find("[package]")
+    if package_start == -1:
+        raise ValueError("[package] section not found in Cargo.toml")
+    next_section = re.search(r"\n\[(?!package)", content[package_start:])
+    if next_section:
+        package_end = package_start + next_section.start()
+        return (
+            content[package_start:package_end],
+            content[:package_start],
+            content[package_end:],
+        )
+    return content[package_start:], content[:package_start], ""
+
+
 # ファイルを読み込み、バージョンを更新
 def update_version(file_path: str, dry_run: bool) -> Optional[str]:
     with open(file_path, "r", encoding="utf-8") as f:
         content: str = f.read()
 
-    # [package] セクション内のバージョンのみを取得
-    package_section_match = re.search(
-        r'\[package\].*?version\s*=\s*"([\d\.\w-]+)"', content, re.DOTALL
+    # [package] セクションと前後を分離し、セクション内のバージョンを次の canary に更新する
+    package_content, before, after = split_package_section(content)
+    updated_package, current_version, new_version = update_package_section(
+        package_content
     )
-    if not package_section_match:
-        raise ValueError("Version not found in [package] section of Cargo.toml")
-
-    current_version: str = package_section_match.group(1)
-    new_version: str = next_canary_version(current_version)
-
-    # [package] セクションの開始位置を見つける
-    package_start = content.find("[package]")
-    # 次のセクション ([dependencies] など) の開始位置を見つける
-    next_section = re.search(r"\n\[(?!package)", content[package_start:])
-    if next_section:
-        package_end = package_start + next_section.start()
-        package_content = content[package_start:package_end]
-    else:
-        package_content = content[package_start:]
-
-    # [package] セクション内の旧バージョン文字列を新バージョン文字列に置換する。
-    # 抽出正規表現は version\s*=\s*"..." と空白に寛容だが、置換はリテラル一致のため、
-    # 置換後に実際に変更が起きたかを検証する
-    old_version_literal: str = f'version = "{current_version}"'
-    new_version_literal: str = f'version = "{new_version}"'
-    updated_package: str = package_content.replace(
-        old_version_literal, new_version_literal, 1
-    )
-    if updated_package == package_content:
-        raise ValueError(
-            f"Failed to replace version in [package] section: "
-            f"expected '{old_version_literal}' not found"
-        )
-
-    # 元のコンテンツの [package] セクション部分を更新後の内容に置き換える
-    if next_section:
-        new_content = content[:package_start] + updated_package + content[package_end:]
-    else:
-        new_content = content[:package_start] + updated_package
+    new_content = before + updated_package + after
 
     print(f"Current version: {current_version}")
     print(f"New version: {new_version}")

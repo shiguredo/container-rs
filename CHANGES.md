@@ -73,6 +73,8 @@
   - @voluntas
 - [ADD] macOS で OCI `maskedPaths` / `readonlyPaths` を `ImageExt::with_masked_paths` / `with_readonly_paths` で設定できるようにする（Apple container 1.2.0 以上）
   - @voluntas
+- [FIX] canary.py のバージョン抽出が `rust-version` の末尾 `version` に誤マッチして MSRV を書き換え得るのを修正する
+  - @voluntas
 - [FIX] Linux のレジストリ認証で `docker.io` / `index.docker.io` 形式の Docker Hub 参照を `https://index.docker.io/v1/` に正規化して認証を拾えるようにする
   - @voluntas
 - [FIX] Linux で `with_exposed_port` / `Image::expose_ports` がホストポート公開に反映されないのを修正する

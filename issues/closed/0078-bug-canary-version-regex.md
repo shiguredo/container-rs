@@ -1,7 +1,7 @@
 # バグ: canary.py のバージョン抽出正規表現が `rust-version` を巻き込み MSRV を黙って破壊し得る
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-canary-version-regex
 - Polished: 2026-08-04
 
@@ -33,6 +33,7 @@ canary.py のバージョン更新が、`Cargo.toml` の `[package]` セクシ�
 
 ## 解決方法
 
-- `canary.py` の `update_version` の抽出正規表現を修正し、マッチ span で置換する。`update_version` の package セクション更新ロジックを純粋関数 (入力: package セクション文字列 / 出力: 更新後文字列) に切り出し、完了条件を単体テストで検証できるようにする (`update_version` は dry-run ではファイルを書かず、非 dry-run は `input()` でブロックするため、そのままでは完了条件を検証できない。モックやスタブは使わない)
-- `test_canary.py` に「`rust-version` が `version` より先に並ぶ Cargo.toml フィクスチャ」のテストと、正常順序のフィクスチャのテストを追加する
-- 注意: 本 issue のテスト追加が回帰検出の実効力を持つのは 0092 (CI 配線) の完了後である。0092 は本 issue のバグを検出動機として参照しており、実装順序の依存がある
+- `canary.py` の `update_version` の抽出正規表現を、行頭アンカー `(?m)^[ \t]*version\s*=` に修正し、マッチ span で値だけを置換する方式に変更した (`rust-version` の末尾 `version` への誤マッチを防ぎ、リテラル一致の `replace` に依存しない)
+- package セクション更新ロジックを純粋関数 `update_package_section` (入力: package セクション文字列 / 出力: 更新後セクション・現在・新バージョン) に切り出し、セクション切り出しも `split_package_section` (入力: Cargo.toml 全体 / 出力: package セクション・前方・後方) として分離した
+- テストは `test_canary.py` を廃止し、各純粋関数の docstring に doctest として最小限組み込んだ (`python3 -m doctest canary.py` で実行可能。ユーザー指示により単体テストファイルは作らない方針)
+- 注意: 本 issue のテストが回帰検出の実効力を持つのは 0092 (CI 配線) の完了後である。0092 は本 issue のバグを検出動機として参照しており、実装順序の依存がある
