@@ -452,8 +452,16 @@ impl XpcClient {
             // stdout / stderr は containerWait と並行に読む。
             // 終了待ちを先にすると、出力がパイプバッファ (64KB) を超えた時点で
             // プロセスが write でブロックし、永遠に終了しないデッドロックになる。
-            let out_handle = std::thread::spawn(move || read_file_to_vec(out_read));
-            let err_handle = std::thread::spawn(move || read_file_to_vec(err_read));
+            // 読み取りスレッドはキャンセルフラグ付きで起動する。containerWait が
+            // 失敗した場合にフラグを立てると、poll の確認間隔以内に FD を閉じて
+            // 終了する (FD を握り続けるリークを防ぐ)。
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let out_cancel = cancel.clone();
+            let err_cancel = cancel.clone();
+            let out_handle =
+                std::thread::spawn(move || read_file_to_vec_cancellable(out_read, out_cancel));
+            let err_handle =
+                std::thread::spawn(move || read_file_to_vec_cancellable(err_read, err_cancel));
 
             let reply = match conn.send_with_timeout(
                 "containerWait",
@@ -461,18 +469,26 @@ impl XpcClient {
                 crate::xpc::LONG_TIMEOUT,
             ) {
                 Ok(r) => r,
-                // wait 失敗時に join するとデーモン側が書き込み端を閉じるまで
-                // 戻れない可能性があるため、読み取りスレッドはデタッチする。
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // wait 失敗時は読み取りスレッドに終了指示を出してから戻る。
+                    // join するとデーモン側が書き込み端を閉じるまで戻れない可能性が
+                    // あるため、join はせずデタッチのままにする。フラグが立つと
+                    // 読み取りスレッドは上限時間以内に FD を閉じて終了する。
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return Err(e);
+                }
             };
 
             // プロセス終了後、デーモンが書き込み端を閉じると EOF になり join が返る。
+            // 正常系ではフラグは立たないため `Some(bytes)` が返る (None は実装バグ)。
             let stdout = out_handle
                 .join()
-                .map_err(|_| ClientError::Other("stdout reader thread panicked".into()))??;
+                .map_err(|_| ClientError::Other("stdout reader thread panicked".into()))??
+                .expect("正常系の exec では読み取りが打ち切られないため Some になること");
             let stderr = err_handle
                 .join()
-                .map_err(|_| ClientError::Other("stderr reader thread panicked".into()))??;
+                .map_err(|_| ClientError::Other("stderr reader thread panicked".into()))??
+                .expect("正常系の exec では読み取りが打ち切られないため Some になること");
 
             let exit_code = reply.try_int64(&k("exitCode"))?;
             Ok(XpcExecResult {
@@ -867,20 +883,84 @@ fn close_valid_fds(fds: &[std::os::fd::RawFd]) {
     }
 }
 
-/// `File` を EOF まで読み出す。64 MiB を超える場合はエラーを返す (OOM 防止)。
-fn read_file_to_vec(mut f: std::fs::File) -> std::io::Result<Vec<u8>> {
-    // 上限なしの read_to_end は大量出力で OOM になり得るため take で制限する。
+/// `File` を EOF まで読み出すが、キャンセルフラグが立つと読み取りを打ち切って
+/// `Ok(None)` を返す (エラーパス専用)。
+///
+/// `libc::poll` で FD の読み取り可能性を監視しつつ、poll のタイムアウトごとに
+/// フラグを確認する。フラグが立っているのを観測したら即座に読み取りを打ち切って
+/// 終了する (poll のタイムアウト 100ms 以内に観測される)。64 MiB を超える場合は
+/// エラーを返す (OOM 防止)。
+///
+/// フラグが立たない正常系では EOF まで読み切って `Ok(Some(bytes))` を返し、
+/// 従来の読み取り契約 (EOF までブロックして読み切る) を維持する (時間による
+/// 打ち切りはしない。5 秒超の exec でも出力を失わない)。
+///
+/// この関数の目的は、exec の `containerWait` 失敗時にデタッチした読み取りスレッドが
+/// 読み取り端 FD を握り続けるのを防ぐこと。エラーパスでフラグを立てると、
+/// 継続実行中のプロセスが書き込み端への書き込みで EPIPE を受け得るが、
+/// exec は失敗済みであるため許容する。
+fn read_file_to_vec_cancellable(
+    mut f: std::fs::File,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::io::Result<Option<Vec<u8>>> {
+    use std::os::fd::AsRawFd;
+    use std::sync::atomic::Ordering;
+
     const MAX_OUTPUT_SIZE: u64 = 64 * 1024 * 1024;
+    const POLL_TIMEOUT_MS: i32 = 100;
+
+    let fd = f.as_raw_fd();
     let mut buf = Vec::new();
-    let mut limited = std::io::Read::take(&mut f, MAX_OUTPUT_SIZE + 1);
-    limited.read_to_end(&mut buf)?;
-    if buf.len() as u64 > MAX_OUTPUT_SIZE {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::OutOfMemory,
-            format!("output exceeds {MAX_OUTPUT_SIZE} bytes limit"),
-        ));
+    let mut chunk = [0u8; 8192];
+    loop {
+        // poll のタイムアウトごとにフラグを確認する。フラグが立っていれば
+        // 読み取りを打ち切って終了する (poll のタイムアウト以内に観測される)。
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ret = unsafe { libc::poll(&mut pfd, 1, POLL_TIMEOUT_MS) };
+        if ret < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if ret == 0 {
+            // タイムアウト。フラグ確認に戻る。
+            continue;
+        }
+        // POLLERR / POLLNVAL (読み取り不可能なエラー状態) は明示的に返す。
+        if pfd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+            return Err(std::io::Error::other(format!(
+                "poll on exec output pipe failed with revents {:#x}",
+                pfd.revents
+            )));
+        }
+        // 読み取り可能または HUP (書き込み端が全て閉じた = EOF)。
+        if pfd.revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+            match f.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.len() as u64 > MAX_OUTPUT_SIZE {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::OutOfMemory,
+                            format!("output exceeds {MAX_OUTPUT_SIZE} bytes limit"),
+                        ));
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+        }
     }
-    Ok(buf)
+    Ok(Some(buf))
 }
 
 /// `exec` の結果。
@@ -1387,8 +1467,10 @@ mod tests {
     }
 
     #[test]
-    fn read_file_to_vec_reads_small_file() {
+    fn cancellable_read_reads_small_file() {
         // 小さなファイルはそのまま読み出せること。
+        use std::sync::atomic::AtomicBool;
+
         let dir = std::env::temp_dir().join(format!(
             "container-rs-read-file-test-{}",
             crate::core::util::unique_suffix()
@@ -1397,15 +1479,20 @@ mod tests {
         let path = dir.join("small.txt");
         std::fs::write(&path, b"hello").expect("ファイルの書き込みに失敗した");
         let f = std::fs::File::open(&path).expect("ファイルを開けること");
-        let result = read_file_to_vec(f).expect("読み出しに成功すること");
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let result = read_file_to_vec_cancellable(f, cancel)
+            .expect("読み出しに成功すること")
+            .expect("キャンセルされていないため Some になること");
         assert_eq!(result, b"hello", "ファイルの内容が一致すること");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn read_file_to_vec_rejects_over_limit() {
+    fn cancellable_read_rejects_over_limit() {
         // 64 MiB を超えるファイルはエラーになること (OOM 防止)。
         // 実際の 64 MiB ファイルは大きすぎるため、set_len でスパースファイルを作る。
+        use std::sync::atomic::AtomicBool;
+
         let dir = std::env::temp_dir().join(format!(
             "container-rs-read-file-limit-test-{}",
             crate::core::util::unique_suffix()
@@ -1420,7 +1507,8 @@ mod tests {
         }
 
         let f = std::fs::File::open(&path).expect("ファイルを開けること");
-        let result = read_file_to_vec(f);
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let result = read_file_to_vec_cancellable(f, cancel);
         assert!(result.is_err(), "64 MiB 超過はエラーであること");
         let err = result.unwrap_err();
         assert_eq!(
@@ -1432,8 +1520,10 @@ mod tests {
     }
 
     #[test]
-    fn read_file_to_vec_accepts_exactly_at_limit() {
+    fn cancellable_read_accepts_exactly_at_limit() {
         // ちょうど 64 MiB のファイルは成功すること (境界値: > であり >= ではない)。
+        use std::sync::atomic::AtomicBool;
+
         let dir = std::env::temp_dir().join(format!(
             "container-rs-read-file-boundary-test-{}",
             crate::core::util::unique_suffix()
@@ -1448,17 +1538,126 @@ mod tests {
         }
 
         let f = std::fs::File::open(&path).expect("ファイルを開けること");
-        let result = read_file_to_vec(f);
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let result = read_file_to_vec_cancellable(f, cancel);
         assert!(
             result.is_ok(),
             "ちょうど 64 MiB は成功すること: {:?}",
             result.err()
         );
         assert_eq!(
-            result.unwrap().len(),
+            result
+                .expect("ちょうど 64 MiB は読み出せること")
+                .expect("キャンセルされていないため Some になること")
+                .len(),
             size as usize,
             "読み込みバイト数が 64 MiB であること"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// キャンセルフラグを立てると、読み取りスレッドが有限時間内に終了し `Ok(None)`
+    /// を返すこと (FD リーク防止)。
+    ///
+    /// 書き込み端を開いたまま (EOF を出さない) にして読み取りスレッドを起動し、
+    /// フラグを立ててから終了を待つ。フラグが無ければ、読み取りスレッドは EOF が
+    /// 来るまでブロックし続けるため、ここで検証できる。
+    /// `recv_timeout` で包むことで、キャンセル機構が回帰した場合もテスト自体が
+    /// ハングしない。
+    #[test]
+    fn cancellable_read_cancel_finishes_before_limit() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+
+        let (out_read, out_write) = super::create_pipe().expect("pipe の作成に成功すること");
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let thread_cancel = cancel.clone();
+
+        let handle =
+            std::thread::spawn(move || read_file_to_vec_cancellable(out_read, thread_cancel));
+
+        // フラグを立てる前に少し待ち、読み取りスレッドが poll で待機中であることを
+        // 確認してからキャンセルする。
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        cancel.store(true, Ordering::Relaxed);
+
+        // フラグ観測の最悪遅延は poll タイムアウト (100ms) 程度のため、
+        // 2 秒以内に join が返ることを検証する。
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(handle.join());
+        });
+        let joined = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("キャンセル後の読み取りスレッドが 2 秒以内に終了すること");
+
+        let result = joined
+            .expect("読み取りスレッドが panic しないこと")
+            .expect("read がエラーにならないこと");
+        assert_eq!(result, None, "キャンセル時は None が返ること");
+
+        drop(out_write);
+    }
+
+    /// フラグを立てない正常系では EOF まで読み切って `Ok(Some(bytes))` を返すこと。
+    ///
+    /// 時間による打ち切りは行わないため、5 秒超かかる exec の出力も失われない。
+    /// ここでは書き込み端を閉じる (EOF) ことで即終了する。
+    #[test]
+    fn cancellable_read_reads_to_eof_without_cancel() {
+        use std::io::Write;
+        use std::sync::atomic::AtomicBool;
+
+        let (out_read, mut out_write) = super::create_pipe().expect("pipe の作成に成功すること");
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+
+        let handle = std::thread::spawn(move || read_file_to_vec_cancellable(out_read, cancel));
+
+        // 書き込み端を閉じる (EOF) と、読み取りスレッドは読み切って返る。
+        out_write
+            .write_all(b"hello")
+            .expect("書き込みに成功すること");
+        drop(out_write);
+
+        let result = handle
+            .join()
+            .expect("読み取りスレッドが panic しないこと")
+            .expect("read がエラーにならないこと");
+        assert_eq!(result, Some(b"hello".to_vec()), "EOF まで読み切ること");
+    }
+
+    /// キャンセルフラグを立てず、EOF も来ない状態が 5 秒を超えても、正常系の
+    /// 読み取りは打ち切られず続くこと (時間打ち切りが無いことの検証)。
+    ///
+    /// 5 秒超かかる exec でも stdout / stderr の出力が失われないことを保証する。
+    /// フラグを立てずに 5 秒超待ってから書き込むことで、打ち切られずに読み取れる
+    /// ことを検証する。
+    #[test]
+    fn cancellable_read_does_not_timeout_without_cancel() {
+        use std::io::Write;
+        use std::sync::atomic::AtomicBool;
+
+        let (out_read, mut out_write) = super::create_pipe().expect("pipe の作成に成功すること");
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+
+        let handle = std::thread::spawn(move || read_file_to_vec_cancellable(out_read, cancel));
+
+        // 5 秒を超えて待ち、その後書き込んで EOF にする。時間打ち切りが無ければ
+        // 書き込んだ内容が読める。
+        std::thread::sleep(std::time::Duration::from_millis(5100));
+        out_write
+            .write_all(b"late")
+            .expect("書き込みに成功すること");
+        drop(out_write);
+
+        let result = handle
+            .join()
+            .expect("読み取りスレッドが panic しないこと")
+            .expect("read がエラーにならないこと");
+        assert_eq!(
+            result,
+            Some(b"late".to_vec()),
+            "5 秒超の exec でも読み取りが打ち切られないこと"
+        );
     }
 }

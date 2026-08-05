@@ -178,7 +178,7 @@ impl ResponseAccumulator {
                             .extend_from_slice(&data[..data.len().min(remaining)]);
                     }
                     BodyLimit::Error(max) => {
-                        // 超過判定は macOS の read_file_to_vec と同じ `>` 境界。
+                        // 超過判定は macOS の read_file_to_vec_cancellable と同じ `>` 境界。
                         // 蓄積が上限を超えた時点で即座にエラーを返す (早期アボート)。
                         // 切り詰めて続行すると multiplexed stream がフレーム途中で
                         // 切断され、出力が欠損するためエラーにする。

@@ -68,7 +68,7 @@ fn resolve_exec_exit_code(states: &[(bool, Option<i64>)]) -> Option<i64> {
 /// exec start や stop?t=N 等、正当に長時間ブロックする経路には適用しない。
 const DOCKER_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Docker Engine API レスポンスボディの蓄積上限。macOS 経路 (`read_file_to_vec`) と同じ 64 MiB の値。
+/// Docker Engine API レスポンスボディの蓄積上限。macOS 経路 (`read_file_to_vec_cancellable`) と同じ 64 MiB の値。
 ///
 /// 適用対象は以下の 6 経路で共有する (将来の上限変更で一部だけが変わる非対称を防ぐ):
 /// - exec start の出力: demux 前の multiplexed stream 全体 (stdout + stderr の合計、
