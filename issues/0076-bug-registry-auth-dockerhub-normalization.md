@@ -1,7 +1,7 @@
 # バグ: レジストリ認証の Docker Hub 正規化漏れでプライベート Hub イメージの pull が認証なしで実行される
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-registry-auth-dockerhub-normalization
 - Polished: 2026-08-04
 
@@ -33,8 +33,9 @@ Linux (Docker Engine API) 経路で、`docker.io/...` / `index.docker.io/...` �
 
 ## 解決方法
 
-- `src/core/client/registry_auth.rs` の `auths_key` で、先頭コンポーネントが `docker.io` または `index.docker.io` の場合に `https://index.docker.io/v1/` を返す分岐を追加する
-- `auths_key` の単体テストに `docker.io/org/img` / `index.docker.io/org/img` のケースを追加する
-- `x_registry_auth` の単体テストは `DOCKER_AUTH_CONFIG` 環境変数を設定して実行する (edition 2024 のため `std::env::set_var` は unsafe ブロックが必要。環境変数はプロセス共有のため並列実行で競合しないよう、`x_registry_auth` の検証は 1 つのテストに集約し、テスト後は `remove_var` で復元する)
+- `src/core/client/registry_auth.rs` の `auths_key` に、先頭コンポーネントが `docker.io` / `index.docker.io` の場合に `DOCKER_HUB_AUTH_KEY` (`https://index.docker.io/v1/`) を返す分岐を追加した。docker CLI の `getAuthConfigKey` と同じくこの 2 ドメインのみを正規化し、`registry-1.docker.io` やポート付きホストは正規化しない
+- リテラル重複を避けるため `DOCKER_HUB_AUTH_KEY` 定数を導入し、`extract_auth_entry` の `serveraddress` 恒真分岐を `key` の直接使用に置き換えた
+- `auths_key` のテストに `docker.io/org/img` / `index.docker.io/org/img` / `registry-1.docker.io` / ポート付きの正規化境界ケースを追加した
+- `x_registry_auth` の検証は `wait` モジュールの `run_env_case` と同じ子プロセス分離方式で実装した (親テストが `DOCKER_AUTH_CONFIG` を子テストへ渡して実行。`std::env::set_var` によるプロセス共有環境変数の書き換えは並列テスト下でデータ競合になるため使わない)
 - 注意: `src/core/client/registry_auth.rs` の `escape_json_value` を修正する 0086 (bug) も同一ファイルを対象とするため、実装順序によっては干渉し得る
 - 完了条件は単体テストのみとし、実レジストリへの pull 検証は環境依存のため対象外とする
