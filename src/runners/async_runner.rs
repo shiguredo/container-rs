@@ -87,6 +87,17 @@ where
                 )));
             }
 
+            // SCTP は Apple container 未対応のため pull 前に落とす (build_config にも
+            // 防御があるが、pull を避けるため先に検出する)。重複マッピング検出より
+            // 先に実行し、SCTP 未対応エラーを優先する。
+            crate::core::client::container_cfg::reject_sctp_ports(&container_req)?;
+
+            // 同一コンテナポートへの重複マッピングは黙って潰れないよう、
+            // pull 前に明示エラーにする (macOS は重複 PortCfg をそのまま XPC に送る)。
+            if let Some(ports) = container_req.ports() {
+                crate::core::containers::request::reject_duplicate_mapped_ports(ports)?;
+            }
+
             let descriptor = container_req.descriptor();
 
             // platform を正規化する。許可外文字列は resolve / pull / create に渡さない。
@@ -249,6 +260,12 @@ where
             // Linux で設定構築に載らない ImageExt は黙って成功させない。
             if let Some(msg) = linux_unsupported_request_reason(&container_req) {
                 return Err(crate::Error::other(msg));
+            }
+
+            // 同一コンテナポートへの重複マッピングは黙って 1 本に潰れないよう、
+            // pull 前に明示エラーにする (後勝ちで片方が消えるのは送信側の仕様)。
+            if let Some(ports) = container_req.ports() {
+                crate::core::containers::request::reject_duplicate_mapped_ports(ports)?;
             }
 
             let descriptor = container_req.descriptor();
@@ -480,6 +497,14 @@ fn build_container_config<I: Image>(
     req: &ContainerRequest<I>,
 ) -> crate::core::client::ContainerConfig {
     use crate::core::containers::request::PortMapping;
+
+    // 同一コンテナポートへの重複マッピングは黙って 1 本に潰れないよう明示エラーに
+    // する。pull 前検証 (AsyncRunner) にも防御があるが、この関数を直接呼ぶ経路
+    // (テスト等) でも検出できるようここでも確認する (macOS の build_config と対称)。
+    if let Some(ports) = req.ports() {
+        crate::core::containers::request::reject_duplicate_mapped_ports(ports)
+            .expect("pull 前検証で重複マッピングは検出済みのはず");
+    }
 
     // 明示マッピングをベースに、未登場の expose を host_port 0 で足す。
     let mut ports = req.ports().cloned().unwrap_or_default();

@@ -104,6 +104,10 @@ pub trait ImageExt<I: Image> {
     /// Engine API)** では 0 のまま Docker Engine に渡し、Engine 側のランダム割当に
     /// 任せる。割当は bind(0) → 即 release のため、起動までにポートを奪われると
     /// start が失敗し得る (自動再試行は無い)。
+    ///
+    /// 同一コンテナポート (proto 込み) への重複マッピング (例: 8080 と 8081 の両方を
+    /// `80/tcp` にマッピング) は start 時に明示エラーになる (黙って片方だけが
+    /// 使われることはない)。
     fn with_mapped_port(self, host_port: u16, container_port: ContainerPort)
     -> ContainerRequest<I>;
     /// privileged モードを設定する。

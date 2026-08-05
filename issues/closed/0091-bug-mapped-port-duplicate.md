@@ -1,7 +1,7 @@
 # バグ: `with_mapped_port` の同一コンテナポートへの重複マッピングが検証されず、サイレントに 1 本へ潰れる
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-05
 - Branch: feature/fix-mapped-port-duplicate
 - Polished: 2026-08-04
 
@@ -34,5 +34,8 @@
 
 ## 解決方法
 
-- 重複検出の純粋関数を切り出し、Linux / macOS の pull 前検証 (`src/runners/async_runner.rs` の `linux_unsupported_request_reason` / ID 検証と同地点) で呼ぶ
-- 単体テストに重複マッピングのエラー検証を追加する (純粋関数の単体テストで検証する)
+- `src/core/containers/request.rs` に純粋関数 `reject_duplicate_mapped_ports` (`&[PortMapping] -> Result<()>`) を追加した。判定は `ContainerPort` 完全一致 (proto 込み)。エラーメッセージには重複したコンテナポート (proto 込み) と競合する 2 つのホストポートを含める (`duplicate container port mapping`)
+- Linux (`async_runner.rs` の `linux_unsupported_request_reason` の直後) と macOS (ID 検証の後、`reject_sctp_ports` の直後) の pull 前検証で呼ぶ。macOS は SCTP 未対応エラーを優先するため、`reject_sctp_ports` を先に実行する (SCTP 未対応エラーも pull 前検出に移行)
+- 二重防御として、macOS の `build_config` は `?` でエラー伝播、Linux の `build_container_config` は `expect` (pull 前検証で検出済みの契約表明) で同じ検出を行う
+- テスト: 純粋関数の単体テスト 7 件 (重複検出・完全同一・3 重複・SCTP 重複・異 proto 共存・単一・空) と、build_config の重複検出テスト、Linux / macOS の pull 前統合テスト (実在しないイメージ名で pull より先に重複エラー・SCTP エラーが返ること) を追加した
+- `with_mapped_port` の rustdoc と `docs/TESTCONTAINERS.md` に重複マッピングが明示エラーになる旨を追記した
