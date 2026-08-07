@@ -4,6 +4,7 @@
 - Completed: {YYYY-MM-DD}
 - Branch: feature/add-container-request-unit-tests
 - Polished: 2026-08-02
+- Updated: 2026-08-07
 
 ## 目的
 
@@ -11,7 +12,7 @@
 
 ## 現状
 
-- `src/core/containers/request.rs` の `ContainerRequest` の公開アクセサ 31 個 (`image` / `network` / `labels` / `container_name` / `hostname` / `env_vars` / `hosts` / `mounts` / `health_check` / `copy_to_sources` / `ports` / `privileged` / `readonly_rootfs` / `cap_add` / `cap_drop` / `shm_size` / `entrypoint` / `cmd` / `descriptor` / `ready_conditions` / `expose_ports` / `exec_after_start` / `startup_timeout` / `working_dir` / `user` / `open_stdin` / `init` / `platform` / `ssh` / `masked_paths` / `readonly_paths`) に `#[cfg(test)]` モジュールが無い (PortMapping の 2 アクセサを含めると 33 個)
+- `src/core/containers/request.rs` の `ContainerRequest` の公開アクセサ 31 個 (`image` / `network` / `labels` / `container_name` / `hostname` / `env_vars` / `hosts` / `mounts` / `health_check` / `copy_to_sources` / `ports` / `privileged` / `readonly_rootfs` / `cap_add` / `cap_drop` / `shm_size` / `entrypoint` / `cmd` / `descriptor` / `ready_conditions` / `expose_ports` / `exec_after_start` / `startup_timeout` / `working_dir` / `user` / `open_stdin` / `init` / `platform` / `ssh` / `masked_paths` / `readonly_paths`) に公開アクセサの単体テストが無い (PortMapping の 2 アクセサを含めると 33 個)。`#[cfg(test)]` モジュール自体は `reject_duplicate_mapped_ports` (0091 で追加) のテスト用に存在するが、公開アクセサのテストは含まれない
 - `src/core/image/image_ext.rs` の `ImageExt` の `with_*` メソッド 30 個も同様に `#[cfg(test)]` モジュールが無い (一部は `container_cfg.rs` の macOS ゲート単体テストや `async_runner.rs` の `linux_tests` で間接検証されているが、アクセサ自体の単体テストではない)
 - `env_vars` の連結順序 (image 側が先・リクエスト側が後)・`descriptor` の name/tag 合成とフォールバック・`cmd` のフォールバック (空で上書きできない境界)・`ready_conditions` のオーバーライド優先は、どこからも検証されていない (ready_conditions のオーバーライドのみ統合テストで検証されているが、CI では実行されない)
 - 一方で `ContainerState` (`src/core/image.rs`) や `ExecCommand` (`src/core/image/exec.rs`) には単体テストが存在し、非対称
