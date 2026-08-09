@@ -1,8 +1,8 @@
 # ドキュメント: TESTCONTAINERS.md の実装乖離・無文書化を修正する
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
-- Branch: feature/doc-fix-testcontainers-md-accuracy
+- Completed: 2026-08-09
+- Branch: feature/update-testcontainers-md
 - Polished: {YYYY-MM-DD}
 - Updated: 2026-08-07
 
@@ -40,8 +40,9 @@
 
 ## 解決方法
 
-- 7 章の `pause` / `unpause` 行を削除し、6.1 節に `async fn pause` 行を追加する (本家: あり / Apple: なし / Docker: 対応。備考は「`ContainerAsync` のみ。sync `Container` には無い」)
+- 7 章の `pause` / `unpause` 行を削除し、6.1 節に `async fn pause` 行を追加する (本家: あり / Apple: なし / Docker: 対応。備考は「`ContainerAsync` のみ。sync `Container` には無い」)。「実装不可 (XPC 制約)」表とサマリの説明も、`ContainerAsync` は `#[cfg(target_os = "linux")]` でクローズ、sync `Container` はシグネチャ削除の事実に合わせる
 - 14 章の `target()` / `with_size_bytes` / `with_size` / `with_mode` / `tmpfs_options` / `MountType::Volume` / `MountType::Tmpfs` / `MountTmpfsOptions` / `impl Default for MountTmpfsOptions` の判定を「対応」に修正し、「明示エラー」「未反映」の記述を除去する
 - 10.3 の表に `with_request_timeout` の行を追加し、CHANGES.md develop に [ADD] として追記する
-- 「本家との型不整合の注意点」に 5 件を追記する (表の形式に揃える)
-- サマリの件数と列挙の整合を確認し、「参考値」注記と矛盾しない形に更新する
+- 「本家との型不整合の注意点」に 5 件 (StartupTimeout / Healthcheck builder / LogFrame / MountType / CopyFileFromContainer) を追記する (意図的差分と実装差を区別する)
+- 判定の揺れを統一する (9 章の `WaitFor::Http` `/ pub fn http` と 10.3 の Docker 列を「対応」に、7 章の sync `Container::get_host` の Apple 列を「部分対応」に)
+- サマリの件数を対応表の行数の機械集計値 (対応 287 / 部分対応 19 / なし 58 / shiguredo 拡張 24 / 内訳合計 392) に更新し、「参考値」注記と矛盾させない

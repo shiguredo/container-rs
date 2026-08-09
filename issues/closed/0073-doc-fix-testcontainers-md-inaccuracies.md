@@ -1,8 +1,8 @@
 # ドキュメント: TESTCONTAINERS.md の誤情報と件数不一致を修正する
 
 - Created: 2026-08-02
-- Completed: {YYYY-MM-DD}
-- Branch: feature/update-testcontainers-md-inaccuracies
+- Completed: 2026-08-09
+- Branch: feature/update-testcontainers-md
 - Polished: 2026-08-02
 - Updated: 2026-08-07
 
@@ -37,5 +37,5 @@
 ## 解決方法
 
 - 16.3 節の `to_docker_json` の備考を「内部関数 (集計外)」に修正する
-- サマリの「shiguredo 拡張」列挙を現状の件数と照合して整合させ、`ClientError::Xpc*` の集約表記を解消して「何件と数えるか」の揺れをなくす
-- 「意図的に保持する shiguredo 拡張」節の列挙をサマリ列挙の全項目に整合させる (with_ssh の備考も正確化する)
+- サマリの「shiguredo 拡張」列挙を `ClientError::Xpc*` の集約表記から個別バリアント (XpcConnect / Xpc / XpcNullReply / XpcTimeout) への展開に修正し、件数 (23) と列挙の整合を取る (対応表で 1 行にまとめている accessor は (1 行) と明記する)
+- 「意図的に保持する shiguredo 拡張」節の列挙をサマリ列挙の全項目 (with_masked_paths / with_readonly_paths / rm_blocking / ClientError 系 / ContainerRequest accessor / CopyTargetOptions 系) に整合させる。with_ssh の備考を「Docker: 未反映 (Apple 固有)」から「Docker: start 時に明示エラー (設定構築に未配線)」に正確化する
