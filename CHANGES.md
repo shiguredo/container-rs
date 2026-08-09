@@ -75,6 +75,8 @@
   - @voluntas
 - [ADD] macOS で OCI `maskedPaths` / `readonlyPaths` を `ImageExt::with_masked_paths` / `with_readonly_paths` で設定できるようにする（Apple container 1.2.0 以上）
   - @voluntas
+- [ADD] `HttpWaitStrategy::with_request_timeout` を追加する（HTTP リクエスト 1 回のタイムアウトを設定できる。既定 10 秒）
+  - @voluntas
 - [FIX] `with_mapped_port` の同一コンテナポートへの重複マッピングが黙って受け入れられるのを修正する (pull 前に明示エラーにする。Linux は後勝ちで 1 本に潰れる挙動、macOS は Apple container 依存の挙動をなくす。macOS は SCTP 未対応エラーも pull 前検出に移行した)
   - @voluntas
 - [FIX] macOS の `with_mapped_port(0, ...)` がホストポート 0 のまま XPC に送られ自動割当されないのを修正する (expose 経路と同じ空きホストポートの事前割当に統一する)

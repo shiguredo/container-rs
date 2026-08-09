@@ -69,24 +69,24 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 
 | 状態 | 件数 |
 |:--|--:|
-| 対応 | 289 |
-| 部分対応 | 18 |
+| 対応 | 287 |
+| 部分対応 | 19 |
 | 未実装 (実装可能) | 0 |
 | 未実装 (XPC 制約) | 4 |
-| なし | 59 |
-| shiguredo 拡張 (本家に無い追加 API) | 23 |
+| なし | 58 |
+| shiguredo 拡張 (本家に無い追加 API) | 24 |
 | 内部型/内部関数 (対象外) | 5 |
 
-内訳合計: 393 API 程度 (判定対象。対象外 5 は含まない。feature ゲート表の「備考」列も集計外)。件数は参考値で、対応表の行数を機械集計したもの。API の追加・削除で随時変わる。
+内訳合計: 392 API 程度 (判定対象。対象外 5 は含まない。feature ゲート表の「備考」列も集計外)。件数は参考値で、対応表の行数を機械集計したもの。API の追加・削除で随時変わる。
 
 判定内訳の傾向 (Apple Container):
 
-- **対応** (289): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` / `Healthcheck` 型はほぼ揃っている
-- **部分対応** (18): シグネチャあり + 動作するが XPC の情報不足 / 型不一致 / 挙動制約付き (例: `get_host` = `localhost` 固定 など)。うち 4 行は「部分対応 (意図的)」で、API 設計上の置き換えによる差分 (10.3 参照)
+- **対応** (287): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` / `Healthcheck` 型はほぼ揃っている
+- **部分対応** (19): シグネチャあり + 動作するが XPC の情報不足 / 型不一致 / 挙動制約付き (例: `get_host` = `localhost` 固定 など)。うち 4 行は「部分対応 (意図的)」で、API 設計上の置き換えによる差分 (10.3 参照)
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
-- **未実装 (XPC 制約)** (4): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機)・`with_health_check` (start 時明示エラー)・`HealthWaitStrategy::wait_until_ready` (10.2 参照)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` はシグネチャ自体を削除済みのため「なし」に分類
-- **なし** (59): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
-- **shiguredo 拡張** (23): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths` (4 行)、`ContainerAsync::container_state` / `rm_blocking` (2 行)、`Container::container_state` / `rm_blocking` (2 行)、`ClientError::XpcConnect` / `Xpc` / `XpcNullReply` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` (9 行)、`ContainerRequest` の `init` / `ssh` accessor (1 行)、`ContainerRequest` の `masked_paths` / `readonly_paths` accessor (1 行)、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` (4 行)
+- **未実装 (XPC 制約)** (4): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機)・`with_health_check` (start 時明示エラー)・`HealthWaitStrategy::wait_until_ready` (10.2 参照)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` は `ContainerAsync` が `#[cfg(target_os = "linux")]` でクローズ、sync `Container` はシグネチャ自体を削除したため「なし」に分類
+- **なし** (58): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
+- **shiguredo 拡張** (24): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths` (4 行)、`ContainerAsync::container_state` / `rm_blocking` (2 行)、`Container::container_state` / `rm_blocking` (2 行)、`ClientError::XpcConnect` / `Xpc` / `XpcNullReply` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` (9 行)、`ContainerRequest` の `init` / `ssh` accessor (1 行)、`ContainerRequest` の `masked_paths` / `readonly_paths` accessor (1 行)、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` (4 行)、`HttpWaitStrategy::with_request_timeout` (1 行)
   - 件数は対応表の「shiguredo 拡張」判定の行数。`ContainerRequest` の accessor は対応表ではいずれも 1 行にまとめている
 
 ## サマリ (Docker Engine API)
@@ -188,6 +188,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `image(&self) -> &I` | あり | 対応 | 対応 |  |
 | `async fn start(&self) -> Result<()>` | あり | 対応 | 対応 | 停止済みなら Docker `start`。macOS は bootstrap + start_process。ログ再取得 (`refresh_log_streams`) 失敗時は `stop_with_timeout(Some(0))` (SIGKILL) でコンテナを巻き戻してから元のエラーを返す (巻き戻し失敗時は `warn` 記録のみ。次回 start が回復しないため先に `stop()` が必要) / Docker: start_container 配線済み |
 | `async fn stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | macOS: `Some(0)` は即時 SIGKILL、`Some(t)` (`t < 0`) は長時間 SIGTERM (XPC 呼び出しは最大 24 時間で飽和し `XpcTimeout` になり得る)、`None` は 30 秒 SIGTERM / Docker: `None`・負値は `t=30`、`Some(t>=0)` は `t={t}`。404 は冪等成功 |
+| `async fn pause(&self) -> Result<()>` | あり | なし | 対応 | `ContainerAsync` のみ。sync `Container` には無い (7 章参照)。macOS は `#[cfg(target_os = "linux")]` でクローズ / Docker: `POST /containers/{id}/pause` |
 | `async fn unpause(&self) -> Result<()>` | あり | なし | 対応 | 同上 / Docker: `POST /containers/{id}/unpause` (304 冪等) |
 | `async fn is_running(&self) -> Result<bool>` | あり | 対応 | 対応 | `XpcClient::container_state` の `running` を返す / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `async fn container_state(&self) -> Result<ContainerState>` | なし | shiguredo 拡張 | 対応 | XPC `containerState`。本家 0.27 に無し。`ContainerState::from_container` は本メソッドへ委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
@@ -226,14 +227,12 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `get_host_port_ipv4(&self, port) -> Result<u16>` | あり | 対応 | 対応 | 同上 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `get_host_port_ipv6(&self, port) -> Result<u16>` | あり | 対応 | 対応 | 同上 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `get_bridge_ip_address(&self) -> Result<IpAddr>` | あり | 対応 | 対応 | `ContainerAsync::get_bridge_ip_address` に委譲 / Docker: inspect の `NetworkSettings.Networks` 先頭エントリの `IPAddress` から取得 |
-| `get_host(&self) -> Result<Host>` | あり | 対応 | 部分対応 | `ContainerAsync::get_host` に委譲 (macOS では `localhost` 固定) / Docker: localhost 固定 |
+| `get_host(&self) -> Result<Host>` | あり | 部分対応 | 部分対応 | `ContainerAsync::get_host` に委譲 (macOS では `localhost` 固定) / Docker: localhost 固定 |
 | `exec(&self, cmd: ExecCommand) -> Result<SyncExecResult>` | あり | 部分対応 | 対応 | `ContainerAsync::exec` に委譲。XPC は stdout/stderr/Env 付き。Docker は stdout/stderr/Env 付き |
 | `copy_file_from<T>(&self, path, target: T) -> Result<T::Output>` | あり | 対応 | 対応 | `ContainerAsync::copy_file_from` に委譲 / Docker: `ContainerAsync` 経由で Docker archive API を利用 |
 | `stop(&self) -> Result<()>` | あり | 対応 | 対応 | `stop_with_timeout(None)` のエイリアス / Docker: stop_with_timeout 対応に依存 |
 | `stop_with_timeout(&self, secs: Option<i32>) -> Result<()>` | あり | 対応 | 対応 | `ContainerAsync::stop_with_timeout` に委譲 / Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `start(&self) -> Result<()>` | あり | 対応 | 対応 | `ContainerAsync::start` に委譲 / Docker: container_state 対応に依存 |
-| `pause(&self) -> Result<()>` (async 宣言だが sync impl) | あり | なし | 対応 | macOS: XPCRoute に pause 系が無いためシグネチャ自体を削除済み / Docker: `POST /containers/{id}/pause` |
-| `unpause(&self) -> Result<()>` | あり | なし | 対応 | 同上 / Docker: `POST /containers/{id}/unpause` |
 | `rm(mut self) -> Result<()>` | あり | 対応 | 対応 | Docker: ContainerAsync の Linux 分岐から DockerClient を呼び出し |
 | `rm_blocking(mut self) -> Result<()>` | なし | shiguredo 拡張 | shiguredo 拡張 | `ContainerAsync::rm_blocking` に委譲。`block_on` を使わないため Runtime 内の同期コンテキストから呼んでも deadlock しない |
 | `stdout(&self, follow) -> Box<dyn BufRead + Send>` | あり | 対応 | 対応 | ContainerAsync の同期リーダーへ委譲。`follow=true` は追記ポーリング (呼び出しスレッドをブロック) / Docker: 共有バッファを `park_timeout(50ms)` 周期起床で読む。`follow=false` は 1-shot 取得 |
@@ -300,14 +299,14 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `WaitFor::Log(LogWaitStrategy)` | あり | 対応 | 対応 | 動作は 10.1 参照 / Docker: logs ストリーム (demux + 共有バッファ) で成立 |
 | `WaitFor::Duration { length }` | あり | 対応 | 対応 |  |
 | `WaitFor::Healthcheck(HealthWaitStrategy)` | あり | 未実装 (XPC 制約) | 対応 | 動作は 10.2 参照 / Linux は Healthy/Unhealthy/Starting/None (running 後) の 4 分岐 |
-| `WaitFor::Http(Box<HttpWaitStrategy>)` (feature) | あり | 対応 | 部分対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決は可能 |
+| `WaitFor::Http(Box<HttpWaitStrategy>)` (feature) | あり | 対応 | 対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決・TCP 接続・照合まで完結 |
 | `WaitFor::Exit(ExitWaitStrategy)` | あり | 対応 | 対応 |  |
 | `pub fn message_on_stdout(msg)` | あり | 対応 | 対応 | Docker: demux が stdout を分離するため本当に stdout のみに反応 |
 | `pub fn message_on_stderr(msg)` | あり | 対応 | 対応 | macOS: stderr FD は VM の bootlog を指すためアプリの stderr メッセージは成立せず、`startup_timeout` でタイムアウトする。代わりに `message_on_stdout` / `message_on_either_std` を使うこと (詳細は 10.1 参照) / Docker: demux が stderr を分離するため本当に stderr のみに反応 |
 | `pub fn message_on_either_std(msg)` | あり | 対応 | 対応 | Docker: stdout / stderr 両ストリームを並行照合 |
 | `pub fn log(strategy)` | あり | 対応 | 対応 | Docker: logs ストリームで成立 |
 | `pub fn healthcheck() -> WaitFor` | あり | 未実装 (XPC 制約) | 対応 | Docker: Linux は inspect ポーリング、macOS は with_health_check で即エラー |
-| `pub fn http(strategy)` (feature) | あり | 対応 | 部分対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決は可能 |
+| `pub fn http(strategy)` (feature) | あり | 対応 | 対応 | feature = `http_wait_plain` / Docker: ports() 配線済みで host port 解決・TCP 接続・照合まで完結 |
 | `pub fn exit(strategy)` | あり | 対応 | 対応 |  |
 | `pub fn seconds(len)` | あり | 対応 | 対応 |  |
 | `pub fn millis(len)` | あり | 対応 | 対応 |  |
@@ -344,7 +343,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `pub struct HttpWaitStrategy` | あり | 対応 | 部分対応 | Docker: ports() 配線済みで host port 解決は可能 |
+| `pub struct HttpWaitStrategy` | あり | 対応 | 対応 | Docker: ports() 配線済みで host port 解決・TCP 接続・照合まで完結 |
 | `HttpWaitError` | あり | 部分対応 (意図的) | 部分対応 (意図的) | shiguredo は URL パースをしないため `InvalidUrl` は不要。matcher 未設定は本家の実行時 other エラーに対し型付き `NoResponseMatcher` |
 | `pub fn new(path)` | あり | 対応 | 対応 |  |
 | `pub fn with_port(mut, port)` | あり | 対応 | 対応 |  |
@@ -356,6 +355,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `pub fn with_bearer_auth(mut, t)` | あり | 対応 | 対応 |  |
 | `pub fn with_tls(mut)` | あり | なし | なし | TLS 非対応 (方針) |
 | `pub fn with_poll_interval(mut, d)` | あり | 対応 | 対応 |  |
+| `pub fn with_request_timeout(mut, d)` | なし | shiguredo 拡張 | shiguredo 拡張 | HTTP リクエスト 1 回のタイムアウトを設定する (既定 10 秒)。本家 0.27.3 に無い shiguredo 拡張 |
 | `pub fn with_expected_status_code(mut, s)` | あり | 対応 | 対応 |  |
 | `pub fn with_response_matcher(mut, f)` | あり | 部分対応 (意図的) | 部分対応 (意図的) | 受信済みレスポンスの独自型を渡す |
 | `pub fn with_response_matcher_async(mut, f)` | あり | なし | なし | body 受信済みのため同期 matcher で足りる (方針) |
@@ -540,25 +540,25 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `pub fn access_mode(&self) -> AccessMode` | あり | 対応 | 対応 | Docker: Bind の `:ro` / `:rw` に反映 |
 | `pub fn mount_type(&self) -> MountType` | あり | 対応 | 対応 |  |
 | `pub fn source(&self) -> Option<&str>` | あり | 対応 | 対応 |  |
-| `pub fn target(&self) -> Option<&str>` | あり | 対応 | 部分対応 | Docker: Bind は反映。Volume/Tmpfs は create 時に明示エラー |
-| `pub fn with_size_bytes(mut, size)` | あり | 対応 | 未反映 | tmpfs 用。XPC `options` に `size=<bytes>` |
-| `pub fn with_size(mut, "20g")` | あり | 対応 | 未反映 | tmpfs 用。人間可読サイズをバイトへ変換 |
-| `pub fn with_mode(mut, mode)` | あり | 対応 | 未反映 | tmpfs 用。XPC `options` に `mode=<octal>` |
-| `pub fn tmpfs_options(&self) -> Option<&MountTmpfsOptions>` | あり | 対応 | 未反映 |  |
+| `pub fn target(&self) -> Option<&str>` | あり | 対応 | 対応 | Docker: Bind は HostConfig.Binds、Volume/Tmpfs は HostConfig.Mounts に反映 |
+| `pub fn with_size_bytes(mut, size)` | あり | 対応 | 対応 | tmpfs 用。XPC `options` に `size=<bytes>` / Docker: TmpfsOptions.SizeBytes に反映 |
+| `pub fn with_size(mut, "20g")` | あり | 対応 | 対応 | tmpfs 用。人間可読サイズをバイトへ変換 |
+| `pub fn with_mode(mut, mode)` | あり | 対応 | 対応 | tmpfs 用。XPC `options` に `mode=<octal>` / Docker: TmpfsOptions.Mode に反映 |
+| `pub fn tmpfs_options(&self) -> Option<&MountTmpfsOptions>` | あり | 対応 | 対応 | Docker: TmpfsOptions として HostConfig.Mounts に反映 |
 
 ### 14.2 `MountType` / `AccessMode` / `MountTmpfsOptions`
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `MountType::Bind` | あり | 対応 | 対応 | Docker: HostConfig.Binds に反映 |
-| `MountType::Volume` | あり | 対応 | 明示エラー | Docker: create 時に明示エラー |
-| `MountType::Tmpfs` | あり | 対応 | 明示エラー | Docker: create 時に明示エラー |
+| `MountType::Volume` | あり | 対応 | 対応 | Docker: HostConfig.Mounts (Type=volume) に反映 |
+| `MountType::Tmpfs` | あり | 対応 | 対応 | Docker: HostConfig.Mounts (Type=tmpfs) に反映 |
 | `MountType` `Display (snake_case)` | あり | 対応 | 対応 |  |
 | `AccessMode::ReadOnly` | あり | 対応 | 対応 | Docker: Bind の `:ro` に反映 |
 | `AccessMode::ReadWrite` | あり | 対応 | 対応 | Docker: Bind の `:rw` に反映 |
 | `AccessMode` `Display (ro/rw)` | あり | 対応 | 対応 | Docker: Bind のサフィックスに利用 |
-| `MountTmpfsOptions` struct + `size_bytes()` `mode()` | あり | 対応 | 未反映 | フィールドは `pub(crate)` + アクセサ。XPC `Filesystem.options` の `size=` / `mode=` |
-| `impl Default for MountTmpfsOptions` | あり | 対応 | 未反映 |  |
+| `MountTmpfsOptions` struct + `size_bytes()` `mode()` | あり | 対応 | 対応 | フィールドは `pub(crate)` + アクセサ。XPC `Filesystem.options` の `size=` / `mode=` |
+| `impl Default for MountTmpfsOptions` | あり | 対応 | 対応 |  |
 
 ## 15. `ContainerPort` / `Ports` / `IntoContainerPort` / `PortMapping`
 
@@ -797,7 +797,7 @@ Apple container / XPC に設定口や route が無く、本クレート単体で
 
 | 項目 | 理由 |
 |:--|:--|
-| `ContainerAsync::pause` / `unpause`、`Container::pause` / `unpause` | XPCRoute に pause 系が無い。stub で常にエラーを返す方針は採らず、シグネチャ自体を削除済み |
+| `ContainerAsync::pause` / `unpause`、`Container::pause` / `unpause` | XPCRoute に pause 系が無い。stub で常にエラーを返す方針は採らず、`ContainerAsync` は `#[cfg(target_os = "linux")]` でクローズ、sync `Container` はシグネチャ自体を削除済み |
 | `HealthWaitStrategy` | Apple container が Docker HEALTHCHECK 相当を実行・公開しない |
 | `ImageExt::with_ulimit` | コンテナ全体の ulimit に相当する XPC 項目が無い (プロセス rlimits とは別) |
 | `ImageExt::with_cgroupns_mode` | XPC に該当項目が無い |
@@ -832,6 +832,7 @@ Apple container の XPC には対応 route が無いが、本家 API 互換の�
 - `ContainerRequest` の `init` / `ssh` accessor — Apple: 対応。Docker: `init()` は HostConfig.Init に配線済み、`ssh()` は未反映
 - `ContainerRequest` の `masked_paths` / `readonly_paths` accessor — Apple: 対応。Docker: `Some` を返すと start 時に明示エラー
 - `CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` — Apple: macOS でコピー後 chown により反映 (非ゼロの場合のみ)。Docker: tar ヘッダ + `copyUIDGID=true` で反映
+- `HttpWaitStrategy::with_request_timeout` — Apple / Docker: HTTP リクエスト 1 回のタイムアウトを設定する (既定 10 秒)。10.3 参照
 
 ---
 
@@ -844,3 +845,8 @@ Apple container の XPC には対応 route が無いが、本家 API 互換の�
 | `CopyFromContainerError::UnsupportedEntry` 型 | `tokio_tar::EntryType` | `&'static str` | 意図的な差分 (tokio_tar 依存を追加しない方針) |
 | `WaitLogError::EndOfStream` 要素型 | `Vec<Bytes>` | `Vec<Vec<u8>>` | 意図的な差分 (`bytes` 依存を追加しない方針) |
 | `WaitContainerError::Unhealthy` | `Unhealthy` (ユニットバリアント) | `Unhealthy(String)` | 意図的な差分 (エラー内容を保持するため) |
+| `WaitContainerError::StartupTimeout` | `StartupTimeout` (ユニットバリアント) | `StartupTimeout { id, timeout }` (構造体) | match が壊れる。shiguredo はコンテナ ID とタイムアウト値をエラーに保持する |
+| `Healthcheck::with_interval` / `with_timeout` / `with_start_period` / `with_start_interval` / `with_retries` | `impl Into<Option<Duration>>` / `impl Into<Option<u32>>` | `Duration` / `u64` | `None` を渡して Docker 既定値に戻せない |
+| `LogFrame::StdOut` / `StdErr` のペイロードと `bytes()` | `Bytes` / `&Bytes` | `Vec<u8>` / `&[u8]` | 意図的な差分 (`bytes` 依存を追加しない方針) |
+| `MountType` | `PartialEq` 導出自動付与 | `PartialEq` なし | `mount.mount_type() == MountType::Bind` がコンパイル不可 |
+| `CopyFileFromContainer` | Send 境界のない生 `async fn` (`#[async_trait(?Send)]`) | `Sized + Send` + `Pin<Box<dyn Future + Send>>` を要求 | 実装差 (要検討)。非 Send な実装へ移行できない |
