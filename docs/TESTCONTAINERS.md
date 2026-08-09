@@ -86,8 +86,8 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
 - **未実装 (XPC 制約)** (4): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機)・`with_health_check` (start 時明示エラー)・`HealthWaitStrategy::wait_until_ready` (10.2 参照)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` はシグネチャ自体を削除済みのため「なし」に分類
 - **なし** (59): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
-- **shiguredo 拡張** (23): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths`、`ContainerAsync::container_state` / `rm_blocking`、`Container::container_state` / `rm_blocking`、`ClientError::Xpc*` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other`、`ContainerRequest` の `init` / `ssh` / `masked_paths` / `readonly_paths` accessor、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()`
-  - 件数は対応表の「shiguredo 拡張」判定の行数。`Xpc*` は ClientError の Xpc 系バリアント (4 個) の集約表記
+- **shiguredo 拡張** (23): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths` (4 行)、`ContainerAsync::container_state` / `rm_blocking` (2 行)、`Container::container_state` / `rm_blocking` (2 行)、`ClientError::XpcConnect` / `Xpc` / `XpcNullReply` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` (9 行)、`ContainerRequest` の `init` / `ssh` accessor (1 行)、`ContainerRequest` の `masked_paths` / `readonly_paths` accessor (1 行)、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` (4 行)
+  - 件数は対応表の「shiguredo 拡張」判定の行数。`ContainerRequest` の accessor は対応表ではいずれも 1 行にまとめている
 
 ## サマリ (Docker Engine API)
 
@@ -638,7 +638,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `pub fn with_start_interval(mut, d)` | あり | 対応 | 対応 |  |
 | `pub fn test/interval/timeout/retries/start_period/start_interval` accessor | あり | 対応 | 対応 |  |
 | `pub(crate) fn into_health_config()` | あり | なし | なし | shiguredo は `to_docker_json()` に置換 (bollard 非依存) |
-| `pub(crate) fn to_docker_json() -> Option<String>` | なし | なし | 対応 | shiguredo 拡張。Docker Config.Healthcheck JSON を生成 (Linux 専用) |
+| `pub(crate) fn to_docker_json() -> Option<String>` | なし | なし | 対応 | 内部関数 (集計外)。Docker Config.Healthcheck JSON を生成 (Linux 専用) |
 
 ## 17. エラー型 `Error` と サブエラー
 
@@ -817,12 +817,21 @@ Apple container の XPC には対応 route が無いが、本家 API 互換の�
 
 ## 意図的に保持する shiguredo 拡張
 
-以下は本家に対応 API が無い追加である。
+以下は本家に対応 API が無い追加である。判定の根拠は本文の該当節を参照すること。
 
 - `ImageExt::with_init` — Apple: XPC `useInit` に反映。Docker: create JSON の HostConfig.Init として反映
-- `ImageExt::with_ssh` — Apple: XPC `ssh` に反映。Docker: 未反映 (Apple 固有)
-- `ContainerAsync::container_state` — Apple: 対応。Docker: 配線済み
+- `ImageExt::with_ssh` — Apple: XPC `ssh` に反映。Docker: start 時に明示エラー (設定構築に未配線)
+- `ImageExt::with_masked_paths` — Apple: XPC `ContainerCfg.maskedPaths` に反映 (Apple container 1.2.0 以上)。Docker: start 時に明示エラー (設定構築に未配線)
+- `ImageExt::with_readonly_paths` — Apple: XPC `ContainerCfg.readonlyPaths` に反映 (Apple container 1.2.0 以上)。Docker: start 時に明示エラー (設定構築に未配線)
+- `ContainerAsync::container_state` — Apple: XPC `containerState` を返す。Docker: 配線済み
+- `ContainerAsync::rm_blocking` — Apple: `remove_blocking` を直接呼び出し (deadlock しない)。Docker: 対応
 - `Container::container_state` — Apple: 対応 (ContainerAsync に委譲)。Docker: 配線済み
+- `Container::rm_blocking` — Apple: 対応 (ContainerAsync に委譲)。Docker: 対応
+- `ClientError::XpcConnect` / `Xpc` / `XpcNullReply` / `XpcTimeout` — Apple: XPC 固有のエラーバリアント。Docker: なし
+- `ClientError::ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` — Apple: 対応。Docker: Linux の DockerClient でも使用
+- `ContainerRequest` の `init` / `ssh` accessor — Apple: 対応。Docker: `init()` は HostConfig.Init に配線済み、`ssh()` は未反映
+- `ContainerRequest` の `masked_paths` / `readonly_paths` accessor — Apple: 対応。Docker: `Some` を返すと start 時に明示エラー
+- `CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` — Apple: macOS でコピー後 chown により反映 (非ゼロの場合のみ)。Docker: tar ヘッダ + `copyUIDGID=true` で反映
 
 ---
 
