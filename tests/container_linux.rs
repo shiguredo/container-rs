@@ -4,6 +4,7 @@
 
 #![cfg(target_os = "linux")]
 
+use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -13,8 +14,38 @@ use shiguredo_container::core::CmdWaitFor;
 use shiguredo_container::core::error::ClientError;
 use shiguredo_container::core::image::ExecCommand;
 use shiguredo_container::core::logs::{LogConsumer, LogFrame};
-use shiguredo_container::{AsyncRunner, Error, GenericImage, ImageExt, WaitFor};
+use shiguredo_container::{
+    AsyncRunner, ContainerRequest, Error, GenericImage, Image, ImageExt, WaitFor,
+};
 use std::error::Error as StdError;
+
+/// 既定 env を持つテスト専用イメージ。
+///
+/// `Image::env_vars` と `with_env_var` が同名キーを持つケースを create 経路で
+/// 検証するために使う。`GenericImage` は既定 env を持たないため、
+/// Image 側 env と `with_env_var` の衝突を作れない。単体テスト
+/// (async_runner.rs の `mod linux_tests`) の同名フィクスチャと内容を揃えること。
+struct DefaultEnvImage;
+
+impl Image for DefaultEnvImage {
+    fn name(&self) -> &str {
+        "alpine"
+    }
+
+    fn tag(&self) -> &str {
+        "latest"
+    }
+
+    fn ready_conditions(&self) -> Vec<WaitFor> {
+        Vec::new()
+    }
+
+    fn env_vars(
+        &self,
+    ) -> impl IntoIterator<Item = (impl Into<Cow<'_, str>>, impl Into<Cow<'_, str>>)> {
+        [("FOO", "from_image"), ("IMAGE_ONLY", "from_image_only")]
+    }
+}
 
 /// 常駐 alpine を起動する。
 async fn start_alpine() -> shiguredo_container::ContainerAsync<GenericImage> {
@@ -1861,4 +1892,49 @@ async fn duplicate_mapped_ports_fail_before_pull() {
         err.to_string().contains("duplicate container port mapping"),
         "pull 前に重複マッピングエラーが返ること: {err}"
     );
+}
+
+/// Image 既定 env と `with_env_var` が同名キーのとき、コンテナの init プロセス
+/// (create 経路) でリクエスト側の値が観測されること。
+///
+/// `printenv` を init プロセスにして stdout を直接確認する。`sh -c 'echo $VAR'`
+/// のようなシェル経由の展開は、シェルが環境を独自の変数テーブルに展開して
+/// 重複を後勝ちで解決し得るため検証にならない。exec 経由でも exec 側の
+/// 畳み込みにより修正前からリクエスト勝ちが成立してしまい、create 経路の
+/// 修正を検証できない。
+#[tokio::test]
+async fn alpine_create_env_request_wins_over_image_default() {
+    let container = ContainerRequest::from(DefaultEnvImage)
+        .with_env_var("FOO", "from_request")
+        // 出力の全行到着を決定的に待つ。printenv は即終了するため固定 sleep では
+        // ログストリームへの書き込みが間に合わず空出力で誤失敗し得る。ready 条件は
+        // 各行の到着を待つ (1 行目だけでは 2 行目の到着が保証されない)。
+        .with_ready_conditions(vec![
+            WaitFor::message_on_stdout("from_request"),
+            WaitFor::message_on_stdout("from_image_only"),
+        ])
+        // printenv は引数指定時に指定順で VALUE のみを出力する (GNU coreutils / busybox の実装仕様)。
+        .with_cmd(["printenv", "FOO", "IMAGE_ONLY"])
+        .with_startup_timeout(Duration::from_secs(15))
+        .start()
+        .await
+        .expect("alpine コンテナの起動に失敗した");
+
+    // ログ待機により両行の到着は保証済み。なお、本テストは修正前 (重複 Env のまま送信) でも
+    // 成功する (Docker Engine 側が Env の重複を後勝ちで解決する実挙動を観測済み)。そのため
+    // このテストは BTreeMap 畳み込みの有無を検出せず、コンテナ実挙動の固定化を目的とする。
+    // 畳み込み規則そのものは単体テスト (async_runner.rs の `mod linux_tests`) が検証する。
+    let stdout = container
+        .stdout_to_vec()
+        .await
+        .expect("標準出力の取得に失敗した");
+    let stdout = String::from_utf8_lossy(&stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        ["from_request", "from_image_only"],
+        "リクエスト側の値が init プロセスに観測されること: {stdout}"
+    );
+
+    container.rm().await.expect("rm に失敗した");
 }

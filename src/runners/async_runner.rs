@@ -496,6 +496,8 @@ async fn cleanup_on_ready_failure<I: Image>(
 fn build_container_config<I: Image>(
     req: &ContainerRequest<I>,
 ) -> crate::core::client::ContainerConfig {
+    use std::collections::BTreeMap;
+
     use crate::core::containers::request::PortMapping;
 
     // 同一コンテナポートへの重複マッピングは黙って 1 本に潰れないよう明示エラーに
@@ -515,11 +517,24 @@ fn build_container_config<I: Image>(
         ports.push(PortMapping::new(0, exposed));
     }
 
+    // env を KEY=VALUE のリストに畳む。Image 側 env とリクエスト側 env の chain を
+    // BTreeMap に畳むことで、同名キーは後から来た値 (with_env_var) が勝つ
+    // (macOS の build_config / exec 経路と同一規則)。重複 Env のまま送っても Docker
+    // Engine 側が解決する実挙動は観測されているが、ランタイム実装依存の挙動を排除し、
+    // 経路間の規則を統一するために畳み込む。
+    let env: Vec<String> = req
+        .env_vars()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect::<BTreeMap<String, String>>()
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+
     crate::core::client::ContainerConfig {
         image: req.descriptor(),
         entrypoint: req.entrypoint().map(|e| vec![e.to_string()]),
         cmd: req.cmd().map(|c| c.into_owned()).collect(),
-        env: req.env_vars().map(|(k, v)| format!("{k}={v}")).collect(),
+        env,
         ports,
         mounts: req.mounts().cloned().collect(),
         name: req.container_name().clone(),
@@ -1158,15 +1173,66 @@ mod tests {
     }
 }
 
-/// Linux: `build_container_config` のポート合成と `linux_unsupported_request_reason` を検証する。
+/// Linux: `build_container_config` のポート合成 / env 畳み込みと
+/// `linux_unsupported_request_reason` を検証する。
 ///
 /// 既存の macOS 向け `mod tests` は触らず、別モジュールとして追加する。
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
+    use std::borrow::Cow;
+
     use crate::core::ports::IntoContainerPort;
-    use crate::{ContainerRequest, GenericImage, ImageExt};
+    use crate::{ContainerRequest, GenericImage, Image, ImageExt};
 
     use super::{build_container_config, linux_unsupported_request_reason};
+
+    /// 既定 env を返すテスト専用イメージ。env 畳み込みの検証に使う。
+    ///
+    /// `GenericImage` は既定 env を持たないため、Image 側 env と `with_env_var` の
+    /// 同名キーを作るには既定 env を返す Image impl が別途必要。
+    /// 統合テスト (`tests/container_linux.rs`) の同名フィクスチャと内容を揃えること。
+    struct DefaultEnvImage;
+
+    impl Image for DefaultEnvImage {
+        fn name(&self) -> &str {
+            "alpine"
+        }
+
+        fn tag(&self) -> &str {
+            "latest"
+        }
+
+        fn ready_conditions(&self) -> Vec<crate::core::WaitFor> {
+            Vec::new()
+        }
+
+        fn env_vars(
+            &self,
+        ) -> impl IntoIterator<Item = (impl Into<Cow<'_, str>>, impl Into<Cow<'_, str>>)> {
+            [("FOO", "from_image"), ("IMAGE_ONLY", "from_image_only")]
+        }
+    }
+
+    #[test]
+    fn env_vars_are_folded_with_request_winning_in_config_env() {
+        // Image 既定 env と with_env_var が同名キーを持つとき、Config.Env に 1 件だけ
+        // 畳まれ、リクエスト側の値が残ること (macOS の build_config と同一規則)。
+        // 非重複キー (IMAGE_ONLY / REQ_ONLY) は両側から素通しされること。
+        let req: ContainerRequest<DefaultEnvImage> = ContainerRequest::from(DefaultEnvImage)
+            .with_cmd(["sleep", "1"])
+            .with_env_var("FOO", "from_request")
+            .with_env_var("REQ_ONLY", "from_request_only");
+        let cfg = build_container_config(&req);
+
+        assert_eq!(
+            cfg.env,
+            vec![
+                "FOO=from_request".to_string(),
+                "IMAGE_ONLY=from_image_only".to_string(),
+                "REQ_ONLY=from_request_only".to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn masked_readonly_paths_are_unsupported_on_linux() {

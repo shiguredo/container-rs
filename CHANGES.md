@@ -135,6 +135,8 @@
   - @voluntas
 - [FIX] Linux の `with_copy_to` でパス不存在・シンボリックリンク拒否のエラーに失敗したホストパスが含まれないのを修正する (どのソースが失敗したか特定できるようにする)
   - @voluntas
+- [FIX] Linux の create 経路で `Image::env_vars` と `with_env_var` が同名キーでもランタイム依存の解決に頼らず、macOS と同じ BTreeMap 畳み込みで `with_env_var` を優先する (経路間の規則を統一する)
+  - @voluntas
 
 ### misc
 
