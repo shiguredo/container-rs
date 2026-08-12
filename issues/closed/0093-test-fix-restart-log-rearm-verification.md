@@ -1,7 +1,7 @@
 # テスト: restart_rearms_log_stream が「再武装」を検証できていないのを修正する
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-12
 - Branch: feature/fix-restart-log-rearm-verification
 - Polished: 2026-08-12
 
@@ -32,11 +32,11 @@
 
 ## 解決方法
 
-- `tests/container_linux.rs` の `restart_rearms_log_stream` を、1-shot 取得ではなく follow リーダー (`stdout(true)`) を使う観測に書き換える。フローは次のとおり:
-  1. 再起動前に follow リーダーを開き、そのリーダー経由で marker A を取得する (ステップ 3 の比較材料の準備。tail=all の共有バッファ経由のため、接続の生死確認にはならない)
-  2. 即時停止 (`stop_with_timeout(Some(0))`) → start を実行する (既存テストと同じ SIGKILL 即時停止を維持する)
-  3. 再起動後に新規 follow リーダーを開き、marker A とは異なる marker B が読めることを確認する (再武装の有無で結果が変わる判別観測)
-- 新規 follow リーダーのセッションは `tail=all` のため marker A も含まれる。判別は既存ヘルパー `last_restart_marker` (最後の marker を抽出) と `marker_b != marker_a` の比較で行う (既存の判定ロジックを再利用する)
-- marker A / marker B の待ちは、コンテナ生存中 (cmd 末尾 `tail -f /dev/null`) は follow リーダーが EOF しないため、既存の `stdout_follow_stream_reads_marker` と同様に read + deadline ポーリング (10 秒程度) で行う
-- テストコメントを新しい観測 (再起動後の新規 follow リーダーが新ログを読めることで再武装を検証する) に合わせて書き換える。テスト名 `restart_rearms_log_stream` は維持する
-- `CHANGES.md` の `### misc` に `[UPDATE]` エントリを追加する
+- `tests/container_linux.rs` の `restart_rearms_log_stream` を書き換えた。再起動前に開いた follow リーダーで marker A を取得し、stop → start 後に開いた新規 follow リーダーで `last_restart_marker` が marker A と異なる marker B を返すことを確認する。再武装が実行されない場合、新規 follow リーダーは旧バッファを読み切った後 EOF になり marker B が読めず失敗する (判別観測)
+- 新規 follow リーダーのセッションは `tail=all` のため marker A も含まれる。判別は `last_restart_marker` (最後の marker を抽出) と `marker_b != marker_a` の比較で行う (既存の判定ロジックを再利用する)
+- marker A / marker B の待ちは、コンテナ生存中 (cmd 末尾 `tail -f /dev/null`) は follow リーダーが EOF しないため、既存の `stdout_follow_stream_reads_marker` と同様に read + deadline ポーリング (10 秒程度) で行う。read はデッドラインの残り時間でタイムアウトを張り、タイムアウト時は取得済みログを含むメッセージで失敗する
+- `last_restart_marker` を `split_inclusive` + `strip_suffix` による完全行のみ抽出に修正した (読み込み境界で分割された途中行を marker と誤認しないため)
+- テストコメントを新しい観測 (再起動後の新規 follow リーダーが新ログを読めることで再武装を検証する) に合わせて書き換えた。テスト名 `restart_rearms_log_stream` は維持する
+- 判別確認: `refresh_log_streams` から新規セッション起動と `log_source` の差し替えを一時的に除去し (コンテナ再起動だけを残す)、当該テストが失敗することを Docker コンテナ内 (Linux) で確認した。確認後に元へ戻した
+- 正常系: Docker コンテナ内 (Linux) で `cargo test --all-features --test container_linux` が 57 件全 pass することを確認した
+- `CHANGES.md` の `### misc` に `[UPDATE]` エントリ (担当者行つき) を追加した

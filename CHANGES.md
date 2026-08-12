@@ -154,5 +154,7 @@
   - @voluntas
 - [UPDATE] canary.py の doctest を CI の lint ジョブと `make test-canary` で実行できるようにする
   - @voluntas
+- [UPDATE] Linux の再武装検証テスト `restart_rearms_log_stream` を、再武装の有無で結果が変わる観測に修正する
+  - @voluntas
 - [FIX] canary.py の確認プロンプトで空入力がキャンセル扱いになるのと dry-run が非対話で実行できないのを修正する
   - @voluntas
