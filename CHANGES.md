@@ -152,5 +152,7 @@
   - @voluntas
 - [UPDATE] canary.py の不正確なコメントと関数名 `git_operations_after_build` を `git_tag_and_push` に修正する
   - @voluntas
+- [UPDATE] canary.py の doctest を CI の lint ジョブと `make test-canary` で実行できるようにする
+  - @voluntas
 - [FIX] canary.py の確認プロンプトで空入力がキャンセル扱いになるのと dry-run が非対話で実行できないのを修正する
   - @voluntas

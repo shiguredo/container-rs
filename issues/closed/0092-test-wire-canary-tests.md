@@ -1,7 +1,7 @@
 # テスト: canary.py の doctest を CI に配線し、canary バージョン変換ロジックを検証可能にする
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-12
 - Branch: feature/add-canary-doctest-wiring
 - Polished: 2026-08-12
 - Updated: 2026-08-05
@@ -31,6 +31,8 @@
 
 ## 解決方法
 
-- `.github/workflows/ci.yml` の lint ジョブに `run: python3 -m doctest canary.py` を追加する
-- `Makefile` に `test-canary` ターゲット (`python3 -m doctest canary.py` を実行) を追加し、`.PHONY` にも追記する
-- `CHANGES.md` の `### misc` に `[UPDATE]` エントリを追加する
+- `.github/workflows/ci.yml` の lint ジョブ (ubuntu-24.04 / macos-26) に `python3 -m doctest canary.py` ステップを追加した。doctest は Python のみの軽量検証のため checkout 直後に実行する (rustup や cargo の状態に依存しない)
+- ジョブ冒頭の説明コメントに canary.py の doctest の言及を追記した
+- `Makefile` に `test-canary` ターゲット (`python3 -m doctest canary.py` を実行) を追加し、`.PHONY` にも追記した (テスト系ターゲットの直後に配置)
+- `CHANGES.md` の `### misc` に `[UPDATE]` エントリ (担当者行つき) を追加した
+- 検証: 意図的に doctest を壊した一時ブランチを push して lint ジョブ (両 OS) が失敗することを確認し、確認後にブランチを削除した。ローカルでは `make test-canary` の成功と失敗 (exit 2) の両方を確認した

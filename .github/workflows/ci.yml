@@ -12,9 +12,10 @@ permissions:
   contents: read
 
 jobs:
-  # fmt / clippy を Linux と macOS 双方の target で確認する。
+  # fmt / clippy と canary.py の doctest を Linux と macOS 双方の target で確認する。
   # OS 依存の cfg 分岐 (docker_client / xpc_client) をそれぞれの OS でしか
   # コンパイルできないため、両方の OS で並列に走らせて早期に検出する。
+  # canary.py の doctest は Python のみの軽量検証のため、同じジョブに載せて実行する。
   lint:
     name: lint (${{ matrix.os }})
     strategy:
@@ -26,6 +27,8 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # canary.py の doctest を実行する (バージョン変換ロジックの回帰検出)
+      - run: python3 -m doctest canary.py
       - run: rustup update stable
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
