@@ -1,7 +1,7 @@
 # バグ: Linux の create 経路で環境変数の重複が解決されず `with_env_var` による上書きが効かない可能性がある
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-12
 - Branch: feature/fix-linux-create-env-merge
 - Polished: 2026-08-12
 
@@ -38,3 +38,13 @@ Linux (Docker) で `Image::env_vars` と `ImageExt::with_env_var` が同名キ�
 - テスト専用 Image impl は、既存の `tests/container_macos.rs` / `container_cfg.rs` の同名フィクスチャと内容を揃えること (統合テスト 2 ファイル + 単体テスト 2 モジュールの 4 箇所で複製されるが、0095 のスコープ外のため本 issue では内容を揃えて配置する)
 - `CHANGES.md` に `[FIX]` エントリ (macOS 側エントリと対になる文言) を追加する
 - 注記: exec 経路の env マージの macOS / Linux 分岐共通化を予定している 0096 (refactor) とは実装対象が異なるが、実装順序によっては干渉し得る (0074 と同じ注記)
+
+## 解決方法 (実装)
+
+- 統合テスト (`alpine_create_env_request_wins_over_image_default`) を先に追加し、修正前 (重複 Env のまま送信) の実行結果を確認した。**修正前から成功した** (Docker Engine 側が Env の重複を後勝ちで解決する実挙動を観測)。設計方針の検証分岐どおり、観測結果を記録したうえで macOS との規則統一を目的とする BTreeMap 畳み込みを適用した
+- `build_container_config` で env を BTreeMap に畳んでから `KEY=VALUE` に変換するようにした (macOS の `build_config` と同一実装。chain 順: Image 側 → リクエスト側、後勝ち)
+- `mod linux_tests` に単体テスト (`env_vars_are_folded_with_request_winning_in_config_env`) と `DefaultEnvImage` フィクスチャを追加した。期待値は macOS 側の単体テストと同値。修正前コードでは重複 4 要素になるため失敗し、検証力がある
+- 統合テストは修正前から成功するため、テストコメントに「BTreeMap 畳み込みの有無を検出せず、コンテナ実挙動の固定化を目的とする。畳み込み規則は単体テストが検証する」旨を明記した
+- 実装コメントには観測事実 (重複 Env でも Docker Engine が解決するが、ランタイム実装依存の挙動を排除し経路間の規則を統一する) を記載した
+- `CHANGES.md` に `[FIX]` エントリを追加した
+- 検証: Linux テスト一式 268 件・macOS 側 321 件全 pass を確認した
