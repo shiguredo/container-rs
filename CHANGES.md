@@ -160,5 +160,7 @@
   - @voluntas
 - [UPDATE] Linux の再武装検証テスト `restart_rearms_log_stream` を、再武装の有無で結果が変わる観測に修正する
   - @voluntas
+- [UPDATE] macOS の LogConsumer FD 解放検証テストを専用バイナリに分離する (並列実行による FD 数干渉で失敗するのを止める)
+  - @voluntas
 - [FIX] canary.py の確認プロンプトで空入力がキャンセル扱いになるのと dry-run が非対話で実行できないのを修正する
   - @voluntas

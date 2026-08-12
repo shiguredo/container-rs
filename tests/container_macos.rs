@@ -746,21 +746,6 @@ mod test_container_xpc {
     };
     use tokio::io::AsyncBufReadExt;
 
-    /// 現在プロセスが開いている FD の数を数える。
-    ///
-    /// LogConsumer 配信タスクの dup FD 解放の検証に使う。`/dev/fd` はプロセス自身の
-    /// FD 一覧なので、読んでいる最中の /dev/fd 自身も数える (相対比較のみに使う)。
-    /// テストハーネスは同一プロセスで並列実行されるため、他のテストがコンテナを
-    /// start / teardown すると FD 数が増減し、この検証は誤判定し得る
-    /// (誤失敗: 他テストの start が FD を開く / 誤成功: 他テストの teardown が FD を閉じる)。
-    /// 単独実行 (例: `cargo test xpc_alpine_log_consumer_stops_after_natural_exit`) で
-    /// 正確に検証できる。
-    fn open_fd_count() -> usize {
-        std::fs::read_dir("/dev/fd")
-            .expect("FD 一覧の取得に失敗した (検証を無言で無効化しないこと)")
-            .count()
-    }
-
     #[test]
     fn xpc_module_loads() {
         if super::helpers::skip_if_ci() {
@@ -1980,75 +1965,6 @@ mod test_container_xpc {
                 }),
                 "log consumer が 'CONSUMER_READY' を受け取ること: {captured:?}"
             );
-        }
-
-        container.stop_with_timeout(Some(0)).await.ok();
-        container.rm().await.ok();
-    }
-
-    /// コンテナ自然終了後に LogConsumer 配信タスクが停止し、dup FD が解放されること。
-    #[tokio::test]
-    async fn xpc_alpine_log_consumer_stops_after_natural_exit() {
-        if super::helpers::skip_if_ci() {
-            return;
-        }
-
-        let marker = "log-consumer-exit-marker";
-        let cmd = format!("echo {marker}; exit 0");
-        let logs = Arc::new(Mutex::new(Vec::new()));
-        let logs_clone = logs.clone();
-        let container = GenericImage::new("alpine", "latest")
-            .with_cmd(["sh", "-c", &cmd])
-            .with_log_consumer(move |record: &LogFrame| {
-                logs_clone
-                    .lock()
-                    .expect("処理に失敗しないこと")
-                    .push((record.source(), record.bytes().to_vec()));
-            })
-            .start()
-            .await
-            .expect("alpine コンテナの起動に失敗した");
-
-        // 配信タスクが spawn 済みの時点の FD 数を記録する。
-        // 以降の検証はこの値を基準に「タスクの dup FD が解放された」ことを確認する。
-        // タスクは stdout / stderr で各 1 dup の計 2 FD を持つため、基準から 2 減る。
-        // コンテナ終了時には wait スレッドの XPC 接続 FD も 1 つ閉じるため、
-        // 単独実行でもタスク break なしでは「2 減」に届かない (誤成功しない)。
-        let fd_after_start = open_fd_count();
-
-        // マーカーが配信されるまで待つ (ポーリング。固定待ちにしない)。
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            let delivered = logs
-                .lock()
-                .expect("処理に失敗しないこと")
-                .iter()
-                .any(|(_, bytes)| String::from_utf8_lossy(bytes).contains(marker));
-            if delivered {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "マーカーが配信されること"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-
-        // 自然終了 (exit code 記録) 後、猶予期間を過ぎると配信タスクが停止し、
-        // dup FD が解放されて FD 数が spawn 時より減ることを確認する。
-        // 停止は「EOF 観測 + exit code 初観測から 2 秒」で、wait_blocking 応答遅延と
-        // EOF 観測周期 (最大 100ms) の分だけ遅れ得る。
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            let fd_now = open_fd_count();
-            if fd_now <= fd_after_start.saturating_sub(2) {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "配信タスクの dup FD が解放されること (after_start={fd_after_start}, now={fd_now})"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         container.stop_with_timeout(Some(0)).await.ok();
