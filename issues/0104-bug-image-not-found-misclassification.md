@@ -3,11 +3,11 @@
 - Created: 2026-08-12
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-image-not-found-misclassification
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-08-12
 
 ## 目的
 
-`resolve_image_descriptor` が pull 成功後の再 GET の失敗 (daemon 異常等の 4xx / 5xx) を `ImageNotFound` と誤分類し、存在するイメージの起動が「存在しない」と誤診断されるのをなくす。
+`resolve_image_descriptor` が pull 成功後の再 GET の失敗 (daemon 異常等の 404 以外の 4xx / 5xx) を `ImageNotFound` と誤分類し、存在するイメージの起動が「存在しない」と誤診断されるのをなくす。
 
 ## 現状
 
@@ -25,18 +25,17 @@
 }
 ```
 
-- pull 成功直後の再 GET が 500 (daemon 異常) でも `ImageNotFound` になる
-- 呼び出し側 (`async_runner.rs` の `resolve_or_pull_linux`) は `ImageNotFound` に対してさらに pull を試みるため、「存在するのに pull → 誤分類 → 再 pull → registry に無いので pull 失敗」の誤ったエラーで start が失敗する
+- 呼び出し側 (`async_runner.rs` の `resolve_or_pull_linux`) は `Err(_)` で**あらゆるエラー**に対して pull を再試行するため、誤分類された `ImageNotFound` が不要な pull を誘発し、daemon 異常が継続している場合は「存在するのに pull → 誤分類 → 再 pull → pull 失敗」の誤ったエラーで start が失敗する
 - 初回 GET の非 404 エラーは `Other("failed to resolve image ...")` と正しく分類されており、再 GET だけが誤っている
-- 注: pull 自体を 2 重に試みる構造 (二重 pull) は `issues/0096-refactor-merge-duplicate-implementations.md` で対応予定のため、本 issue は誤分類の修正のみを対象とする
+- 注: pull 自体を 2 重に試みる構造 (二重 pull) は `issues/0096-refactor-merge-duplicate-implementations.md` で対応予定のため、本 issue は誤分類の修正のみを対象とする。0096 の「`ImageNotFound` のみ pull」化は本修正 (再 GET 500 → `Other`) を前提とするため、**0096 は本 issue の完了後に実装すること**
 
 ## 設計方針
 
-- 再 GET の非 200 を `ImageNotFound` にせず、初回 GET と同じ分類 (404 → `ImageNotFound`・それ以外 → `Other`) に揃える
-- この修正により 0096 の「404 限定 pull」化が正しく機能するようになる
+- 再 GET の非 200 を `ImageNotFound` にせず、初回 GET と同じ**エラー分類** (404 → `ImageNotFound`・それ以外 → `Other("failed to resolve image {descriptor}: {status}")`) に揃える (再 GET は pull しない。pull は初回 GET の 404 分岐のみ。対象は Linux の `DockerClient` のみ。macOS 側の `XpcClient::resolve_image_descriptor` は pull 後の再 GET 構造を持たず誤分類が無い)
 
 ## 完了条件
 
-- pull 成功後の再 GET が 404 の場合のみ `ImageNotFound` が返ること
-- 再 GET が 500 等の場合は `Other` エラーが返ること
+- pull 成功後の再 GET が 404 の場合のみ `ImageNotFound` が返ること (0096 の macOS 同等化後は初回 GET の 404 のみが pull の合図になり、再 GET の 404 → `ImageNotFound` は pull を誘発せず最終エラーとして伝播する。検証はコードレビューで担保する)
+- 再 GET が 500 等の場合は `Other` エラーが返ること (実 daemon で 500 を再現する手段がなくモック・スタブ禁止のため、分岐の検証はコードレビューで担保する)
 - 既存のイメージ解決・pull テストが従来どおり通ること
+- `CHANGES.md` に `[FIX]` エントリが記載されること
