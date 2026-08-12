@@ -1,9 +1,9 @@
-# バグ: Mount::with_size_bytes / with_mode が負値・不正値を検証なしで素通しする
+# バグ: Mount::with_size_bytes / with_mode が負値を検証なしで素通しする
 
 - Created: 2026-08-12
 - Completed: {YYYY-MM-DD}
-- Branch: feature/fix-with-size-bytes-negative
-- Polished: {YYYY-MM-DD}
+- Branch: feature/fix-tmpfs-options-negative-validation
+- Polished: 2026-08-12
 
 ## 目的
 
@@ -22,17 +22,20 @@ pub fn with_size_bytes(mut self, size: i64) -> Self {
 
 - `parse_size` (文字列形式の `with_size`) は負値を拒否する (`"Size cannot be negative"`) が、`with_size_bytes(-5)` はそのまま通る
 - 消費側: macOS は `container_cfg.rs` で `size=-5` のオプション文字列が生成され、Linux は `docker_client.rs` で `"SizeBytes":-5` が生成される。どちらも検証しない
-- `with_mode` も同様に負値・不正値の検証がなく、XPC 側で意味不明な値が渡り得る
-- `with_size` の doc は「パース失敗時は panic する」と明記しているが、`with_size_bytes` の doc には制約の記述がない
+- `with_mode` も同様に負値の検証がなく、macOS では `mode={mode:o}` が負値の 2 の補数 8 進表現 (例: `-5` → `1777777777777777777773`) になり、Linux では `"Mode":-5` が生成される
+- `with_size` の doc は「パース失敗時は panic する」と明記しているが、`with_size_bytes` / `with_mode` の doc には負値の制約の記述がない
 
 ## 設計方針
 
-- `with_size_bytes` で負値が指定されたら panic (または無視) にする。公開 API のシグネチャは testcontainers-rs 互換の `i64` のまま変えず、値検証のみ追加する
-- `with_mode` も同様に負値の扱いを決める (mode は下位ビットのみ意味を持つため、負値は panic かマスク)
-- 検証が入った旨を doc に明記する
+- `with_size_bytes` で負値が指定されたら `assert!` による負値チェックで panic にする (既存の `with_size` がパース失敗時に panic する流儀と一致。「無視」は設定意図を静かに落とすため不採用。シグネチャは testcontainers-rs 互換の `i64` のまま変えず、値検証のみ追加する)
+- `with_mode` も同様に負値を panic にする (「マスク」は負値の下位ビットが意味のあるパーミッション値に化ける (例: `-1 & 0o7777 = 0o7777`) ため不採用)
+- 検証が入った旨を `with_size_bytes` / `with_mode` の rustdoc に明記する
 
 ## 完了条件
 
-- `with_size_bytes` に負値を渡すと早期にエラー (panic または拒否) になること
-- 通常値 (`with_size` / `with_size_bytes` の正値) は従来どおり動作すること
-- 負値の拒否を検証するテストがあること
+- `with_size_bytes` に負値を渡すと panic になること
+- `with_mode` に負値を渡すと panic になること
+- 非負値 (`with_size` / `with_size_bytes` / `with_mode`) は従来どおり動作すること (既存の mounts.rs テストが従来どおり通ること。境界値 `0` が panic しないことのテストも追加する)
+- 負値の panic を検証する単体テスト (`#[should_panic]` を 2 セッター分) があること
+- 修正で陳腐化する `with_size_bytes` / `with_mode` の rustdoc が更新されること
+- `CHANGES.md` に `[FIX]` エントリが記載されること
