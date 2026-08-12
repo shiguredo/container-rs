@@ -53,6 +53,20 @@ fn assert_size_limit_error(err: &Error) {
     );
 }
 
+/// エラーが `CopyToContainerError::IoError` であることを検証する。
+fn assert_io_error(err: &Error) {
+    let inner = err
+        .source()
+        .and_then(|s| s.downcast_ref::<shiguredo_container::core::CopyToContainerError>());
+    assert!(
+        matches!(
+            inner,
+            Some(shiguredo_container::core::CopyToContainerError::IoError(_))
+        ),
+        "エラー型が IoError であること"
+    );
+}
+
 /// `docker inspect` を 1 回実行してコンテナ不在を assert する。
 ///
 /// Runtime 外 Drop や明示 `rm` の後で使う。両者とも呼び出し復帰時点で削除試行 (または
@@ -1369,6 +1383,8 @@ async fn copy_to_data_source_respects_tar_total_limit() {
 }
 
 /// ディレクトリソース内の symlink は PathNameError で拒否されること。
+///
+/// エラーに symlink のホストパスが含まれ、どのファイルが拒否されたか特定できること。
 #[tokio::test]
 async fn copy_to_directory_with_symlink_is_rejected() {
     use std::fs;
@@ -1386,12 +1402,100 @@ async fn copy_to_directory_with_symlink_is_rejected() {
         .start()
         .await
         .expect_err("symlink を含むディレクトリ投入は失敗すること");
+    assert_path_name_error(&err);
+    let msg = err.to_string();
     assert!(
-        err.to_string().contains("symlink") || err.to_string().contains("copy path error"),
-        "symlink 拒否のエラーであること: {err}"
+        msg.contains(&host_dir.join("link.txt").display().to_string()),
+        "symlink 拒否のエラーにホストパスが含まれること: {msg}"
     );
 
     let _ = fs::remove_dir_all(&host_dir);
+}
+
+/// 単一ファイルソースが symlink の場合は PathNameError で拒否されること。
+///
+/// エラーに symlink のホストパスが含まれ、どのソースが拒否されたか特定できること。
+#[tokio::test]
+async fn copy_to_single_file_symlink_is_rejected() {
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    let host_dir = std::env::temp_dir().join(format!(
+        "container-rs-copy-symlink-file-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&host_dir).expect("ホスト一時ディレクトリの作成に失敗した");
+    let real = host_dir.join("real.txt");
+    let link = host_dir.join("link.txt");
+    fs::write(&real, b"x\n").expect("real.txt の書き込みに失敗した");
+    symlink("real.txt", &link).expect("symlink の作成に失敗した");
+
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/symlink-file", link.clone())
+        .start()
+        .await
+        .expect_err("symlink の単一ファイル投入は失敗すること");
+    assert_path_name_error(&err);
+    let msg = err.to_string();
+    assert!(
+        msg.contains(&link.display().to_string()),
+        "symlink 拒否のエラーにホストパスが含まれること: {msg}"
+    );
+
+    let _ = fs::remove_dir_all(&host_dir);
+}
+
+/// 存在しないホストファイルの単一ファイルソース投入は IoError になり、ホストパスが含まれること。
+///
+/// 存在しないパスはトップレベルの `symlink_metadata` で NotFound になり、ファイル / ディレクトリの
+/// 両指定で同一の失敗箇所に達するが、ソース形式を変えてもパスが含まれることを意図的に 2 本で検証する。
+/// なお、walk 内部 (`read_dir` / `collect` / 子エントリの `symlink_metadata`) のエラー経路は
+/// chmod 000 で再現可能だが (CI の GitHub-hosted ランナーは非 root で実行される)、開発者の
+/// ローカル検証環境 (root で実行される Docker コンテナ) では chmod 000 が効かず、追加した
+/// テストがローカルで通ることを確認できない。そのため統合テストの対象外とし、各失敗箇所が
+/// ヘルパーを経由することはコードレビューで担保する。
+#[tokio::test]
+async fn copy_to_nonexistent_single_file_is_io_error_with_path() {
+    let missing = std::env::temp_dir().join(format!(
+        "container-rs-copy-missing-file-{}",
+        std::process::id()
+    ));
+
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/missing-file", missing.clone())
+        .start()
+        .await
+        .expect_err("存在しないホストファイルの投入は失敗すること");
+    let msg = err.to_string();
+    assert_io_error(&err);
+    assert!(
+        msg.contains(&missing.display().to_string()),
+        "IoError にホストパスが含まれること: {msg}"
+    );
+}
+
+/// 存在しないホストディレクトリのソース投入は IoError になり、ホストパスが含まれること。
+#[tokio::test]
+async fn copy_to_nonexistent_directory_is_io_error_with_path() {
+    let missing = std::env::temp_dir().join(format!(
+        "container-rs-copy-missing-dir-{}",
+        std::process::id()
+    ));
+
+    let err = GenericImage::new("alpine", "latest")
+        .with_cmd(["tail", "-f", "/dev/null"])
+        .with_copy_to("/tmp/missing-dir", missing.clone())
+        .start()
+        .await
+        .expect_err("存在しないホストディレクトリの投入は失敗すること");
+    let msg = err.to_string();
+    assert_io_error(&err);
+    assert!(
+        msg.contains(&missing.display().to_string()),
+        "IoError にホストパスが含まれること: {msg}"
+    );
 }
 
 /// 中間 `..` を含むターゲットパスは明示エラーで拒否されること。

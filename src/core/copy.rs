@@ -190,6 +190,31 @@ mod tests {
         assert_eq!(from_str.target.path, "/data/file.txt");
         assert_eq!(from_str.target.mode, 0o644);
     }
+
+    #[test]
+    fn io_error_with_host_path_keeps_error_kind_and_embeds_path() {
+        // ErrorKind を維持したまま、メッセージの先頭にホストパスを置き、
+        // 元エラーの表示も含めること。
+        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "simulated not found");
+        let wrapped = io_error_with_host_path(std::path::Path::new("/host/no-such-file"), err);
+        let CopyToContainerError::IoError(e) = wrapped else {
+            panic!("IoError であること");
+        };
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::NotFound,
+            "ErrorKind が維持されること"
+        );
+        let msg = e.to_string();
+        assert!(
+            msg.starts_with("/host/no-such-file: "),
+            "メッセージ先頭にパスがあること: {msg}"
+        );
+        assert!(
+            msg.contains("simulated not found"),
+            "元エラーが含まれること: {msg}"
+        );
+    }
 }
 
 /// `CopyToContainer` のエラー。
@@ -236,6 +261,29 @@ impl From<std::io::Error> for CopyToContainerError {
     fn from(e: std::io::Error) -> Self {
         Self::IoError(e)
     }
+}
+
+/// ホストパスを埋め込んだ `CopyToContainerError::IoError` を生成する。
+///
+/// `ErrorKind` を維持したままメッセージにパスと元エラーの表示を含める
+/// (source チェーンと `raw_os_error` は途切れるが、どのパスで失敗したかの
+/// 診断を優先する)。
+///
+/// パス不存在などの I/O 失敗をエラーに含めて、`with_copy_to` のどのソースが
+/// 失敗したかを特定できるようにするために使う。Linux の `copy_to` でのみ
+/// 使用するため、macOS 本番ビルドではコンパイルしない (単体テストは
+/// macOS でも実行できるようにテストビルドでは含める)。
+///
+/// パス付与の変換自体をローカル (コンテナ不要) で検証できるよう、
+/// `CopyToContainerError` を返す (呼び出し側で `crate::Error::other` に包む)。
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn io_error_with_host_path(
+    path: &std::path::Path,
+    e: std::io::Error,
+) -> CopyToContainerError {
+    let kind = e.kind();
+    let msg = format!("{}: {e}", path.display());
+    CopyToContainerError::IoError(std::io::Error::new(kind, msg))
 }
 
 /// コンテナからのファイルコピー先。
