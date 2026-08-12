@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "shiguredo_container"
-version = "2026.1.0-canary.8"
+version = "2026.1.0-canary.9"
 dependencies = [
  "base64ct",
  "cc",
