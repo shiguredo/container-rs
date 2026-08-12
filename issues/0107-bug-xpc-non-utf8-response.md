@@ -3,31 +3,35 @@
 - Created: 2026-08-12
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-xpc-non-utf8-response
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-08-12
 
 ## 目的
 
-XPC の応答データが非 UTF-8 だったときに、実データを破棄して「invalid index JSON」等の誤診断エラーに化けるのをなくし、UTF-8 エラーであることを明示する。
+XPC の応答データが非 UTF-8 だったときに、実データを破棄して JSON パースエラー (例: `unexpected EOS`) に化けるのをなくし、UTF-8 エラーであることを明示する。
 
 ## 現状
 
-`src/core/client/xpc_client.rs` の `containerList` 処理は、応答データの UTF-8 変換失敗を空文字に置換している。
+`src/core/client/xpc_client.rs` の `with_first_container` (containerList 処理。`container_state` / `bridge_ip_address` / `gateway_ip_address` の 3 経路に波及) は、応答データの UTF-8 変換失敗を空文字に置換している。
 
 ```rust
 let text = std::str::from_utf8(&data).unwrap_or("");
 let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
 ```
 
-- 非 UTF-8 バイト列が `""` に置換され、`RawJson::parse("")` の失敗が `ClientError::Json` として報告される。UTF-8 が原因である情報が失われる
-- 同クレート内の他経路は非対称に正しい: `image_config.rs` は「index is not UTF-8」、`xpc_client.rs` の `imageDescriptions` 処理も同様に UTF-8 エラーを明示している
-- エラーにはなるため「握り潰して成功する」わけではないが、原因の特定が難しい誤診断になる
+- 非 UTF-8 バイト列が `""` に置換され、`RawJson::parse("")` の失敗が `ClientError::Json` (nojson の `unexpected EOS at byte position 0`) として報告される。UTF-8 が原因である情報が失われ、原因の特定が難しい誤診断になる (エラーにはなるため「握り潰して成功する」わけではない)
+- 同クレート内の他経路は非対称に正しい: `image_config.rs` は「index is not UTF-8」、`xpc_client.rs` の `imageDescriptions` 処理 (`match_image_descriptor`) も同様に UTF-8 エラーを明示している
+- なお `src/xpc/conn.rs` の `RawReply::json_error` にも同じ `unwrap_or("")` パターンが残っており、非 UTF-8 のエラー応答が `XPC error unparseable` に化ける (本 issue の対象に含める。一方 `RawReply::string` の非 UTF-8 は `None` を返すだけで JSON パース誤診断には化けないため対象外)
 
 ## 設計方針
 
-- `from_utf8` の失敗を `ClientError::Other` (または既存のパターンに合わせた型) で「応答が UTF-8 でない」ことを明示するエラーに変換する
-- 他経路 (`image_config.rs` 等) の文言と揃える
+- `from_utf8` の失敗を `ClientError::Json` で「応答が UTF-8 でない」ことを明示するエラーに変換する (既存の `image_config.rs` / `match_image_descriptor` と同じ型・文言パターン。`ClientError::Other` は既存 5 箇所のパターンと非対称になるため不採用)
+- 文言は既存パターンに合わせ `containerList response is not UTF-8: {e}` とする (`imageDescriptions is not UTF-8` の先例)
+- `RawReply::json_error` (conn.rs) も同じパターンのため対象に含める。型は既存どおり `ClientError::Xpc` のまま文言のみ変更する (`ClientError::Json` に変えると `is_not_found_error` のプレフィクス判定が壊れる)。文言は `XPC error unparseable (response is not UTF-8)` 等の形にする
 
 ## 完了条件
 
-- 非 UTF-8 応答に対して UTF-8 エラーであることが分かるエラー文言が返ること
+- 非 UTF-8 応答に対してエラー文言に `is not UTF-8` が含まれること (with_first_container 側は `ClientError::Json`、json_error 側は `ClientError::Xpc` のまま)
 - 正常な応答のパース挙動が変わらないこと
+- 非 UTF-8 応答の検証は単体テスト可能な形に分離して検証すること (両経路とも。`match_image_descriptor_rejects_non_utf8` の先例)
+- 修正で陳腐化する `RawReply::json_error` の doc コメント (「`Error::Other` を作る」とあるが実態は `Xpc`) が更新されること
+- `CHANGES.md` に `[FIX]` エントリが記載されること
