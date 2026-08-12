@@ -1,7 +1,7 @@
 # テスト: macOS の LogConsumer FD 解放検証テストが並列実行で失敗するのを修正する
 
 - Created: 2026-08-05
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-12
 - Branch: feature/fix-macos-log-consumer-fd-count-flaky
 - Polished: 2026-08-12
 
@@ -44,3 +44,14 @@ CI (test-apple-container) の cargo test 並列実行時に `xpc_alpine_log_cons
 - 分離時に、テストコメントの「コンテナ終了時には wait スレッドの XPC 接続 FD も 1 つ閉じる」の記述を正確化する (XPC 接続は mach サービス接続であり、FD を消費するかは libxpc 実装依存のため、FD 消費を前提にしない言い回しにする。「タスク break なしでは 2 減に届かない (誤成功しない)」の結論はどちらでも成立する)
 - `tests/container_macos.rs` を変更するため、同一ファイルを変更する 0058 / 0059 / 0068 / 0069 / 0095 とマージ順に注意する
 - `CHANGES.md` の `### misc` に `[UPDATE]` エントリを追加する
+
+## 解決方法 (実装)
+
+- `xpc_alpine_log_consumer_stops_after_natural_exit` と `open_fd_count` を `tests/container_macos.rs` から削除し、新規バイナリ `tests/container_macos_log_consumer_fd.rs` へ移動した (移動でありコピーではない。`super::helpers::` → `helpers::` の参照修正のみ)
+- 新バイナリは `#![cfg(target_os = "macos")]` でゲートし、`mod helpers;` + `skip_if_ci()` ガードを引き継いだ。バイナリ内テストは 1 本のみで、モジュール doc に「コンテナを start / teardown するテストは FD 数を増減させて干渉するため、このバイナリにテストを追加しないこと」の規約コメントを付けた。cargo test はテストバイナリごとに別プロセスで実行されるため、FD 表の干渉が構造的に消える旨も記録した
+- `open_fd_count` のコメントを「並列実行の他テストが干渉する」前提から「このバイナリは FD 数検証専用で干渉を受けない」文脈に書き直した
+- テストコメントの XPC 接続 FD の記述を正確化した (XPC 接続が FD を消費するかは libxpc 実装依存のため判定の根拠にしない。FD を消費しても 1 減にとどまり、タスク break なしでは 2 減に届かず誤成功しない)
+- マーカー待ちの assert メッセージに受信済みログ (`{captured:?}`) を含めるようにした (MutexGuard の await 跨ぎを避けるブロック構造)
+- `Cargo.toml` / `.github/workflows/ci.yml` は無変更 (自動ディスカバリ + CI の `cargo test --all-features` が自動実行する)
+- `CHANGES.md` の `### misc` に `[UPDATE]` エントリ (担当者行つき) を追加した
+- 検証: 専用バイナリで `RUN_CONTAINER_TESTS=1 cargo test --all-features --test container_macos_log_consumer_fd xpc_alpine_log_consumer_stops_after_natural_exit` を連続 3 回 pass (完了条件 2)。macOS 側 321 件・Linux 側 268 件全 pass
