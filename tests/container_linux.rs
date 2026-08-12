@@ -740,9 +740,16 @@ async fn log_wait_end_of_stream_when_message_never_appears() {
 }
 
 /// stdout から `RESTART_MARKER-` 行の最後 (最新) を抽出する。
+///
+/// 読み込み境界で分割された途中行 (末尾改行なし) は marker として扱わない
+/// (UUID が欠けた部分行を marker と誤認しないため)。
 fn last_restart_marker(stdout: &[u8]) -> Option<Vec<u8>> {
     let mut found = None;
-    for line in stdout.split(|&b| b == b'\n') {
+    for line in stdout.split_inclusive(|&b| b == b'\n') {
+        let Some(line) = line.strip_suffix(b"\n") else {
+            // 末尾改行なし = 読み込み境界で分割された途中行
+            continue;
+        };
         if line.starts_with(b"RESTART_MARKER-") {
             found = Some(line.to_vec());
         }
@@ -753,10 +760,16 @@ fn last_restart_marker(stdout: &[u8]) -> Option<Vec<u8>> {
 /// 再 start (stop → start) 後にログストリームが再武装され、新実行のログが読めること。
 ///
 /// Docker Engine の `POST /containers/{id}/start` は create 時の cmd を再実行する。
-/// UUID marker を使い、初回 start の marker A と再起動後の marker B が
-/// 異なることを通じて、新規リーダーが新バッファに接続されることを検証する。
+/// 再武装の有無で結果が変わる観測は「再起動後に取得した新規 follow リーダーが新ログ
+/// (marker B) を読めること」だけである。1-shot 取得 (`stdout_to_vec`) は新規 HTTP
+/// セッションを張ってコンテナのログ全体を返すため、再武装なしでも marker B が読めて
+/// しまい判別力がない。再武装されない (旧実装相当) 場合、`log_source` が終端済み旧
+/// ハンドルのままのため、新規 follow リーダーは旧バッファを読み切った後 EOF になり
+/// marker B が読めず失敗する。
 #[tokio::test]
 async fn restart_rearms_log_stream() {
+    use tokio::io::AsyncReadExt;
+
     // marker は kernel の UUID で一意化する。BusyBox の date は %N (nanosecond) 非対応で
     // 秒単位になり、同一秒内の再起動で marker が一致して flaky になるため。
     let container = GenericImage::new("alpine", "latest")
@@ -770,21 +783,34 @@ async fn restart_rearms_log_stream() {
         .await
         .expect("起動に失敗した");
 
-    // 初回実行の marker A を取得する。
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    let marker_a = loop {
-        let stdout = container
-            .stdout_to_vec()
-            .await
-            .expect("stdout_to_vec に失敗した");
-        if let Some(marker) = last_restart_marker(&stdout) {
-            break marker;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "初回実行の marker が読めない: {stdout:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
+    // 再起動前に follow リーダーを開き、そのリーダー経由で初回実行の marker A を取得する
+    // (再起動後の新規リーダーで観測する marker B の比較材料の準備。tail=all の共有バッファ
+    // 経由のため、接続の生死確認にはならない)。ブロック終了で旧リーダーを drop し、
+    // stop 前に旧セッションへの参照を外す。
+    let marker_a = {
+        let mut reader = container.stdout(true);
+        let mut buf = [0u8; 4096];
+        let mut acc = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let marker_a = loop {
+            // read はデッドラインまでブロックし得るため、残り時間でタイムアウトを張る
+            // (タイムアウト時は取得済みログを含むメッセージで失敗する)。
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let n = match tokio::time::timeout(remaining, reader.read(&mut buf)).await {
+                Err(_) => panic!("初回実行の marker A が読めない: {acc:?}"),
+                Ok(result) => result.expect("再起動前の follow 読み取りに失敗した"),
+            };
+            if n == 0 {
+                break None;
+            }
+            acc.extend_from_slice(&buf[..n]);
+            if let Some(marker) = last_restart_marker(&acc) {
+                break Some(marker);
+            }
+        };
+        marker_a.expect(
+            "初回実行の marker A が読めない (EOF。ログストリーム起動失敗で空リーダーにフォールバックした可能性がある)",
+        )
     };
 
     container
@@ -793,24 +819,37 @@ async fn restart_rearms_log_stream() {
         .expect("stop に失敗した");
     container.start().await.expect("再起動に失敗した");
 
-    // 再起動後は cmd が再実行され、marker A とは異なる marker B が新規リーダーで読めること。
+    // 再起動後に新規 follow リーダーを開き、marker A とは異なる marker B が読めることを
+    // 確認する (再武装の有無で結果が変わる判別観測)。新規リーダーのセッションは tail=all の
+    // ため marker A も含まれるが、最後の marker (marker B) が marker A と異なることを
+    // `last_restart_marker` の抽出と比較で判定する。
+    let mut reader = container.stdout(true);
+    let mut buf = [0u8; 4096];
+    let mut acc = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let stdout = container
-            .stdout_to_vec()
-            .await
-            .expect("stdout_to_vec に失敗した");
-        if let Some(marker_b) = last_restart_marker(&stdout)
-            && marker_b != marker_a
-        {
-            break;
+    let marker_b = loop {
+        // read はデッドラインまでブロックし得るため、残り時間でタイムアウトを張る
+        // (タイムアウト時は取得済みログを含むメッセージで失敗する)。
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let n = match tokio::time::timeout(remaining, reader.read(&mut buf)).await {
+            Err(_) => panic!("再起動後に marker A と異なる marker B が読めない: {acc:?}"),
+            Ok(result) => result.expect("再起動後の follow 読み取りに失敗した"),
+        };
+        if n == 0 {
+            break None;
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "再起動後に異なる marker が読めない: {stdout:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+        acc.extend_from_slice(&buf[..n]);
+        if let Some(marker) = last_restart_marker(&acc)
+            && marker != marker_a
+        {
+            break Some(marker);
+        }
+    };
+    // EOF は再武装なしの他、新規セッションが起動後に終端した場合にも生じる。
+    assert!(
+        marker_b.is_some(),
+        "再起動後に新規 follow リーダーが marker B を読めること (再武装の検証): {acc:?}"
+    );
 
     container.rm().await.expect("rm に失敗した");
 }
