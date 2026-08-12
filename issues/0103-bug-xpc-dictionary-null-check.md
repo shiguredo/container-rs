@@ -3,7 +3,7 @@
 - Created: 2026-08-12
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-xpc-dictionary-null-check
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-08-12
 
 ## 目的
 
@@ -15,6 +15,7 @@ XPC 辞書の作成失敗 (メモリ枯渇等で NULL が返る) が未チェッ
 
 ```rust
 let msg = unsafe { xpc_bridge_create_dictionary() };
+let rk = ROUTE_KEY;
 unsafe {
     xpc_bridge_dictionary_set_string(msg, rk.as_ptr(), rv.as_ptr());
 }
@@ -23,15 +24,17 @@ unsafe {
 - `src/xpc_bridge.c` の `xpc_bridge_create_dictionary` は `xpc_dictionary_create` の結果をそのまま返し (失敗時 NULL)、`xpc_bridge_dictionary_set_string` 側に NULL ガードは無い
 - 同関数内の `xpc_bridge_dictionary_set_fd` 失敗時は既に「作成済み msg を解放して Err を返す」パターンが実装済み (conn.rs の `KeyValue::Fd` 分岐) で、辞書作成失敗の分岐だけが欠落している
 - `XpcConn::connect` (conn.rs) には接続の NULL チェックがあり、辞書側だけが未チェックの非対称
-- 同一辞書に複数の set を行うため、途中失敗時の解放漏れも同時に考慮する必要がある
+- 途中失敗時の解放は `KeyValue::Fd` 分岐で対応済みであり、本修正で追加の解放処理は不要 (辞書作成失敗時は msg が NULL のため解放対象が無い)
 
 ## 設計方針
 
-- `xpc_bridge_create_dictionary()` の戻り値が NULL なら、`ClientError::Xpc` を返して早期リターンする
-- 途中失敗時は既存の `KeyValue::Fd` 分岐と同じく `xpc_bridge_release(msg)` を呼んでから Err を返す (リークさせない)
+- `xpc_bridge_create_dictionary()` の戻り値が NULL なら、`ClientError::Xpc` でエラーメッセージ (例: "failed to create XPC dictionary") を返して早期リターンする (チェックは辞書作成の直後・最初の C 関数呼び出しの前に挿入する)
+- 辞書作成失敗 (NULL) 時は解放対象が無いため `xpc_bridge_release` は呼ばない (`xpc_bridge_release` は C 側で NULL ガード済みだが、呼ぶ意味がない)。その後の set 失敗 (`KeyValue::Fd` 分岐) は既存実装のまま
 - C 側 (`xpc_bridge.c`) の `xpc_bridge_create_dictionary` に NULL を返す経路がある旨のコメントを残す
 
 ## 完了条件
 
-- 辞書作成失敗 (NULL) 時に Rust 側でエラーを返し、NULL が C 関数に渡らないこと
-- 通常経路 (辞書作成成功時) の挙動が変わらないこと
+- 辞書作成失敗 (NULL) 時に Rust 側でエラーを返し、NULL が C 関数に渡らないこと (NULL の再現はモック・スタブ禁止のためテスト不能。コードレビューで担保する)
+- 通常経路 (辞書作成成功時) の挙動が変わらないこと (既存の conn.rs 単体テストは `send_with_timeout` を呼ばないため、通常経路は macOS 統合テストとコードレビューで担保する)
+- 設計方針のとおり C 側 (`xpc_bridge.c`) に NULL を返す経路がある旨のコメントが追加されること
+- `CHANGES.md` に `[FIX]` エントリが記載されること
