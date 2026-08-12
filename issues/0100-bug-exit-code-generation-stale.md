@@ -3,7 +3,7 @@
 - Created: 2026-08-12
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-exit-code-generation-stale
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-08-12
 
 ## 目的
 
@@ -25,15 +25,19 @@ Ok(Ok(code)) => {
 
 - 競合経路: `start()` → `reset_wait_state_and_respawn` の世代バンプ → その間に `exit_code()` の 5 秒 wait が完了
 - `exit_code()` は公開 API (`sync_container.rs` の `Container::exit_code` 経由) のためユーザー可視
-- 世代バンプの仕組みは `WaitState::generation()` / `store_if_current` に既に実装済みで、記録側は正しくガードされている
+- 世代バンプの仕組みは `WaitState::bump()` / `store_if_current` に既に実装済みで、記録側は正しくガードされている
+- 停止観測後に本経路を呼ぶ `WaitFor::Exit` の誤診断 issue (0102) があり、本修正の挙動 (世代不一致は `Ok(None)`) がその判定に影響する
 
 ## 設計方針
 
-- 世代が不一致で記録を棄却した場合は、旧コードを返さず `Ok(None)` に倒す (または世代が一致するまで再試行する)
+- 世代が不一致で記録を棄却した場合は、旧コードを返さず `Ok(None)` に倒す (新世代のバックグラウンド wait が後から新コードを記録するため、次の呼び出しで取得できる見込み。古い世代で現在のコードが棄却される場合も `Ok(None)` に倒れ、安全側の挙動になる)
+- 世代が一致するまで再試行する案は不採用 (新世代のバックグラウンド wait が再試行と同機能を担うため、複雑さの割に得るものがない)
 - `store_if_current` の返り値 (記録が採用されたか) を利用する
-- バックグラウンド wait (`spawn_exit_code_waiter`) が正常なら本経路自体が走らないため、正常系への影響はない
+- 本経路はキャッシュ未記録かつ停止済みのときに走るため、バックグラウンド wait が正常でも停止直後は走り得る。ただし世代が一致する通常ケースでは従来どおり `Some(code)` を返すため、正常系の挙動は変わらない
 
 ## 完了条件
 
-- `exit_code()` が「世代不一致で記録棄却」時に旧コンテナの exit code を返さないこと
-- 既存の exit code 取得テスト (macOS) が従来どおり通ること
+- `exit_code()` が「世代不一致で記録棄却」時に旧コンテナの exit code を返さず `Ok(None)` を返すこと (`store_if_current` の棄却契約は既存の `store_if_current_rejects_stale_generation` 単体テストで検証済み。`Ok(None)` への倒し込みはコードレビューで担保し、世代不一致の再現はタイミング依存のため統合テストは対象外)
+- 既存の exit code 取得テスト (macOS / Linux) が従来どおり通ること
+- 世代不一致時は `Ok(None)` を返す旨が `exit_code()` の rustdoc に追記されること
+- `CHANGES.md` に `[FIX]` エントリが記載されること
