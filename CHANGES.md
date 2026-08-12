@@ -133,6 +133,8 @@
   - @voluntas
 - [FIX] macOS の create 経路で `Image::env_vars` と `with_env_var` が同名キーのときに `with_env_var` による上書きが反映されないのを修正する (env を BTreeMap に畳んでリクエスト側を優先する)
   - @voluntas
+- [FIX] Linux の `with_copy_to` でパス不存在・シンボリックリンク拒否のエラーに失敗したホストパスが含まれないのを修正する (どのソースが失敗したか特定できるようにする)
+  - @voluntas
 
 ### misc
 

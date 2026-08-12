@@ -840,7 +840,7 @@ async fn copy_to_sources_linux<I: Image>(
 
     use crate::core::client::docker_client::DOCKER_RESPONSE_BODY_LIMIT;
     use crate::core::client::docker_tar::UstarBuilder;
-    use crate::core::copy::CopyToContainerError;
+    use crate::core::copy::{CopyToContainerError, io_error_with_host_path};
 
     /// 上限超過エラーをホストパス付きで返す短縮形。
     fn size_limit_err(path: &Path) -> crate::Error {
@@ -869,12 +869,12 @@ async fn copy_to_sources_linux<I: Image>(
         use std::io::Read;
 
         let file = std::fs::File::open(path)
-            .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+            .map_err(|e| crate::Error::other(io_error_with_host_path(path, e)))?;
         let mut data = Vec::new();
         let read = file
             .take(DOCKER_RESPONSE_BODY_LIMIT as u64 + 1)
             .read_to_end(&mut data)
-            .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+            .map_err(|e| crate::Error::other(io_error_with_host_path(path, e)))?;
         if read > DOCKER_RESPONSE_BODY_LIMIT {
             return Err(size_limit_err(path));
         }
@@ -890,13 +890,13 @@ async fn copy_to_sources_linux<I: Image>(
 
         let file = tokio::fs::File::open(path)
             .await
-            .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+            .map_err(|e| crate::Error::other(io_error_with_host_path(path, e)))?;
         let mut data = Vec::new();
         let read = file
             .take(DOCKER_RESPONSE_BODY_LIMIT as u64 + 1)
             .read_to_end(&mut data)
             .await
-            .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+            .map_err(|e| crate::Error::other(io_error_with_host_path(path, e)))?;
         if read > DOCKER_RESPONSE_BODY_LIMIT {
             return Err(size_limit_err(path));
         }
@@ -955,17 +955,17 @@ async fn copy_to_sources_linux<I: Image>(
         let mut stack: Vec<PathBuf> = vec![host_root.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let entries = std::fs::read_dir(&dir)
-                .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+                .map_err(|e| crate::Error::other(io_error_with_host_path(&dir, e)))?;
             // 決定的な順序にする。
             let mut children: Vec<_> = entries
                 .collect::<std::io::Result<Vec<_>>>()
-                .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+                .map_err(|e| crate::Error::other(io_error_with_host_path(&dir, e)))?;
             children.sort_by_key(|e| e.file_name());
             // 深さ優先のため逆順 push。
             for entry in children.into_iter().rev() {
                 let path = entry.path();
                 let meta = std::fs::symlink_metadata(&path)
-                    .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+                    .map_err(|e| crate::Error::other(io_error_with_host_path(&path, e)))?;
                 let ft = meta.file_type();
                 let rel = path
                     .strip_prefix(host_root)
@@ -979,7 +979,10 @@ async fn copy_to_sources_linux<I: Image>(
                     format!("{tar_root}/{rel_str}")
                 };
                 if ft.is_symlink() {
-                    return Err(name_err("copy_to source contains a symlink"));
+                    return Err(name_err(format!(
+                        "copy_to source contains a symlink: {}",
+                        path.display()
+                    )));
                 }
                 if ft.is_dir() {
                     builder
@@ -1053,10 +1056,13 @@ async fn copy_to_sources_linux<I: Image>(
             CopyDataSource::File(path) => {
                 let meta = tokio::fs::symlink_metadata(path)
                     .await
-                    .map_err(|e| crate::Error::other(CopyToContainerError::IoError(e)))?;
+                    .map_err(|e| crate::Error::other(io_error_with_host_path(path, e)))?;
                 let ft = meta.file_type();
                 if ft.is_symlink() {
-                    return Err(name_err("copy_to source is a symlink"));
+                    return Err(name_err(format!(
+                        "copy_to source is a symlink: {}",
+                        path.display()
+                    )));
                 }
                 if ft.is_dir() {
                     append_ancestor_directories(&mut builder, &relative, uid, gid)?;
