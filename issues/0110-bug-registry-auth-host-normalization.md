@@ -1,7 +1,7 @@
 # バグ: レジストリ認証のホスト名比較が大文字小文字を区別し Docker Hub 参照を正規化できない
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-12
 - Branch: feature/fix-registry-auth-host-normalization
 - Polished: {YYYY-MM-DD}
 
@@ -30,3 +30,12 @@ if first == "docker.io" || first == "index.docker.io" {
 
 - `Docker.IO/org/img` 形式の参照で Docker Hub の認証情報が解決されること
 - 既存のレジストリ認証テストが従来どおり通ること
+
+## 解決方法
+
+対応不要のため closed にする (polish-issue の必要性判断 + 反対尋問で「不要」判定)。
+
+- 一次資料 (docker/cli の `login.go` / `file_store.go` / `file.go`、moby の `auth.go` / `config.go`) で、docker CLI の認証照合に小文字化が存在しないことを確認した。`docker login Docker.IO` はキーを入力どおり `"Docker.IO"` で保存する
+- `auths_key("Docker.IO/org/img")` は `"Docker.IO"` を返し、docker login Docker.IO の保存キーと既に一致するため、issue が主張する失敗シナリオは発生しない
+- 実測でも `docker pull Docker.IO/library/alpine:latest` は認証以前に daemon レベルで失敗し、docker 自体が大文字小文字混在参照を解決できない
+- 小文字化の提案は 0076 の「docker CLI と同じ規則に合わせるため、非正規化キーへのフォールバックは行わない」方針に反する
