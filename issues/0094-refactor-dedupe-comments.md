@@ -21,6 +21,9 @@
   - `src/core/containers/sync_container.rs` の `container_state` の rustdoc「Linux (Docker) では未実装エラーを返す。」— 実装は Linux でも動作する (async_container.rs に Linux アームがある)
   - `src/core/wait/mod.rs` のモジュール doc「Linux ではログ FD が無く、非空メッセージ待ちは通常 startup timeout になる」— Linux は demux 済みログで Log 待機が対応済み (docs 10.1 とも自己矛盾)
 - **「以前は〜」系の歴史説明**: `async_container.rs` (FD を consumer に奪わせていた) と `xpc_client.rs` (ipv6_mapping が永遠に空だった) の 2 箇所。git 履歴で残る情報
+- **コードの逐語訳コメント 3 件** (コードを読めば分かる内容のため不要):
+  - `src/core/client/registry_auth.rs` の認証情報解決関数内の「auths オブジェクトを取得する。」「指定キーのエントリを取得する。」(直前の `to_member("auths")` 等の呼び出しをそのまま日本語にしただけ)
+  - `src/core/client/docker_client.rs` の `http_request` 系関数内の「Method は動的文字列なので Method::new で構築する。」
 
 ## 設計方針
 
