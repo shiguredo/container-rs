@@ -1,7 +1,7 @@
 # バグ: ExitWaitStrategy が exit code キャッシュのみ参照し StartupTimeout と誤診断する
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-14
 - Branch: feature/fix-exit-wait-strategy-cache-only
 - Polished: 2026-08-12
 
@@ -38,6 +38,19 @@ if !state.running && self.expected_code.is_none() {
 - 期待コードが `None` (exit code 不問) のときの挙動は現状どおり
 - フォールバックの 5 秒は `startup_timeout` の残り予算を消費する。残り予算が 5 秒未満の場合は外側の timeout が先に発火して `StartupTimeout` になるが、この残存リスクは許容する
 - 本 issue は 0100 の完了後を前提とする (0100 修正後は世代不一致で `Ok(None)` に倒れるため、再 start と競合した場合は `UnexpectedExitCode { actual: None }` に倒れる。安全側の挙動)。再 start と競合し得るのは、ユーザーがハンドルを取得済みの exec の `container_ready_conditions` 経路で `WaitFor::Exit` を使う場合のみ (start の `run_ready_sequence` 経路ではハンドル未取得のため競合しない)
+
+## 解決方法
+
+`src/core/wait/exit_strategy.rs` の `ExitWaitStrategy::wait_until_ready` を修正した。
+
+- macOS で期待コード指定時にコンテナ停止 (`state.running == false`) を観測したら、`ContainerAsync::exit_code()` の都度取得フォールバック (5 秒・1 回) を試すようにした
+- 取得できた exit code で期待コードを比較して判定 (一致 → `Ok`、不一致 → `UnexpectedExitCode { actual: Some }`)。取得できなければ `UnexpectedExitCode { actual: None }` で明示エラーに倒し、StartupTimeout への誤診断を防ぐ
+- 都度 wait の間に再 start で世代が進んだ場合は `exit_code()` が `Ok(None)` に倒れるため、キャッシュの再確認は行わない (再確認すると新世代の exit code で偽成功し得る。設計方針どおり安全側の挙動)
+- Linux は設計方針どおり現状維持 (hint 待ちループ)
+- `UnexpectedExitCode { actual: None }` の Display を「終了コードを確認できなかった」旨の文言に分岐させ、`src/core/error.rs` の診断性を改善した
+- `docs/TESTCONTAINERS.md` の `ExitWaitStrategy` の記述を更新し、macOS のフォールバック挙動を明記した
+- 障害経路 (バックグラウンド wait の記録失敗) は統合テストで決定論的に再現できないため、コードレビューで担保した (既存の macOS / Linux の `WaitFor::Exit` テストは従来どおり通過)
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
 
 ## 完了条件
 
