@@ -137,6 +137,8 @@
   - @voluntas
 - [FIX] Linux の create 経路で `Image::env_vars` と `with_env_var` が同名キーでもランタイム依存の解決に頼らず、macOS と同じ BTreeMap 畳み込みで `with_env_var` を優先する (経路間の規則を統一する)
   - @voluntas
+- [FIX] macOS の `exit_code()` で都度 `containerWait` の間に再 start で世代が進んだ場合に旧コンテナの exit code を返していたのを修正する (世代不一致時は `Ok(None)` に倒し、新世代のバックグラウンド wait の記録に任せる)
+  - @voluntas
 
 ### misc
 

@@ -853,7 +853,10 @@ impl<I: Image> ContainerAsync<I> {
     ///
     /// macOS: バックグラウンド wait のキャッシュを優先し、停止済みかつ未観測の場合は
     /// 短いタイムアウト (5 秒) で都度 `containerWait` を呼んで取得を試みる。
-    /// 取得失敗時は `Ok(None)` を返す (エラーにしない)。
+    /// 取得失敗時は `Ok(None)` を返す (エラーにしない)。都度の wait の間に再 start で
+    /// 世代が進んだ場合は、取得した値が現世代のものか確証が持てないため `Ok(None)` を
+    /// 返す (新世代のバックグラウンド wait が記録するため、新コンテナ終了後の呼び出しで
+    /// 取得できる見込みがある)。
     pub async fn exit_code(&self) -> Result<Option<i64>> {
         // バックグラウンドの containerWait が既に終了コードを取得していれば返す。
         if let Some(code) = self
@@ -894,8 +897,15 @@ impl<I: Image> ContainerAsync<I> {
                             let mut guard = wait_state.lock().expect(
                                 "wait state mutex must not be poisoned while recording exit code",
                             );
-                            let _ = guard.store_if_current(generation, code);
-                            Ok(Some(code))
+                            if guard.store_if_current(generation, code) {
+                                Ok(Some(code))
+                            } else {
+                                // 世代不一致 (都度の wait の間に再 start が挟まった)。
+                                // 取得した値が現世代のものか確証が持てないため、呼び出し側が
+                                // 旧コンテナの exit code を現在のものと誤認しないよう
+                                // `Ok(None)` に倒す。
+                                Ok(None)
+                            }
                         }
                         // タイムアウト・XPC 失敗・runtime 解放済みは None を返す。
                         _ => Ok(None),
