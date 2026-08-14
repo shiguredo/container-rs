@@ -141,6 +141,8 @@
   - @voluntas
 - [FIX] macOS / Linux の LogConsumer 配信タスクが改行を含まない巨大出力 (バイナリ・単一行ダンプ等) を読み続けると行バッファが無制限に伸びて OOM になり得るのを修正する (行長上限 8 MiB を超える行は先頭を切り捨てフレームとして配信し、残余を読み捨てて配信タスクのメモリを有界に保つ)
   - @voluntas
+- [FIX] macOS の `WaitFor::Exit` (期待コード指定) で、バックグラウンド wait の記録が無い環境でも停止観測後に exit code の都度取得フォールバック (5 秒) を 1 回試すようにし、取得できなければ `UnexpectedExitCode` (actual: None) で明示エラーにする (StartupTimeout への誤診断を防ぐ)
+  - @voluntas
 
 ### misc
 

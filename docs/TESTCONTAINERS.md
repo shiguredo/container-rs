@@ -369,7 +369,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `pub fn with_poll_interval(mut, d)` | あり | 対応 | 対応 |  |
 | `pub fn with_exit_code(mut, c)` | あり | 対応 | 対応 |  |
 | `impl Default` | あり | 対応 | 対応 |  |
-| `wait_until_ready` impl | あり | 対応 | 対応 | バックグラウンド `containerWait` の観測値で exit code を判定。停止の検出は container_state のポーリング |
+| `wait_until_ready` impl | あり | 対応 | 対応 | バックグラウンド `containerWait` の観測値で exit code を判定。停止の検出は container_state のポーリング。macOS は期待コード指定時に停止観測後の都度取得フォールバック (5 秒) を 1 回試し、取得できなければ `UnexpectedExitCode` (actual: None) で明示エラーにする |
 
 ### 10.5 `WaitStrategy` (`pub(crate)` trait) — 廃止済み
 

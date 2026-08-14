@@ -257,9 +257,21 @@ impl fmt::Display for WaitContainerError {
                 f,
                 "container startup timeout: container {id} did not become ready within {timeout:?}"
             ),
-            WaitContainerError::UnexpectedExitCode { expected, actual } => write!(
+            WaitContainerError::UnexpectedExitCode {
+                expected,
+                actual: Some(actual),
+            } => write!(
                 f,
-                "container exited with unexpected code: expected {expected}, actual {actual:?}"
+                "container exited with unexpected code: expected {expected}, actual {actual}"
+            ),
+            // actual: None は「期待コードと不一致」ではなく「終了コードを確認できなかった」
+            // ことを示す (macOS の都度取得フォールバックで確認不能だった場合等)。
+            WaitContainerError::UnexpectedExitCode {
+                expected,
+                actual: None,
+            } => write!(
+                f,
+                "container exited, but its exit code could not be confirmed: expected {expected}"
             ),
         }
     }
