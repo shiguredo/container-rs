@@ -1,7 +1,7 @@
 # バグ: XPC 辞書作成の失敗 (NULL 返却) が未チェックで C 側クラッシュ経路になる
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-14
 - Branch: feature/fix-xpc-dictionary-null-check
 - Polished: 2026-08-12
 
@@ -38,3 +38,13 @@ unsafe {
 - 通常経路 (辞書作成成功時) の挙動が変わらないこと (既存の conn.rs 単体テストは `send_with_timeout` を呼ばないため、通常経路は macOS 統合テストとコードレビューで担保する)
 - 設計方針のとおり C 側 (`xpc_bridge.c`) に NULL を返す経路がある旨のコメントが追加されること
 - `CHANGES.md` に `[FIX]` エントリが記載されること
+
+## 解決方法
+
+`src/xpc/conn.rs` の `XpcConn::send_with_timeout` を修正した。
+
+- `xpc_bridge_create_dictionary()` の戻り値に NULL チェックを追加し、NULL なら `ClientError::Xpc("failed to create XPC dictionary")` で早期リターンするようにした (チェックは辞書作成の直後・最初の C 関数呼び出しの前に挿入)
+- 辞書作成失敗 (NULL) 時は解放対象が無いため `xpc_bridge_release` は呼ばない (設計方針どおり)。後続の set 失敗 (`KeyValue::Fd` 分岐) の処理は既存実装のまま
+- C 側 (`src/xpc_bridge.c`) に NULL を返す経路がある旨のコメントを残し、契約を `src/xpc_bridge.h` に明記した (既存の `xpc_bridge_dictionary_set_fd` と同じヘッダ契約パターン)
+- NULL の再現はモック・スタブ禁止のためテスト不能であり、完了条件どおりコードレビューで担保した (通常経路は既存の macOS 統合テストと全テスト通過で担保)
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
