@@ -223,6 +223,12 @@ impl XpcConn {
         let mut cstrings = cstrings.into_iter();
 
         let msg = unsafe { xpc_bridge_create_dictionary() };
+        if msg.is_null() {
+            // メモリ枯渇等で辞書作成が失敗した場合は NULL が返る。そのまま C 関数に
+            // 渡すとクラッシュするため、最初の C 関数呼び出しの前にエラーで返す。
+            // 失敗時は解放対象 (msg) が無いため `xpc_bridge_release` は呼ばない。
+            return Err(ClientError::Xpc("failed to create XPC dictionary".into()).into());
+        }
         let rk = ROUTE_KEY;
         unsafe {
             xpc_bridge_dictionary_set_string(msg, rk.as_ptr(), rv.as_ptr());
