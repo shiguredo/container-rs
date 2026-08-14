@@ -17,6 +17,7 @@ void xpc_bridge_connection_cancel(xpc_connection_t conn) {
     if (conn) xpc_connection_cancel(conn);
 }
 
+// 契約は xpc_bridge.h 参照 (失敗時 NULL を返す経路がある)。
 xpc_object_t xpc_bridge_create_dictionary(void) {
     return xpc_dictionary_create(NULL, NULL, 0);
 }

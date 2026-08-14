@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 xpc_connection_t xpc_bridge_create_connection(const char *service_name);
+// 失敗時 (メモリ枯渇等) は NULL を返す。呼び出し側は NULL を C 関数に渡さないこと。
 xpc_object_t xpc_bridge_create_dictionary(void);
 void xpc_bridge_dictionary_set_string(xpc_object_t dict, const char *key, const char *val);
 void xpc_bridge_dictionary_set_data(xpc_object_t dict, const char *key, const void *data, size_t len);

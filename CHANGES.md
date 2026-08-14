@@ -143,6 +143,8 @@
   - @voluntas
 - [FIX] macOS の `WaitFor::Exit` (期待コード指定) で、バックグラウンド wait の記録が無い環境でも停止観測後に exit code の都度取得フォールバック (5 秒) を 1 回試すようにし、取得できなければ `UnexpectedExitCode` (actual: None) で明示エラーにする (StartupTimeout への誤診断を防ぐ)
   - @voluntas
+- [FIX] macOS の XPC メッセージ送信で、XPC 辞書の作成失敗 (メモリ枯渇等で NULL 返却) を未チェックのまま C 関数に渡してプロセスをクラッシュさせ得るのを修正する (辞書作成直後に NULL チェックを入れ、`ClientError::Xpc` でエラーを返す)
+  - @voluntas
 
 ### misc
 
