@@ -139,6 +139,8 @@
   - @voluntas
 - [FIX] macOS の `exit_code()` で都度 `containerWait` の間に再 start で世代が進んだ場合に旧コンテナの exit code を返していたのを修正する (世代不一致時は `Ok(None)` に倒し、新世代のバックグラウンド wait の記録に任せる)
   - @voluntas
+- [FIX] macOS / Linux の LogConsumer 配信タスクが改行を含まない巨大出力 (バイナリ・単一行ダンプ等) を読み続けると行バッファが無制限に伸びて OOM になり得るのを修正する (行長上限 8 MiB を超える行は先頭を切り捨てフレームとして配信し、残余を読み捨てて配信タスクのメモリを有界に保つ)
+  - @voluntas
 
 ### misc
 

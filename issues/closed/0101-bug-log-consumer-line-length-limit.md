@@ -1,7 +1,7 @@
 # バグ: LogConsumer 配信タスクが行長無制限でメモリを消費し続ける
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-14
 - Branch: feature/fix-log-consumer-line-length-limit
 - Polished: 2026-08-12
 
@@ -34,6 +34,17 @@ match reader.read_until(b'\n', &mut buf).await {
 - macOS / Linux の両配信タスクを対象とする (行分割ロジックは同一の修正を適用する)
 - Linux の drop-oldest とは行の扱いが揃わない (Linux はバイト単位で先頭を捨て末尾が残るのに対し、macOS の順方向読みでは先頭 8 MiB を残す切り捨てになる)。メモリ有界という目的は両方で達成され、この非対称は許容する
 - macOS の 1-shot ログ (`stdout_to_vec` / `stderr_to_vec` 等) への上限導入は対象外
+
+## 解決方法
+
+行分割ロジックを新モジュール `src/core/logs/line.rs` の `read_line_limited` に分離し、両配信タスクを書き換えた。
+
+- `read_line_limited` は行長上限 `MAX_LINE_LENGTH` (8 MiB) を超過する行を検出すると、先頭 8 MiB を切り捨てフレーム (`LineRead::Truncated`) として返し、残余を次の改行まで読み捨てる (超過時に warn ログを出力)
+- ちょうど 8 MiB の行は超過としない。CRLF 行末の `\r` は長さに数える (1 バイト先に切り捨て判定される)。切り捨てフレームは行の途中で切るため末尾の `\n` / `\r` 除去は適用しない
+- macOS / Linux の配信タスク (`async_container.rs` / `docker_log_stream.rs`) を `read_line_limited` ベースに書き換え。EOF 時の挙動 (改行なし最終行の配信・macOS の EOF 後のポーリング継続) は従来どおり維持
+- 行長上限の単体テスト 17 本を `src/core/logs/line.rs` 内に追加 (境界値・チャンク分割・CRLF・読み捨て・読み捨て中 EOF・8 MiB 実値)。`DEFAULT_BUFFER_LIMIT` と `MAX_LINE_LENGTH` の一致を固定するテストも追加
+- `LogConsumer` トレイトの契約 doc に切り捨てフレームの説明を追記
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
 
 ## 完了条件
 
