@@ -1,7 +1,7 @@
 # バグ: macOS の exit_code() が世代不一致で旧コンテナの exit code を返す
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-14
 - Branch: feature/fix-exit-code-generation-stale
 - Polished: 2026-08-12
 
@@ -34,6 +34,15 @@ Ok(Ok(code)) => {
 - 世代が一致するまで再試行する案は不採用 (新世代のバックグラウンド wait が再試行と同機能を担うため、複雑さの割に得るものがない)
 - `store_if_current` の返り値 (記録が採用されたか) を利用する
 - 本経路はキャッシュ未記録かつ停止済みのときに走るため、バックグラウンド wait が正常でも停止直後は走り得る。ただし世代が一致する通常ケースでは従来どおり `Some(code)` を返すため、正常系の挙動は変わらない
+
+## 解決方法
+
+`src/core/containers/async_container.rs` の `ContainerAsync::exit_code()` (macOS 分岐) を修正した。
+
+- 都度の `containerWait` の結果を `store_if_current(generation, code)` で記録する際、返り値が false (世代不一致で棄却) だった場合に `Ok(Some(code))` を返すのをやめ、`Ok(None)` を返すようにした。再 start が挟まって取得値が現世代のものか確証が持てない場合に、呼び出し側が旧コンテナの exit code を現在のものと誤認しないための変更
+- 世代不一致の再現はタイミング依存のため統合テストは追加せず、`store_if_current` の棄却契約は既存の単体テスト (`store_if_current_accepts_matching_generation` / `store_if_current_rejects_stale_generation`) で担保されている
+- `exit_code()` の rustdoc に世代不一致時の挙動 (`Ok(None)` に倒し、新世代のバックグラウンド wait が記録するため新コンテナ終了後の呼び出しで取得できる見込みがある旨) を追記した
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
 
 ## 完了条件
 
