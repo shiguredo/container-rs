@@ -23,9 +23,13 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use shiguredo_http11::{BodyProgress, ResponseDecoder};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, ReadBuf};
+use tokio::io::{AsyncBufRead, ReadBuf};
 
-use crate::core::logs::{LogFrame, consumer::LogConsumer};
+use crate::core::logs::{
+    LogFrame,
+    consumer::LogConsumer,
+    line::{LineRead, MAX_LINE_LENGTH, read_line_limited},
+};
 
 /// 共有バッファの既定上限 (ストリームあたり)。
 ///
@@ -1165,10 +1169,13 @@ impl tokio::io::AsyncRead for OneshotReader {
 
 /// LogConsumer へログ行を配信するタスクを起動する (Linux 版)。
 ///
-/// 共有バッファの独立オフセットリーダーを行単位で読み、行末 `\n` / `\r` を剥がして配信する。
-/// TCP FIN で終端したとき、最終行に `\n` が無い残余バイトがあっても `read_until` がそれを
-/// 返すため 1 フレームとして配信する (macOS 側 `spawn_log_consumer_task` の `read_until` +
-/// `Ok(_)` 配信と同じ挙動で、両プラットフォームで揃えている)。
+/// 共有バッファの独立オフセットリーダーを行単位で読み、行末 `\n` / `\r` を剥がして配信する
+/// (切り捨てフレームは行の途中で切るため末尾除去は適用しない)。
+/// 行長上限 (`line::MAX_LINE_LENGTH`) を超える行は先頭を切り捨てフレームとして配信し、
+/// 残余を読み捨てる (改行を含まない巨大出力でも配信タスクのメモリが有界に保たれる)。
+/// TCP FIN で終端したとき、最終行に `\n` が無い残余バイトがあっても 1 フレームとして
+/// 配信する (macOS 側 `spawn_log_consumer_task` と同じ挙動で、両プラットフォームで
+/// 揃えている)。
 pub(crate) fn spawn_log_consumer_task(
     handle: Arc<DockerLogsHandle>,
     stream: Arc<LogStream>,
@@ -1182,19 +1189,11 @@ pub(crate) fn spawn_log_consumer_task(
             handle: handle.clone(),
         };
         let mut reader = tokio::io::BufReader::new(LogReader::new(stream));
-        let mut buf = Vec::new();
         loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
-                Ok(0) => break,
-                Ok(_) => {
-                    if buf.last() == Some(&b'\n') {
-                        buf.pop();
-                    }
-                    if buf.last() == Some(&b'\r') {
-                        buf.pop();
-                    }
-                    let frame = to_frame(std::mem::take(&mut buf));
+            match read_line_limited(&mut reader, MAX_LINE_LENGTH).await {
+                Ok(LineRead::Closed) => break,
+                Ok(LineRead::Line(line) | LineRead::Final(line) | LineRead::Truncated(line)) => {
+                    let frame = to_frame(line);
                     for consumer in consumers.as_ref() {
                         consumer.accept(&frame).await;
                     }
@@ -1225,6 +1224,14 @@ pub(crate) fn new_shared_log_buffer_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_length_limit_matches_shared_buffer_limit() {
+        // 共有バッファの上限と配信タスクの行長上限が同じ値であることを固定する。
+        // 片方だけ変更されて静かにずれるのを防ぐ (将来上限を分ける場合はこの
+        // テストごと意図を更新する)。
+        assert_eq!(DEFAULT_BUFFER_LIMIT, MAX_LINE_LENGTH);
+    }
 
     /// multiplex フレームを 1 本作る (テスト用ヘルパ)。
     fn frame(stream_type: u8, payload: &[u8]) -> Vec<u8> {

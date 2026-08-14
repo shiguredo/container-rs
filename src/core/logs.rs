@@ -4,6 +4,7 @@
 //! `ContainerAsync::stderr` から読み取る。
 
 pub(crate) mod consumer;
+pub(crate) mod line;
 
 pub use consumer::{LogConsumer, LoggingConsumer};
 

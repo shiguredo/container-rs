@@ -23,7 +23,7 @@ use std::{
 use tokio::io::{AsyncBufRead, AsyncReadExt};
 
 #[cfg(target_os = "macos")]
-use tokio::io::{AsyncBufReadExt, ReadBuf};
+use tokio::io::ReadBuf;
 
 use crate::core::client::Client;
 use crate::core::containers::request::DEFAULT_STARTUP_TIMEOUT;
@@ -42,6 +42,8 @@ use crate::{
 #[cfg(target_os = "macos")]
 use crate::core::copy::CopyFromContainerError;
 use crate::core::error::ExecError;
+#[cfg(target_os = "macos")]
+use crate::core::logs::line::{LineRead, MAX_LINE_LENGTH, read_line_limited};
 
 /// ログ取得元の抽象。macOS は FD、Linux は Docker ログストリーム。
 ///
@@ -1472,6 +1474,9 @@ fn fd_reader_or_empty_sync(
 
 /// LogConsumer へログ行を配信するタスクを起動する (macOS・FD ベース)。
 ///
+/// 行長上限 (`line::MAX_LINE_LENGTH`) を超える行は先頭を切り捨てフレームとして配信し、
+/// 残余を読み捨てる (改行を含まない巨大出力でも配信タスクのメモリが有界に保たれる)。
+///
 /// EOF は「ログの終端」ではなく「現時点の末尾」なので、停止指示 (`stop`) が来るまで
 /// ポーリングで追記を読み続ける。以前は最初の EOF でタスクが終了してしまい、
 /// それ以降のログが consumer に届かなかった。
@@ -1499,7 +1504,6 @@ fn spawn_log_consumer_task(
     };
     tokio::spawn(async move {
         let mut reader = tokio::io::BufReader::new(reader);
-        let mut buf = Vec::new();
         // exit code を初めて観測した時刻。未観測の間は None。
         // 一度観測したら保持し続ける (リセットしない)。exit code が Some → None に戻るのは
         // 再 start 時の世代バンプのみで、その時点で旧コンテナは停止済みであり、旧タスクが
@@ -1510,9 +1514,8 @@ fn spawn_log_consumer_task(
         // タスクは EOF 観測時に即 break する (アンカー保持は保険の役割)。
         let mut exit_observed_at: Option<std::time::Instant> = None;
         loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
-                Ok(0) => {
+            match read_line_limited(&mut reader, MAX_LINE_LENGTH).await {
+                Ok(LineRead::Closed) => {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
@@ -1534,14 +1537,8 @@ fn spawn_log_consumer_task(
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
-                Ok(_) => {
-                    if buf.last() == Some(&b'\n') {
-                        buf.pop();
-                    }
-                    if buf.last() == Some(&b'\r') {
-                        buf.pop();
-                    }
-                    let frame = to_frame(std::mem::take(&mut buf));
+                Ok(LineRead::Line(line) | LineRead::Final(line) | LineRead::Truncated(line)) => {
+                    let frame = to_frame(line);
                     for consumer in consumers.as_ref() {
                         consumer.accept(&frame).await;
                     }
