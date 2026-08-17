@@ -1,7 +1,7 @@
 # バグ: watchdog の respawn 後の write 失敗が失敗回数に加算されず再試行が無制限になる
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-14
 - Branch: feature/fix-watchdog-respawn-failure-count
 - Polished: 2026-08-12
 
@@ -44,3 +44,14 @@ if let Some(w) = guard.as_mut() {
 - 既存 reaper への write 失敗 (外部 kill 等) で失敗回数が加算されないこと (reaper の stdin を drop して外部 kill 相当を再現するテストで検証できる)
 - 修正で陳腐化する watchdog.rs のコメント (`SPAWN_FAILURES` の doc・register 内の「pipe 死亡そのものは失敗回数に加算しない」・`EXHAUSTED_WARNED` の doc・`warn_exhausted_once` のメッセージ文言) が更新されること
 - `CHANGES.md` に `[FIX]` エントリが記載されること
+
+## 解決方法
+
+`src/watchdog.rs` の `register` を修正した。
+
+- 再 spawn 直後の write 失敗 (spawn 成功 + 即死) を `SPAWN_FAILURES` に加算するようにした。これにより spawn は成功するが即死する reaper で register のたびに respawn が繰り返されても、上限 `MAX_SPAWN_FAILURES` (3) で停止する
+- 既存 reaper への write 失敗 (外部 kill 等の一時的な死亡) は引き続き加算しない (外部 kill 後の自動回復を維持。設計方針どおり)
+- `SPAWN_FAILURES` / `EXHAUSTED_WARNED` の doc と、`register` 内のコメント・`warn_exhausted_once` のメッセージ文言を、加算対象 (spawn 失敗 + 再 spawn 直後の write 失敗) と非加算対象 (既存 reaper への write 失敗) を含む形に更新した
+- テスト 2 本を追加: 既存 reaper への write 失敗で失敗回数が加算されないこと (kill → REAPER へのセットで外部 kill 相当を再現)、生存する reaper への登録が失敗回数を消費しないこと。グローバル状態 (REAPER / SPAWN_FAILURES) を触るためテスト用直列化ロック (`TEST_LOCK`) を導入し、テスト用 reaper は cat で代用して `container rm` の副作用を回避した
+- spawn 成功 + 即死の加算経路はモック・スタブ禁止のため決定論的に再現できないとしてコードレビューで担保した (issue の指示どおり。テストにその旨をコメント明記)
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
