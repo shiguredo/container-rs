@@ -645,6 +645,11 @@ impl DisplayJson for ProcessUserRaw<'_> {
 /// `ContainerRequest::user()` の文字列を `ProcessUser` にパースする。
 /// 数値形式 (`uid` または `uid:gid`) は `ProcessUser::Id` に、
 /// それ以外はコンテナ内解決用の `ProcessUser::Raw` にする。
+///
+/// `uid:` のように空の gid が指定された場合は gid 指定なしと同じ扱い (gid 0)
+/// にする (moby の `GetExecUser` の挙動と一致)。数値形式で gid に数値以外
+/// (グループ名) や余剰成分 (`uid:gid:extra`) を指定するとエラーになる。
+/// 名前形式は raw 文字列としてそのまま渡される。
 fn parse_user(user: Option<&str>) -> Result<ProcessUser> {
     let Some(user) = user else {
         return Ok(ProcessUser::Id { uid: 0, gid: 0 });
@@ -660,10 +665,11 @@ fn parse_user(user: Option<&str>) -> Result<ProcessUser> {
 
     if let Ok(uid) = uid_str.parse::<u32>() {
         let gid = match gid_str {
+            // 空 gid (`"1000:"`) は gid 指定なしと同じ扱い (gid 0) に倒す。
+            None | Some("") => 0,
             Some(s) => s
                 .parse::<u32>()
                 .map_err(|_| crate::Error::other(format!("invalid gid in user string: {user}")))?,
-            None => 0,
         };
         return Ok(ProcessUser::Id { uid, gid });
     }
@@ -897,6 +903,92 @@ mod tests {
 
         let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
         assert!(json.contains("\"user\":{\"id\":{\"uid\":1000,\"gid\":1000}}"));
+    }
+
+    #[test]
+    fn user_with_empty_gid_is_reflected_as_gid_zero() {
+        // `"1000:"` (空 gid) は moby の `GetExecUser` と同じく gid 指定なしとして
+        // 扱い、既定 gid (0) で `ProcessUser::Id` になること。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_user("1000:");
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        )
+        .expect("build_config が成功すること");
+
+        let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
+        assert!(json.contains("\"user\":{\"id\":{\"uid\":1000,\"gid\":0}}"));
+    }
+
+    #[test]
+    fn user_with_empty_uid_falls_back_to_raw() {
+        // 空 uid (`":1000"`) は数値形式に解釈できないため、コンテナ内解決用の
+        // raw 文字列として渡されること (空 gid 修正で挙動が変わらないことの固定)。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_user(":1000");
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        )
+        .expect("build_config が成功すること");
+
+        let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
+        assert!(json.contains("\"user\":{\"raw\":{\"userString\":\":1000\"}}"));
+    }
+
+    #[test]
+    fn user_with_non_numeric_gid_is_rejected() {
+        // 不正な gid (`"1000:abc"`) は従来どおりエラーになること。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_user("1000:abc");
+        let result = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        );
+        let err = match result {
+            Ok(_) => panic!("不正な gid は build_config がエラーになること"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("invalid gid in user string"),
+            "エラーに不正な gid が含まれること: {err}"
+        );
+    }
+
+    #[test]
+    fn user_with_extra_components_is_rejected() {
+        // 余剰成分 (`"1000:0:0"`) は現状維持でエラーになること。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_user("1000:0:0");
+        let result = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        );
+        let err = match result {
+            Ok(_) => panic!("余剰成分は build_config がエラーになること"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("invalid gid in user string"),
+            "エラーに不正な gid が含まれること: {err}"
+        );
     }
 
     #[test]

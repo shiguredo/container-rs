@@ -136,6 +136,11 @@ pub trait ImageExt<I: Image> {
     /// 同期 API の呼び出しを避けること。
     fn with_log_consumer(self, log_consumer: impl LogConsumer + 'static) -> ContainerRequest<I>;
     /// コンテナ内でプロセスを実行するユーザーを設定する。
+    ///
+    /// 数値形式 (`uid` / `uid:gid`) は数値で反映され、`uid:` のような空 gid 指定は
+    /// gid 0 と同じ扱いになる。数値 uid の gid に数値以外 (グループ名) or 余剰成分を
+    /// 指定するとエラーになる。名前形式はコンテナ内で解決される raw 文字列として
+    /// そのまま渡される。
     fn with_user(self, user: impl Into<String>) -> ContainerRequest<I>;
     /// stdin を開いた状態で起動する (XPC では `initProcess.terminal` に反映)。
     ///
