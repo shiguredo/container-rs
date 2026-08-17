@@ -147,6 +147,8 @@
   - @voluntas
 - [FIX] Linux の `resolve_image_descriptor` で pull 成功後の再 GET の失敗 (daemon 異常等の 4xx / 5xx) が `ImageNotFound` と誤分類され、存在するイメージの起動が「存在しない」と誤診断されるのを修正する (初回 GET と同じ分類 (404 → `ImageNotFound`・それ以外 → `Other`) に揃える)
   - @voluntas
+- [FIX] macOS の `with_user("1000:")` のような空 gid 付き user 指定が `invalid gid in user string` エラーになるのを修正する (空 gid は gid 指定なしと同じ扱い (gid 0) に倒し、moby の `GetExecUser` の挙動に合わせる)
+  - @voluntas
 
 ### misc
 
