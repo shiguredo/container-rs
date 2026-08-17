@@ -153,6 +153,8 @@
   - @voluntas
 - [FIX] macOS の XPC 応答の非 UTF-8 バイト列が空文字に置換されて JSON パースエラー (unexpected EOS) と誤診断されるのを修正する (containerList 応答は `ClientError::Json("containerList response is not UTF-8")`・XPC エラー応答は `ClientError::Xpc("XPC error unparseable (response is not UTF-8)")` で区別する)
   - @voluntas
+- [FIX] macOS の watchdog で再生成 (respawn) 直後の write 失敗 (spawn 成功 + 即死) が失敗回数に加算されず再試行が無制限になり得るのを修正する (spawn 成功 + 即死を spawn 失敗と同列に失敗回数へ加算し、上限到達で watchdog 全体を無効化する)
+  - @voluntas
 
 ### misc
 
