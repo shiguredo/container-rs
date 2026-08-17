@@ -135,36 +135,44 @@ impl RawReply {
     }
 
     /// `com.apple.container.xpc.error` キーのデータを JSON としてパースし、
-    /// `code` / `message` を取り出して `Error::Other` を作る。
+    /// `code` / `message` を取り出して `Xpc` エラーを作る。
     pub(crate) fn json_error(&self) -> Option<ClientError> {
         let ek = ERROR_KEY;
-        self.data(ek).map(|d| {
-            let text = std::str::from_utf8(&d).unwrap_or("");
-            if let Ok(j) = nojson::RawJson::parse(text) {
-                let code = j
-                    .value()
-                    .to_member("code")
-                    .and_then(|m| m.required())
-                    .and_then(|v| {
-                        let s: String = v.try_into()?;
-                        Ok(s)
-                    })
-                    .unwrap_or_default();
-                let msg = j
-                    .value()
-                    .to_member("message")
-                    .and_then(|m| m.required())
-                    .and_then(|v| {
-                        let s: String = v.try_into()?;
-                        Ok(s)
-                    })
-                    .unwrap_or_default();
-                ClientError::Xpc(format!("XPC error {code}: {msg}"))
-            } else {
-                ClientError::Xpc("XPC error unparseable".into())
-            }
-        })
+        self.data(ek).map(|d| parse_xpc_error_response(&d))
     }
+}
+
+/// XPC エラー応答のバイト列から `code` / `message` を取り出して `Xpc` エラーを作る。
+///
+/// - 非 UTF-8 → `"XPC error unparseable (response is not UTF-8)"`
+/// - JSON パース失敗 → `"XPC error unparseable"`
+/// - パース成功 → `"XPC error {code}: {message}"`
+fn parse_xpc_error_response(data: &[u8]) -> ClientError {
+    let Ok(text) = std::str::from_utf8(data) else {
+        return ClientError::Xpc("XPC error unparseable (response is not UTF-8)".into());
+    };
+    let Ok(j) = nojson::RawJson::parse(text) else {
+        return ClientError::Xpc("XPC error unparseable".into());
+    };
+    let code = j
+        .value()
+        .to_member("code")
+        .and_then(|m| m.required())
+        .and_then(|v| {
+            let s: String = v.try_into()?;
+            Ok(s)
+        })
+        .unwrap_or_default();
+    let msg = j
+        .value()
+        .to_member("message")
+        .and_then(|m| m.required())
+        .and_then(|v| {
+            let s: String = v.try_into()?;
+            Ok(s)
+        })
+        .unwrap_or_default();
+    ClientError::Xpc(format!("XPC error {code}: {msg}"))
 }
 
 impl Drop for RawReply {
@@ -412,6 +420,37 @@ mod tests {
         assert!(
             msg.contains("missing or non-int64"),
             "型不一致を示すメッセージであること: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_xpc_error_response_rejects_non_utf8() {
+        // 非 UTF-8 のエラー応答は JSON パースエラーではなく UTF-8 失敗として
+        // 明示されること (誤診断を防ぐ)。
+        let err = parse_xpc_error_response(&[0xff, 0xfe]);
+        assert!(
+            err.to_string().contains("response is not UTF-8"),
+            "UTF-8 失敗であることが分かること: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_xpc_error_response_returns_unparseable_on_invalid_json() {
+        // 非 UTF-8 ではなく JSON 構文自体が壊れている場合は従来どおり
+        // `unparseable` になること (非 UTF-8 分岐と区別される)。
+        let err = parse_xpc_error_response(b"this is not json");
+        assert_eq!(err.to_string(), "XPC error: XPC error unparseable");
+    }
+
+    #[test]
+    fn parse_xpc_error_response_extracts_code_and_message() {
+        // 正常な JSON エラー応答から code / message を取り出すこと。
+        // ClientError::Xpc の Display は "XPC error: " プレフィクスを付ける。
+        let err =
+            parse_xpc_error_response(br#"{"code":"notFound","message":"container is not found"}"#);
+        assert_eq!(
+            err.to_string(),
+            "XPC error: XPC error notFound: container is not found"
         );
     }
 }
