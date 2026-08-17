@@ -134,8 +134,10 @@ impl Mount {
 
     /// tmpfs のサイズをバイトで設定する。
     ///
-    /// tmpfs 以外のマウント種別では XPC 反映時に無視する。
+    /// 負値を指定すると panic する (OS 側 (XPC / Docker Engine) へ不正な値が
+    /// そのまま送信されるのを防ぐ)。tmpfs 以外のマウント種別では反映時に無視する。
     pub fn with_size_bytes(mut self, size: i64) -> Self {
+        assert!(size >= 0, "size bytes must not be negative: {size}");
         self.tmpfs_options
             .get_or_insert_with(MountTmpfsOptions::default)
             .size_bytes = Some(size);
@@ -153,8 +155,11 @@ impl Mount {
 
     /// tmpfs のパーミッション mode を設定する。
     ///
-    /// tmpfs 以外のマウント種別では XPC 反映時に無視する。
+    /// 負値を指定すると panic する (負値は 8 進表現で巨大な 2 の補数値になる
+    /// など、OS 側 (XPC / Docker Engine) へ不正な値がそのまま送信されるのを
+    /// 防ぐ)。tmpfs 以外のマウント種別では反映時に無視する。
     pub fn with_mode(mut self, mode: i64) -> Self {
+        assert!(mode >= 0, "mode must not be negative: {mode}");
         self.tmpfs_options
             .get_or_insert_with(MountTmpfsOptions::default)
             .mode = Some(mode);
@@ -268,5 +273,29 @@ mod tests {
         assert!(parse_size("").is_err());
         assert!(parse_size("abc").is_err());
         assert!(parse_size("-1m").is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "size bytes must not be negative")]
+    fn with_size_bytes_rejects_negative_value() {
+        // 負のサイズは OS 側へ送る前に panic で拒否すること。
+        Mount::tmpfs_mount("/tmp").with_size_bytes(-5);
+    }
+
+    #[test]
+    #[should_panic(expected = "mode must not be negative")]
+    fn with_mode_rejects_negative_value() {
+        // 負の mode は 8 進表現で巨大な 2 の補数値になるなど、素通しすると
+        // OS 側 (XPC / Docker Engine) へ不正な値が送られるため panic で拒否すること。
+        Mount::tmpfs_mount("/tmp").with_mode(-1);
+    }
+
+    #[test]
+    fn with_size_bytes_and_mode_accept_zero() {
+        // 境界値 0 は負値ではないため panic しないこと (負値検証の境界確認)。
+        let mount = Mount::tmpfs_mount("/tmp").with_size_bytes(0).with_mode(0);
+        let opts = mount.tmpfs_options().expect("tmpfs オプションがあること");
+        assert_eq!(opts.size_bytes, Some(0));
+        assert_eq!(opts.mode, Some(0));
     }
 }
