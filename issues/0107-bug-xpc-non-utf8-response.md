@@ -1,7 +1,7 @@
 # バグ: 非 UTF-8 の XPC 応答が空文字に置換され JSON パースエラーと誤診断される
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-14
 - Branch: feature/fix-xpc-non-utf8-response
 - Polished: 2026-08-12
 
@@ -35,3 +35,13 @@ let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_str
 - 非 UTF-8 応答の検証は単体テスト可能な形に分離して検証すること (両経路とも。`match_image_descriptor_rejects_non_utf8` の先例)
 - 修正で陳腐化する `RawReply::json_error` の doc コメント (「`Error::Other` を作る」とあるが実態は `Xpc`) が更新されること
 - `CHANGES.md` に `[FIX]` エントリが記載されること
+
+## 解決方法
+
+`src/core/client/xpc_client.rs` と `src/xpc/conn.rs` を修正した。
+
+- `with_first_container` の UTF-8 変換 + Parsing を `parse_container_list` に分離し、非 UTF-8 応答を `ClientError::Json("containerList response is not UTF-8: {e}")` で明示するようにした (従来は `unwrap_or("")` で空文字化し `unexpected EOS` と誤診断していた)
+- `RawReply::json_error` を `parse_xpc_error_response` に分離し、非 UTF-8 応答を `ClientError::Xpc("XPC error unparseable (response is not UTF-8)")` で明示するようにした (従来は `unparseable` のみ)
+- 分離した 2 関数は非 UTF-8・JSON 破損・正常 JSON の 3 分岐を単体テストで検証 (計 6 テスト追加)。`is_not_found_error` のプレフィクス判定への影響なし (非 UTF-8 文言は notFound プレフィクスと一致しない)
+- `json_error` の doc コメントを「`Xpc` エラーを作る」に更新した
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
