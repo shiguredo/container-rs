@@ -1,7 +1,7 @@
 # バグ: parse_user が空 gid ("1000:") をエラーにする (Docker の仕様と非対称)
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-14
 - Branch: feature/fix-parse-user-empty-gid
 - Polished: 2026-08-12
 
@@ -40,3 +40,13 @@ let gid = match gid_str {
 - 既存の user 指定テストが従来どおり通ること
 - 修正で陳腐化する `parse_user` の doc コメントが更新されること
 - `CHANGES.md` に `[FIX]` エントリが記載されること
+
+## 解決方法
+
+`src/core/client/container_cfg.rs` の `parse_user` を修正した。
+
+- gid 側の match を `None | Some("") => 0` に変更し、空 gid (`"1000:"`) を gid 指定なし (gid 0) と同じ扱いに倒した (moby の `GetExecUser` の挙動と一致)
+- 不正な gid (`"1000:abc"`)・余剰成分 (`"1000:0:0"`) は従来どおり `invalid gid in user string` エラーになる (挙動不変)
+- テスト 4 本を追加: 空 gid → gid 0 の JSON 反映、不正 gid → エラー、余剰成分 → エラー、空 uid (`":1000"`) → Raw フォールバックの固定
+- `parse_user` の doc コメントと、`with_user` (公開 API) の rustdoc (`src/core/image/image_ext.rs`) に user 文字列の形式仕様 (数値形式・空 gid 受理・グループ名 / 余剰成分の拒否・名前形式は raw で透過) を明記した
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
