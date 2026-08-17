@@ -1,7 +1,7 @@
 # バグ: Mount::with_size_bytes / with_mode が負値を検証なしで素通しする
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-14
 - Branch: feature/fix-tmpfs-options-negative-validation
 - Polished: 2026-08-12
 
@@ -39,3 +39,13 @@ pub fn with_size_bytes(mut self, size: i64) -> Self {
 - 負値の panic を検証する単体テスト (`#[should_panic]` を 2 セッター分) があること
 - 修正で陳腐化する `with_size_bytes` / `with_mode` の rustdoc が更新されること
 - `CHANGES.md` に `[FIX]` エントリが記載されること
+
+## 解決方法
+
+`src/core/mounts.rs` の `Mount::with_size_bytes` / `Mount::with_mode` を修正した。
+
+- 両セッターに `assert!(size >= 0)` / `assert!(mode >= 0)` を追加し、負値を panic で拒否するようにした (OS 側へ不正な size / mode が送信されるのを防ぐ)。シグネチャは互換の `i64` のまま
+- rustdoc に負値の制約 (panic する旨・OS 側へ不正値が送られる理由) を明記した
+- テスト 3 本を追加: `#[should_panic]` を `with_size_bytes` / `with_mode` の 2 本と、境界値 0 が panic しないテスト
+- 既存の `with_size` (parse_size 経由) は負値を先に拒否するため、二重ガードは役割が異なる (多層防御)
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
