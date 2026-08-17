@@ -176,8 +176,23 @@ impl DockerClient {
             let response = self.request("GET", &path, None).await?;
             if response.status_code() == 200 {
                 Ok(descriptor.to_string())
-            } else {
+            } else if response.status_code() == 404 {
+                // pull が成功しても存在しない場合 (pull と GET の間で消えた等) は
+                // イメージ無しとして最終エラーにする。この関数内の pull は初回 GET の
+                // 404 でのみ実行される。再 GET の 404 が返す `ImageNotFound` は
+                // 呼び出し元の pull を誘発し得るが、現状の呼び出し元は高々 1 回しか
+                // 再試行しないため無限ループにはならない。
                 Err(ClientError::ImageNotFound(descriptor.to_string()).into())
+            } else {
+                // pull 成功後の再 GET の失敗 (daemon 異常等の 4xx / 5xx) を
+                // ImageNotFound に誤分類すると、存在するイメージの起動が「存在しない」
+                // と誤診断される。初回 GET と同じ分類 (404 → `ImageNotFound`・
+                // それ以外 → `Other`) に揃える。
+                Err(ClientError::Other(format!(
+                    "failed to resolve image {descriptor}: {}",
+                    response.status_code()
+                ))
+                .into())
             }
         } else {
             Err(ClientError::Other(format!(

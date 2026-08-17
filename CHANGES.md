@@ -145,6 +145,8 @@
   - @voluntas
 - [FIX] macOS の XPC メッセージ送信で、XPC 辞書の作成失敗 (メモリ枯渇等で NULL 返却) を未チェックのまま C 関数に渡してプロセスをクラッシュさせ得るのを修正する (辞書作成直後に NULL チェックを入れ、`ClientError::Xpc` でエラーを返す)
   - @voluntas
+- [FIX] Linux の `resolve_image_descriptor` で pull 成功後の再 GET の失敗 (daemon 異常等の 4xx / 5xx) が `ImageNotFound` と誤分類され、存在するイメージの起動が「存在しない」と誤診断されるのを修正する (初回 GET と同じ分類 (404 → `ImageNotFound`・それ以外 → `Other`) に揃える)
+  - @voluntas
 
 ### misc
 
