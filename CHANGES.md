@@ -149,6 +149,8 @@
   - @voluntas
 - [FIX] macOS の `with_user("1000:")` のような空 gid 付き user 指定が `invalid gid in user string` エラーになるのを修正する (空 gid は gid 指定なしと同じ扱い (gid 0) に倒し、moby の `GetExecUser` の挙動に合わせる)
   - @voluntas
+- [FIX] `Mount::with_size_bytes` / `Mount::with_mode` が負値を検証せず OS 側 (XPC / Docker Engine) へ不正な size / mode (8 進 22 桁の巨大な 2 の補数値等) を送るのを修正する (負値は設定時に panic で拒否する)
+  - @voluntas
 
 ### misc
 
