@@ -1,7 +1,7 @@
 # バグ: イメージ pull 後の再 GET 失敗が ImageNotFound と誤分類される
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-14
 - Branch: feature/fix-image-not-found-misclassification
 - Polished: 2026-08-12
 
@@ -39,3 +39,12 @@
 - 再 GET が 500 等の場合は `Other` エラーが返ること (実 daemon で 500 を再現する手段がなくモック・スタブ禁止のため、分岐の検証はコードレビューで担保する)
 - 既存のイメージ解決・pull テストが従来どおり通ること
 - `CHANGES.md` に `[FIX]` エントリが記載されること
+
+## 解決方法
+
+`src/core/client/docker_client.rs` の `DockerClient::resolve_image_descriptor` を修正した。
+
+- pull 成功後の再 GET の非 200 をすべて `ImageNotFound` にしていたのを修正し、初回 GET と同じ分類 (404 → `ImageNotFound`・それ以外 → `Other("failed to resolve image {descriptor}: {status}")`) に揃えた
+- pull の実行は初回 GET の 404 分岐のみ (再 GET では pull しない)。pull 成功後に存在しない場合 (pull と GET の間で消えた等) の再 GET 404 は `ImageNotFound` として最終エラーになる (呼び出し元が高々 1 回の再試行を行うため無限ループにはならない)
+- 分岐の検証は実 daemon で 500 を再現する手段がなくコードレビューで担保した (issue の指示どおり)。既存のイメージ解決・pull テストは従来どおり通過
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
