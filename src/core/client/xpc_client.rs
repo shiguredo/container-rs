@@ -659,11 +659,7 @@ where
         &[(k("listFilters"), KeyValue::Data(filters))],
     )?;
     let data = reply.data(&k("containers")).unwrap_or_default();
-    if data.is_empty() {
-        return Err(ClientError::ContainerNotFound(id.to_string()).into());
-    }
-    let text = std::str::from_utf8(&data).unwrap_or("");
-    let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
+    let parsed = parse_container_list(&data, id)?;
     let arr = parsed
         .value()
         .to_array()
@@ -673,6 +669,22 @@ where
         .next()
         .ok_or_else(|| ClientError::ContainerNotFound(id.to_string()))?;
     f(&item)
+}
+
+/// `containerList` 応答の `containers` バイト列をパースして返す。
+///
+/// - 空データ → `ContainerNotFound`
+/// - 非 UTF-8・パース失敗 → `Json`
+fn parse_container_list<'a>(
+    data: &'a [u8],
+    id: &str,
+) -> std::result::Result<nojson::RawJson<'a>, ClientError> {
+    if data.is_empty() {
+        return Err(ClientError::ContainerNotFound(id.to_string()));
+    }
+    let text = std::str::from_utf8(data)
+        .map_err(|e| ClientError::Json(format!("containerList response is not UTF-8: {e}")))?;
+    nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))
 }
 
 /// エラーが「コンテナが存在しない」ことを表すか。
@@ -1459,6 +1471,40 @@ mod tests {
         assert!(
             err.to_string().contains("not UTF-8"),
             "UTF-8 失敗であることが分かること: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_container_list_rejects_non_utf8() {
+        // 非 UTF-8 の containerList 応答は ClientError::Json で UTF-8 失敗を明示すること。
+        let err = parse_container_list(&[0xff, 0xfe], "test-id").unwrap_err();
+        assert!(
+            matches!(err, ClientError::Json(_)),
+            "非 UTF-8 は ClientError::Json であること: {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .contains("containerList response is not UTF-8"),
+            "containerList 応答の UTF-8 失敗であることが分かること: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_container_list_returns_container_not_found_for_empty_data() {
+        // 空データはコンテナ不存在として扱うこと (従来挙動の維持)。
+        let err = parse_container_list(&[], "test-id").unwrap_err();
+        assert!(matches!(err, ClientError::ContainerNotFound(_)));
+    }
+
+    #[test]
+    fn parse_container_list_rejects_invalid_json() {
+        // UTF-8 だが JSON 構文が壊れている場合は Json になること。
+        // 非 UTF-8 分岐 (文言に "is not UTF-8" を含む) とは文言で区別される。
+        let err = parse_container_list(b"this is not json", "test-id").unwrap_err();
+        assert!(matches!(err, ClientError::Json(_)));
+        assert!(
+            !err.to_string().contains("is not UTF-8"),
+            "非 UTF-8 ではなく JSON 破損として報告されること: {err}"
         );
     }
 

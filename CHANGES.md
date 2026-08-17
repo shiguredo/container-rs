@@ -151,6 +151,8 @@
   - @voluntas
 - [FIX] `Mount::with_size_bytes` / `Mount::with_mode` が負値を検証せず OS 側 (XPC / Docker Engine) へ不正な size / mode (8 進 22 桁の巨大な 2 の補数値等) を送るのを修正する (負値は設定時に panic で拒否する)
   - @voluntas
+- [FIX] macOS の XPC 応答の非 UTF-8 バイト列が空文字に置換されて JSON パースエラー (unexpected EOS) と誤診断されるのを修正する (containerList 応答は `ClientError::Json("containerList response is not UTF-8")`・XPC エラー応答は `ClientError::Xpc("XPC error unparseable (response is not UTF-8)")` で区別する)
+  - @voluntas
 
 ### misc
 
