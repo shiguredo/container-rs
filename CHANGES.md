@@ -180,5 +180,7 @@
   - @voluntas
 - [UPDATE] macOS の LogConsumer FD 解放検証テストを専用バイナリに分離する (並列実行による FD 数干渉で失敗するのを止める)
   - @voluntas
+- [UPDATE] macOS の published port 経由の大容量レスポンスが遅い消費者に対して途中切断される事象の再現テストを追加する (RUN_HOST_NETWORK_TESTS=1 ゲート付きで、切断の有無を報告する)
+  - @voluntas
 - [FIX] canary.py の確認プロンプトで空入力がキャンセル扱いになるのと dry-run が非対話で実行できないのを修正する
   - @voluntas

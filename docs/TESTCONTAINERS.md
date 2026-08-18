@@ -361,6 +361,8 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `pub fn with_response_matcher_async(mut, f)` | あり | なし | なし | body 受信済みのため同期 matcher で足りる (方針) |
 | `wait_until_ready` impl | あり | 対応 | 対応 | ポート解決 → TCP 接続 → 照合をポーリング。`Connection: close` 送信 |
 
+> **macOS の制約 (published port の大容量転送)**: Apple container のポートフォワーダー (`container-runtime-linux`) は、サーバー → クライアント方向の大容量レスポンスを消費者が遅い場合に途中で切断し得る。切断は TCP の RST ではなくきれいな EOF (FIN) として観測されるため、クライアントが不完全なレスポンスを正常な EOF として受信してしまう。切断のメカニズムはフォワーダーのバッファ溢れと推定される (消費者が速ければ切断しない)。10 MiB のレスポンスを 8 KiB 読み + 読み合間に 1 ms 待機の消費者で受信した観測では、published port 経由で高確率に途中切断し、コンテナ IP 直結 (`ContainerAsync::get_bridge_ip_address` で取得した IP へ直接接続) では切断しなかった。macOS で大容量レスポンスを扱う場合は、published port ではなくコンテナ IP 直結を使うこと (直結も Local Network Privacy 未許可の環境では接続がブロックされ得る)。消費者側の読み間隔を詰めても安全なサイズ域は環境依存であり保証できない。
+
 ### 10.4 `ExitWaitStrategy`
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
