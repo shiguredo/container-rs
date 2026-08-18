@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "2026.*"
+
+permissions: {}
+
+jobs:
+  github-release:
+    name: "Create GitHub Release"
+    timeout-minutes: 15
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.get_version.outputs.VERSION }}
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Get the version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF/refs\/tags\//}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
+        run: |
+          if [[ "$VERSION" == *canary* ]]; then
+            gh release create "$VERSION" \
+              --prerelease \
+              --title "$VERSION" \
+              --notes "Release $VERSION"
+          else
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --notes "Release $VERSION"
+          fi
+
+  publish:
+    needs: github-release
+    timeout-minutes: 15
+    runs-on: ubuntu-26.04
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+        id: auth
+      - run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  slack_notify:
+    needs: [github-release, publish]
+    timeout-minutes: 5
+    runs-on: ubuntu-slim
+    if: ${{ always() }}
+    permissions:
+      actions: read
+    steps:
+      - name: Slack Notification
+        uses: shiguredo/github-actions/.github/actions/slack-notify@main
+        with:
+          status: ${{ job.status }}
+          slack_webhook: ${{ secrets.SLACK_WEBHOOK }}
+          slack_channel: rust-oss
+          notify_mode: failure_and_fixed

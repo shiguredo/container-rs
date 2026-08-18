@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    paths-ignore:
+      - "**.md"
+  schedule:
+    # JST 11:00 (UTC 02:00), 月-金
+    - cron: "0 2 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  # fmt / clippy と canary.py の doctest を Linux と macOS 双方の target で確認する。
+  # OS 依存の cfg 分岐 (docker_client / xpc_client) をそれぞれの OS でしか
+  # コンパイルできないため、両方の OS で並列に走らせて早期に検出する。
+  # canary.py の doctest は Python のみの軽量検証のため、同じジョブに載せて実行する。
+  lint:
+    name: lint (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # canary.py の doctest を実行する (バージョン変換ロジックの回帰検出)
+      - run: python3 -m doctest canary.py
+      - run: rustup update stable
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # MSRV (rust-version) でコンパイルできることを検証する。
+  msrv:
+    name: msrv
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - run: rustup toolchain install 1.93.0 --profile minimal
+      - run: cargo +1.93.0 check --all-features
+
+  # Linux 側 (target_os = "linux" の分岐) は self-hosted (macOS) ではコンパイルされないため、
+  # ビルドと単体・統合テストをここで確認する。
+  test-linux-docker:
+    name: test-linux-docker
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - run: rustup update stable
+      # feature ゲート漏れ検出のため features なしでもチェックする
+      - run: cargo check
+      # テストが並列で一斉に pull すると Docker Hub の匿名 pull 上限 (429) に達するため、
+      # 未キャッシュのイメージだけ事前に pull しておく
+      - name: Pull test images
+        run: |
+          for image in alpine:latest; do
+            docker image inspect "$image" > /dev/null 2>&1 || docker pull "$image"
+          done
+      - run: cargo test --all-features
+
+  test-apple-container:
+    name: test-apple-container
+    needs: lint
+    runs-on:
+      group: Self
+      labels: [self-hosted, macOS, ARM64, Apple-M2-Pro]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install rustup
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      # Homebrew 経由でインストールされた container CLI を見つけられるよう
+      # /opt/homebrew/bin も PATH に含める (ランナーの既定 PATH には無い)
+      - name: Update PATH
+        run: echo "PATH=$HOME/.cargo/bin:/opt/homebrew/bin:$PATH" >> $GITHUB_ENV
+      - run: rustup update stable
+      # Apple container CLI を最新に更新する (macOS ランタイム要件は 1.2.0 以上)
+      - name: Update Apple container to latest
+        run: brew upgrade container
+      # Apple container コマンドと apiserver が利用可能か確認する。
+      # apiserver が未起動なら container system start で起動してから再確認する。
+      - name: Check Apple container availability
+        run: |
+          container --version
+          container system status || container system start
+          container system status
+      # host→container のネットワーク到達性を診断する (非致命的)。
+      # コンテナ IP 直結・published port 経由ともに失敗する場合は
+      # macOS の Local Network Privacy によるブロックが原因 (RUN_HOST_NETWORK_TESTS 参照)。
+      - name: Diagnose host-to-container networking
+        continue-on-error: true
+        run: |
+          container rm --force ci-net-diag 2>/dev/null || true
+          container run --detach --name ci-net-diag --publish 8199:80 nginx:latest
+          sleep 8
+          ip=$(container list --format json | python3 -c "import json,sys;print([c['status']['networks'][0]['ipv4Address'].split('/')[0] for c in json.load(sys.stdin) if c['configuration']['id']=='ci-net-diag'][0])")
+          echo "container ip: $ip"
+          echo "== direct container ip =="; curl -m 5 -v http://$ip/ 2>&1 | tail -5 || true
+          echo "== published port (forwarder) =="; curl -m 5 -v http://127.0.0.1:8199/ 2>&1 | tail -5 || true
+          container rm --force ci-net-diag
+      # テストが並列で一斉に pull すると Docker Hub の匿名 pull 上限 (429) に達するため、
+      # 未キャッシュのイメージだけ事前に pull しておく
+      - name: Pull test images
+        run: |
+          for image in alpine:latest nginx:latest; do
+            container image inspect "$image" > /dev/null 2>&1 || container image pull "$image"
+          done
+      # Apple container を使う統合テストを含む全テストを実行する。
+      # コンテナ IP 直結の HTTP テストは CI で実行する。
+      # published port / HttpWait 依存は Local Network Privacy の都合で
+      # RUN_HOST_NETWORK_TESTS=1 の環境のみ (CI では有効化しない)。
+      - run: cargo test --all-features
+        env:
+          RUN_CONTAINER_TESTS: "1"
+
+  slack_notify:
+    needs: [lint, test-linux-docker, test-apple-container]
+    timeout-minutes: 5
+    runs-on: ubuntu-slim
+    if: ${{ always() }}
+    permissions:
+      actions: read
+    steps:
+      - name: Slack Notification
+        uses: shiguredo/github-actions/.github/actions/slack-notify@main
+        with:
+          status: ${{ job.status }}
+          slack_webhook: ${{ secrets.SLACK_WEBHOOK }}
+          slack_channel: rust-oss
+          notify_mode: failure_and_fixed

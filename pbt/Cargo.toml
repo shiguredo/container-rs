@@ -1,0 +1,11 @@
+[package]
+name = "pbt"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dev-dependencies]
+# Property-Based Testing
+noprop = "0.2"
+# 公開 API に対する PBT
+shiguredo_container = { path = ".." }

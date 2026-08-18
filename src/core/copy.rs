@@ -1,0 +1,391 @@
+//! コンテナへのファイルコピー関連。元の 0.27 の `core::copy` と同一シグネチャ。
+//!
+//! macOS (XPC) では `CopyToContainer` の tar 構築は未実装。`AsyncRunner::start` の
+//! `copy_to_sources` 処理で XPC の `containerCopyIn` を呼ぶが、tar 経由ではなく
+//! ホストパス直渡しになるため、本家と完全同じ挙動にはならない点に注意。
+//!
+//! Linux は自前 ustar で親ディレクトリ自動作成とディレクトリ一括投入に対応する。
+//! 投入タイミングは OS で異なる。Linux は create 後・start 前、macOS は
+//! start_process 後（起動前投入の公開契約は Linux のみ）。詳細は
+//! `ImageExt::with_copy_to` を参照すること。
+
+use std::path::PathBuf;
+
+/// コピー元データソース。
+#[derive(Debug, Clone)]
+pub enum CopyDataSource {
+    /// ホスト上のファイルパス。
+    File(PathBuf),
+    /// メモリ上のバイト列。
+    Data(Vec<u8>),
+}
+
+impl From<PathBuf> for CopyDataSource {
+    fn from(p: PathBuf) -> Self {
+        CopyDataSource::File(p)
+    }
+}
+
+impl From<Vec<u8>> for CopyDataSource {
+    fn from(b: Vec<u8>) -> Self {
+        CopyDataSource::Data(b)
+    }
+}
+
+/// コピー先のファイルオプション。
+///
+/// 本家 testcontainers-rs 0.27 と同じフィールドを持つ。
+/// macOS (Apple container XPC) では `containerCopyIn` が `fileMode` のみを受け付けるため、
+/// `mode` のみが反映され、`uid` / `gid` は反映できない。
+#[derive(Debug, Clone)]
+pub struct CopyTargetOptions {
+    /// コピー先のパス。
+    pub(crate) path: String,
+    /// コピー先のファイルモード。
+    pub(crate) mode: u32,
+    /// コピー先のオーナー UID。
+    ///
+    /// macOS (XPC) ではコピー後に exec で chown を実行して反映する。
+    pub(crate) uid: u32,
+    /// コピー先のグループ GID。
+    ///
+    /// macOS (XPC) ではコピー後に exec で chown を実行して反映する。
+    pub(crate) gid: u32,
+}
+
+impl CopyTargetOptions {
+    /// パスのみを指定してデフォルト値を使う。
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            mode: 0o644,
+            uid: 0,
+            gid: 0,
+        }
+    }
+
+    /// コピー先のファイルモードを設定する。
+    pub fn with_mode(mut self, mode: u32) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// コピー先のオーナー UID を設定する。
+    pub fn with_uid(mut self, uid: u32) -> Self {
+        self.uid = uid;
+        self
+    }
+
+    /// コピー先のグループ GID を設定する。
+    pub fn with_gid(mut self, gid: u32) -> Self {
+        self.gid = gid;
+        self
+    }
+
+    /// コピー先のパスを返す。
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// コピー先のファイルモードを返す。
+    ///
+    /// 本家互換のため `Option<u32>` を返す。既定値を含む常に設定済みのため `Some` になる。
+    pub fn mode(&self) -> Option<u32> {
+        Some(self.mode)
+    }
+
+    /// コピー先のオーナー UID を返す。
+    pub fn uid(&self) -> u32 {
+        self.uid
+    }
+
+    /// コピー先のグループ GID を返す。
+    pub fn gid(&self) -> u32 {
+        self.gid
+    }
+}
+
+impl From<String> for CopyTargetOptions {
+    fn from(path: String) -> Self {
+        Self::new(path)
+    }
+}
+
+impl From<&str> for CopyTargetOptions {
+    fn from(path: &str) -> Self {
+        Self::new(path)
+    }
+}
+
+/// コンテナへコピーするファイル。
+///
+/// macOS (XPC) では `AsyncRunner::start` の `copy_to_sources` 処理で
+/// XPC `containerCopyIn` ルートを使ってコピーされる（`start_process` 後）。
+/// Linux (Docker Engine API) では `copy_to_sources_linux` が `PUT /containers/{id}/archive?path=/`
+/// を自前 POSIX ustar (`UstarBuilder`) で叩き、親ディレクトリ自動作成とディレクトリ一括投入に
+/// 対応する（create 後・start 前）。
+/// タイミング契約の詳細は `ImageExt::with_copy_to` を参照すること。
+#[derive(Debug, Clone)]
+pub struct CopyToContainer {
+    pub(crate) source: CopyDataSource,
+    pub(crate) target: CopyTargetOptions,
+}
+
+impl CopyToContainer {
+    /// コピー元とコピー先を指定して新しいインスタンスを作る。
+    pub fn new(source: impl Into<CopyDataSource>, target: impl Into<CopyTargetOptions>) -> Self {
+        Self {
+            source: source.into(),
+            target: target.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_target_options_from_string_uses_defaults() {
+        // String からの変換でデフォルトの mode / uid / gid が設定されること。
+        let opts: CopyTargetOptions = "/data/hello.txt".to_string().into();
+        assert_eq!(opts.path, "/data/hello.txt");
+        assert_eq!(opts.mode, 0o644);
+        assert_eq!(opts.uid, 0);
+        assert_eq!(opts.gid, 0);
+    }
+
+    #[test]
+    fn copy_target_options_from_str_uses_defaults() {
+        // &str からの変換でデフォルトの mode / uid / gid が設定されること。
+        let opts: CopyTargetOptions = "/data/hello.txt".into();
+        assert_eq!(opts.path, "/data/hello.txt");
+        assert_eq!(opts.mode, 0o644);
+        assert_eq!(opts.uid, 0);
+        assert_eq!(opts.gid, 0);
+    }
+
+    #[test]
+    fn copy_target_options_with_mode_sets_field_and_accessor() {
+        // with_mode がフィールドと mode() accessor の両方に反映されること。
+        let opts = CopyTargetOptions::new("/data/secret.txt").with_mode(0o600);
+        assert_eq!(opts.mode, 0o600);
+        assert_eq!(opts.mode(), Some(0o600));
+    }
+
+    #[test]
+    fn copy_to_container_accepts_string_target() {
+        // CopyToContainer::new に String / &str を渡しても後方互換で動くこと。
+        let from_string = CopyToContainer::new(
+            CopyDataSource::File("/host/file.txt".into()),
+            "/data/file.txt".to_string(),
+        );
+        assert_eq!(from_string.target.path, "/data/file.txt");
+        assert_eq!(from_string.target.mode, 0o644);
+
+        let from_str = CopyToContainer::new(
+            CopyDataSource::File("/host/file.txt".into()),
+            "/data/file.txt",
+        );
+        assert_eq!(from_str.target.path, "/data/file.txt");
+        assert_eq!(from_str.target.mode, 0o644);
+    }
+
+    #[test]
+    fn io_error_with_host_path_keeps_error_kind_and_embeds_path() {
+        // ErrorKind を維持したまま、メッセージの先頭にホストパスを置き、
+        // 元エラーの表示も含めること。
+        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "simulated not found");
+        let wrapped = io_error_with_host_path(std::path::Path::new("/host/no-such-file"), err);
+        let CopyToContainerError::IoError(e) = wrapped else {
+            panic!("IoError であること");
+        };
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::NotFound,
+            "ErrorKind が維持されること"
+        );
+        let msg = e.to_string();
+        assert!(
+            msg.starts_with("/host/no-such-file: "),
+            "メッセージ先頭にパスがあること: {msg}"
+        );
+        assert!(
+            msg.contains("simulated not found"),
+            "元エラーが含まれること: {msg}"
+        );
+    }
+}
+
+/// `CopyToContainer` のエラー。
+#[derive(Debug)]
+pub enum CopyToContainerError {
+    /// I/O エラー。
+    IoError(std::io::Error),
+    /// パス名のエラー。
+    PathNameError(String),
+    /// 投入サイズの上限超過。
+    SizeLimitExceeded {
+        /// バイト単位の上限。
+        limit: usize,
+        /// 上限超過した対象名。ホストパス・tar エントリ名・固定文字列 `"tar trailer"`
+        /// (トレーラで超過した場合) のいずれか。
+        name: String,
+    },
+}
+
+impl std::fmt::Display for CopyToContainerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CopyToContainerError::IoError(e) => write!(f, "I/O error: {e}"),
+            CopyToContainerError::PathNameError(s) => {
+                write!(f, "copy path error: {s}")
+            }
+            CopyToContainerError::SizeLimitExceeded { limit, name } => {
+                write!(f, "copy size exceeds {limit} bytes: {name}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CopyToContainerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CopyToContainerError::IoError(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for CopyToContainerError {
+    fn from(e: std::io::Error) -> Self {
+        Self::IoError(e)
+    }
+}
+
+/// ホストパスを埋め込んだ `CopyToContainerError::IoError` を生成する。
+///
+/// `ErrorKind` を維持したままメッセージにパスと元エラーの表示を含める
+/// (source チェーンと `raw_os_error` は途切れるが、どのパスで失敗したかの
+/// 診断を優先する)。
+///
+/// パス不存在などの I/O 失敗をエラーに含めて、`with_copy_to` のどのソースが
+/// 失敗したかを特定できるようにするために使う。Linux の `copy_to` でのみ
+/// 使用するため、macOS 本番ビルドではコンパイルしない (単体テストは
+/// macOS でも実行できるようにテストビルドでは含める)。
+///
+/// パス付与の変換自体をローカル (コンテナ不要) で検証できるよう、
+/// `CopyToContainerError` を返す (呼び出し側で `crate::Error::other` に包む)。
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn io_error_with_host_path(
+    path: &std::path::Path,
+    e: std::io::Error,
+) -> CopyToContainerError {
+    let kind = e.kind();
+    let msg = format!("{}: {e}", path.display());
+    CopyToContainerError::IoError(std::io::Error::new(kind, msg))
+}
+
+/// コンテナからのファイルコピー先。
+///
+/// macOS (XPC) では `ContainerAsync::copy_file_from` が `containerCopyOut` で一時ファイルへ
+/// コピーし、そのリーダーをこのトレイトへ渡す。Linux (Docker Engine API) では
+/// `GET /containers/{id}/archive` で取得した tar を自前 ustar パーサ (`docker_tar`) で展開し、
+/// 先頭 regular file の内容を `Cursor` に載せてこのトレイトへ渡す。
+pub trait CopyFileFromContainer: Sized + Send {
+    /// コピー結果の出力型。
+    type Output: Send;
+    /// 非同期リーダーからデータを読み取り、コピー結果を生成する。
+    fn copy_from_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+        self,
+        reader: R,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = std::result::Result<Self::Output, CopyFromContainerError>,
+                > + Send,
+        >,
+    >;
+}
+
+impl CopyFileFromContainer for PathBuf {
+    type Output = ();
+
+    fn copy_from_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+        self,
+        mut reader: R,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = std::result::Result<Self::Output, CopyFromContainerError>,
+                > + Send,
+        >,
+    > {
+        Box::pin(async move {
+            let mut file = tokio::fs::File::create(&self).await?;
+            tokio::io::copy(&mut reader, &mut file).await?;
+            Ok(())
+        })
+    }
+}
+
+impl CopyFileFromContainer for Vec<u8> {
+    type Output = Vec<u8>;
+
+    fn copy_from_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
+        self,
+        mut reader: R,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = std::result::Result<Self::Output, CopyFromContainerError>,
+                > + Send,
+        >,
+    > {
+        Box::pin(async move {
+            let mut buf = self;
+            buf.clear();
+            tokio::io::copy(&mut reader, &mut buf).await?;
+            Ok(buf)
+        })
+    }
+}
+
+/// `CopyFileFromContainer` のエラー。
+#[derive(Debug)]
+pub enum CopyFromContainerError {
+    /// I/O エラー。
+    Io(std::io::Error),
+    /// コピー対象がディレクトリである。
+    IsDirectory,
+    /// アーカイブが空である。
+    EmptyArchive,
+    /// サポートされていないエントリ種別である。
+    UnsupportedEntry(&'static str),
+}
+
+impl std::fmt::Display for CopyFromContainerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CopyFromContainerError::Io(e) => write!(f, "I/O error: {e}"),
+            CopyFromContainerError::IsDirectory => write!(f, "is a directory"),
+            CopyFromContainerError::EmptyArchive => write!(f, "empty archive"),
+            CopyFromContainerError::UnsupportedEntry(s) => write!(f, "unsupported entry type: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for CopyFromContainerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            CopyFromContainerError::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for CopyFromContainerError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}

@@ -1,0 +1,6 @@
+# Clippy 設定 (lint レベルではなく挙動のみをここで指定する)
+
+# #[test] 関数と #[cfg(test)] 内の expect を許可する (tests/ の非 #[test] ヘルパは対象外)
+allow-expect-in-tests = true
+# #[test] 関数と #[cfg(test)] 内の panic! を許可する (tests/ の非 #[test] ヘルパは対象外)
+allow-panic-in-tests = true
