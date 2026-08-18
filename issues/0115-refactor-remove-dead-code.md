@@ -1,7 +1,7 @@
 # リファクタリング: 未使用・不要なコードを削除する (死にコードの削除)
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-18
 - Branch: feature/refactor-remove-dead-code
 - Polished: {YYYY-MM-DD}
 
@@ -68,3 +68,13 @@
 - 上記 6 項目がすべて削除されていること
 - 削除前後で公開 API の挙動が変わらないこと (テストの変更は項目 6 の Display 検証のみ)
 - ビルド・clippy・全テストが通ること
+
+## 解決方法
+
+- 項目 1 (`resolve_or_pull_linux` の戻り値): 関数を `Result<()>` 化し、呼び出し側の `let _desc_raw =` 受け捨てを消した。pull 後の再 resolve の戻り値 (digest) は未使用のため破棄する旨をコメントに明記した
+- 項目 2 (`unsafe impl Send for XpcConn`): `src/xpc/conn.rs` から削除した (削除後も `cargo check` が通ることを確認済み)
+- 項目 3 (watchdog の委譲ラッパー): `src/watchdog.rs` の `is_valid_container_id` ラッパーと、`src/core/util.rs` の検証テストと同じ入力を再テストしていた 2 本のテスト (`accepts_valid_container_ids` / `rejects_invalid_container_ids`) を削除し、`crate::core::util::is_valid_container_id` を直接呼ぶようにした
+- 項目 4 (`env.rs` の `Config`): ユニット構造体を削除し、フリー関数 `command()` に置き換えた。呼び出し側 4 箇所 (`async_runner.rs` 3 箇所・`async_container.rs` 1 箇所) を `crate::core::env::command()` に更新した
+- 項目 5 (Makefile の `cover`): ターゲットと `.PHONY` のエントリを削除した
+- 項目 6 (`WaitLogError::EndOfStream`): 型を `Vec<Vec<u8>>` から `Vec<u8>` に縮め、Display を「末尾 1024 バイトの単純なプレビュー」に置き換えた。`CollectedLogs::into_chunks` は `into_bytes` に改名して `Vec<u8>` を返すようにし、`log_strategy.rs` の単体テスト・`tests/container_macos.rs` の統合テスト・`docs/TESTCONTAINERS.md`・`skills/shiguredo-container/SKILL.md` の型記述を更新した
+- 検証: `cargo fmt` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --all-features` (357 本) がすべて通ることを確認した
