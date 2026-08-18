@@ -1,7 +1,7 @@
 # バグ: macOS の published port で大容量レスポンスが遅い消費者に対して途中で切断される
 
 - Created: 2026-08-18
-- Completed: 2026-08-18
+- Completed:
 - Branch: feature/fix-macos-published-port-large-transfer-truncation
 - Polished: 2026-08-18
 
@@ -76,3 +76,24 @@ http11-rs の nginx 統合テスト (`examples/http11_client/tests/nginx_upload.
 - `docs/TESTCONTAINERS.md` の 10.3 節の注記・`README.md` の WARNING・`skills/shiguredo-container/SKILL.md` の既知の制限事項に、macOS の published port で大容量レスポンスが遅い消費者に対して途中切断され得る制約と回避策 (コンテナ IP 直結) を明記した
 - `CHANGES.md` の misc セクションに、再現テスト追加のエントリを追記した (`.md` ドキュメント変更分は非対象)
 - Apple へのフィードバック (Feedback Assistant 等) は送付しない判断とした。本 issue の観測記録 (再現手順・切り分け結果・観測数値) を報告材料として残す
+
+## pending にする理由 (2026-08-18)
+
+原因は Apple 側 (`container-runtime-linux` のポートフォワーダー) の背圧欠落によるバッファ溢れ時のデータ切り捨てで、本クレート単体では修正できない。closed で「文書化して完了」とみなしていたが、本質的にバグは未解決のままであり、`shiguredo-issues` の定義 (「外部依存の追加や設計判断が必要で保留中」) に照らして pending が正しい状態である。既知のバグとして追跡を継続し、Apple 側での修正 (published port フォワーダーの背圧対応・データ切り捨ての解消) を待つ。
+
+### pending 中の扱い
+
+- 制約と回避策の文書化は完了しているため、下流利用者は `docs/TESTCONTAINERS.md`・`README.md`・`skills/shiguredo-container/SKILL.md` の該当節を参照して回避する
+- 回避策: macOS で published port 経由の大容量レスポンス (数 MiB 以上) を扱う場合は、`ContainerAsync::get_bridge_ip_address` で取得したコンテナ IP に直接接続する
+- 再現テスト (`tests/nginx_http11.rs` の `published_port_large_response_truncates_for_slow_consumer`) は `RUN_HOST_NETWORK_TESTS=1` ゲート付きで残しており、Apple 側の状況変化を検知する道具として利用できる (現在は「切断を観測しても失敗にはしない」実装。修正確認後に「完全受信を期待する」実装へ切り替える)
+
+### 下流への影響 (2026-08-18 時点)
+
+- http11-rs の `examples/http11_client/tests/nginx_upload.rs` の `put_10mb_binary_roundtrip` が macOS 上で本バグにより約 85 % 失敗する。CI が Linux のみであれば実害は無いが、macOS ローカルで実行するとテストが不安定になる。回避策は http11-rs 側で判断する (例: `#[cfg(target_os = "linux")]` によるプラットフォーム限定化、コンテナ IP 直結への切り替え)
+
+### reopened / closed への移行条件
+
+- Apple 側で published port フォワーダーの背圧・データ切り捨てが修正されたことを再現テストで確認できたら、本 issue を reopened に戻し、次の 2 点を実施する
+  - 再現テストの期待値を「切断が観測されないこと (完全受信)」に更新する
+  - `docs/TESTCONTAINERS.md`・`README.md`・`skills/shiguredo-container/SKILL.md` の該当節から制約記述を除去する
+- 上記が完了した時点で closed に移す
