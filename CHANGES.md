@@ -11,6 +11,10 @@
 
 ## develop
 
+### misc
+- [UPDATE] PBT を proptest から noprop に切り替える
+  - @voluntas
+
 ## 2026.1.0
 
 **リリース日**: 2026-08-18

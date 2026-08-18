@@ -744,25 +744,79 @@ mod tests {
     }
 
     mod pbt {
-        use super::super::*;
-        use proptest::prelude::*;
+        use std::cell::Cell;
 
-        proptest! {
-            /// 任意の (name, data, mode, uid, gid) について encode → decode で元データが復元されること。
-            #[test]
-            fn round_trip_single_file(
-                name in "[a-zA-Z0-9_.-]{1,99}",
-                data in proptest::collection::vec(any::<u8>(), 0..2048),
-                mode in 0u32..0o7777,
-                uid in 0u32..0o7777777,
-                gid in 0u32..0o7777777,
-            ) {
+        use super::super::*;
+
+        #[test]
+        fn round_trip_single_file() -> noprop::TestResult {
+            let seed = noprop::seed_from_env_or_time("CONTAINER_RS_SEED")?;
+            let mut runner = noprop::Runner::new(seed);
+            // データ長が空・非空の両方の到達回数を数える。
+            let empty_data = Cell::new(0usize);
+            let non_empty_data = Cell::new(0usize);
+
+            runner.run(256, |ctx| {
+                // 名前長 (1..=99) とデータ長 (0..=2048) を境界を含めて選ぶ。
+                let name_len = noprop::sample_with_boundaries(
+                    ctx,
+                    &[1usize, 99],
+                    noprop::Ratio::one_nth(4),
+                    |ctx| noprop::sample_usize_in(ctx, 1..=99),
+                );
+                let data_len = noprop::sample_with_boundaries(
+                    ctx,
+                    &[0usize, 2048],
+                    noprop::Ratio::one_nth(4),
+                    |ctx| noprop::sample_usize_in(ctx, 0..=2048),
+                );
+                // 名前は `[a-zA-Z0-9_.-]` のみから生成する (パス区切りを含まず prefix 分割されない)。
+                let name = sample_tar_name(ctx, name_len);
+                let data = noprop::sample_bytes_vec(ctx, data_len);
+                let mode = noprop::sample_usize_in(ctx, 0..0o7777) as u32;
+                let uid = noprop::sample_usize_in(ctx, 0..0o7777777) as u32;
+                let gid = noprop::sample_usize_in(ctx, 0..0o7777777) as u32;
+
                 let tar = build_single_file_ustar(&name, &data, mode, uid, gid)
                     .expect("build が成功すること");
-                let parsed = parse_first_regular_file_from_ustar(&tar)
-                    .expect("parse が成功すること");
-                prop_assert_eq!(parsed, data);
+                let parsed =
+                    parse_first_regular_file_from_ustar(&tar).expect("parse が成功すること");
+                assert_eq!(parsed, data, "encode → decode で元データが復元されること");
+
+                // 到達ゲートは不変条件の評価地点で数える。
+                if data.is_empty() {
+                    empty_data.set(empty_data.get() + 1);
+                } else {
+                    non_empty_data.set(non_empty_data.get() + 1);
+                }
+                Ok(())
+            })?;
+
+            assert!(
+                empty_data.get() > 0,
+                "空データのケースが 1 件も実行されていないこと\n{runner}"
+            );
+            assert!(
+                non_empty_data.get() > 0,
+                "非空データのケースが 1 件も実行されていないこと\n{runner}"
+            );
+            Ok(())
+        }
+
+        /// `[a-zA-Z0-9_.-]` の 65 文字のみからなる長さ `len` の名前を生成する。
+        fn sample_tar_name(ctx: &mut noprop::TestCaseContext, len: usize) -> String {
+            let mut name = String::with_capacity(len);
+            for _ in 0..len {
+                name.push(match noprop::sample_usize_in(ctx, 0..65) {
+                    i @ 0..26 => (b'a' + i as u8) as char,
+                    i @ 26..52 => (b'A' + (i - 26) as u8) as char,
+                    i @ 52..62 => (b'0' + (i - 52) as u8) as char,
+                    62 => '_',
+                    63 => '.',
+                    _ => '-',
+                });
             }
+            name
         }
     }
 }

@@ -6,6 +6,6 @@ publish = false
 
 [dev-dependencies]
 # Property-Based Testing
-proptest = "1.11"
+noprop = "0.2"
 # 公開 API に対する PBT
 shiguredo_container = { path = ".." }
