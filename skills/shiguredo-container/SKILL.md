@@ -86,6 +86,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 ## イメージ pull とレジストリ認証
 
 - Linux の private registry 認証は `DOCKER_AUTH_CONFIG`、`DOCKER_CONFIG/config.json`、`~/.docker/config.json` の順で `auths` の静的エントリを探索し、`X-Registry-Auth` を付与する。credential helper は未対応
+- `DOCKER_CONFIG` が非空で設定されている場合、docker CLI と同じくそのディレクトリのみを参照し、config.json が読めなくても `~/.docker/config.json` へフォールバックしない (認証なしとして扱う)。`DOCKER_CONFIG=""` は未設定と同じ扱い
 - `docker.io/...` / `index.docker.io/...` は Docker CLI と同じ `https://index.docker.io/v1/` の認証キーへ正規化する
 - Linux の pull が HTTP エラーになった場合は、Docker daemon のレスポンスに `message` があればエラー文へ含める
 

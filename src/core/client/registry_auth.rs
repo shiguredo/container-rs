@@ -50,7 +50,12 @@ pub(crate) fn x_registry_auth(descriptor: &str) -> Option<String> {
 
 /// 認証設定の JSON 文字列を読み込む。
 ///
-/// 優先順: DOCKER_AUTH_CONFIG > DOCKER_CONFIG/config.json > ~/.docker/config.json
+/// 優先順: `DOCKER_AUTH_CONFIG` > `DOCKER_CONFIG/config.json` > `~/.docker/config.json`。
+///
+/// `DOCKER_CONFIG` が非空で設定されている場合、docker CLI (`config.Dir()`) と同じく
+/// そのディレクトリのみを参照し、`~/.docker/config.json` へフォールバックしない
+/// (config.json が読めなければ認証なしで返す)。`DOCKER_CONFIG=""` は未設定と同じ扱い
+/// (docker CLI 準拠)。
 fn load_config_json() -> Option<String> {
     // 環境変数 DOCKER_AUTH_CONFIG (config.json 相当の JSON 文字列)
     if let Ok(json) = std::env::var("DOCKER_AUTH_CONFIG")
@@ -59,15 +64,17 @@ fn load_config_json() -> Option<String> {
         return Some(json);
     }
 
-    // DOCKER_CONFIG ディレクトリ配下の config.json
-    if let Ok(dir) = std::env::var("DOCKER_CONFIG") {
+    // DOCKER_CONFIG ディレクトリ配下の config.json。
+    // 非空で設定されている場合のみ有効とし、そのディレクトリだけを見る
+    // (~/.docker へフォールバックしない)。空文字は未設定と同じ扱い。
+    if let Ok(dir) = std::env::var("DOCKER_CONFIG")
+        && !dir.is_empty()
+    {
         let path = std::path::Path::new(&dir).join("config.json");
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            return Some(content);
-        }
+        return std::fs::read_to_string(&path).ok();
     }
 
-    // ~/.docker/config.json
+    // ~/.docker/config.json (DOCKER_CONFIG が未設定・空文字の場合のみ)
     if let Some(home) = home_dir() {
         let path = home.join(".docker").join("config.json");
         if let Ok(content) = std::fs::read_to_string(&path) {
@@ -386,6 +393,264 @@ mod tests {
         assert_eq!(
             password, "pa\tss\u{0001}",
             "タブと制御文字を含む password が復元されること"
+        );
+    }
+
+    // 親テストから子プロセスへ「load_config_json 子テストとして起動されたこと」を伝える。
+    // 環境変数はプロセスグローバルなため、`DOCKER_CONFIG` / `HOME` の書き換えを親でやると
+    // 並列実行中の他テストと競合する (Rust 2024 では UB)。既存の DOCKER_AUTH_CONFIG
+    // テストと同じ子プロセス分離方式で、環境変数を子側にだけセットする。
+    const LOAD_CONFIG_TEST_CHILD_ENV: &str = "SHIGUREDO_CONTAINER_LOAD_CONFIG_TEST_CHILD";
+
+    // 子テストが実際に検証を実行したことを親に示すマーカー。
+    // libtest の `--exact <name>` は該当テスト 0 件でも exit 0 を返すため、
+    // 子テスト名にタイポがあると親 assert が silent-pass する。この文字列を
+    // 子側 stdout に出力し、親がそれを検出することで silent-pass を防ぐ。
+    const LOAD_CONFIG_CHILD_MARKER: &str = "__LOAD_CONFIG_CHILD_RAN__";
+
+    /// テスト用の一時ディレクトリ名に付けるサフィックスを生成する。
+    ///
+    /// `core::util` モジュールは macOS 限定 (`src/core.rs` の `#[cfg(target_os = "macos")]`)
+    /// のため、Linux 専用の本モジュールから `unique_suffix` を参照できない。並列テスト
+    /// 間で名前が衝突しないよう、プロセス ID・ナノ秒・アトミックカウンタで一意性を
+    /// 担保する (`unique_suffix` と同じ方針の再実装)。
+    fn test_unique_suffix() -> String {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{}-{}-{}", std::process::id(), nanos, count)
+    }
+
+    /// テストの後始末を保証するための Drop ガード。
+    ///
+    /// 一時ディレクトリを作った直後に `TempDirGuard::new` で包むと、
+    /// `spawn_load_config_child` の assert が panic した場合でも Drop で
+    /// `remove_dir_all` を呼び、`/tmp` に残骸を蓄積させない。
+    /// テスト内で明示的な remove を書かなくて済む。
+    struct TempDirGuard(std::path::PathBuf);
+
+    impl TempDirGuard {
+        /// `tag` は一時ディレクトリ名に埋め込まれる識別子で、
+        /// `container-rs-load-config-test-{tag}-{unique_suffix}` の形になる。
+        /// テストを識別できる短い kebab-case を渡す (例: `"docker-over-home"`)。
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "container-rs-load-config-test-{tag}-{}",
+                test_unique_suffix()
+            ));
+            std::fs::create_dir_all(&dir).expect("一時ディレクトリの作成に失敗した");
+            Self(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `DOCKER_CONFIG` 環境変数の状態を 3 通りで表す。
+    ///
+    /// `spawn_load_config_child` に渡して、子プロセスの環境をこの状態にセットする。
+    /// `Option<&Path>` では表現できない「非空で空文字」を含める。
+    enum DockerConfigArg<'a> {
+        /// `env_remove("DOCKER_CONFIG")` (親環境から継承しない)。
+        Unset,
+        /// `env("DOCKER_CONFIG", "")` (空文字。docker CLI 準拠で未設定と同じ扱い)。
+        Empty,
+        /// `env("DOCKER_CONFIG", path)`。
+        Set(&'a std::path::Path),
+    }
+
+    /// 子テストを起動して結果を検証する共通ヘルパ。
+    ///
+    /// - `docker_config` は `DockerConfigArg` の 3 状態 (Unset / Empty / Set(path))
+    /// - `home` は `Some(path)` でセット、`None` で `env_remove` する
+    /// - 親環境の `DOCKER_AUTH_CONFIG` は常に除去する (認証優先順位を壊さないため)
+    /// - `--exact <name>` の 0 マッチ silent-pass を防ぐため、子側 stdout に
+    ///   `LOAD_CONFIG_CHILD_MARKER` が出力されていることを親側で必ず検証する
+    fn spawn_load_config_child(
+        child_name: &str,
+        docker_config: DockerConfigArg<'_>,
+        home: Option<&std::path::Path>,
+    ) {
+        let executable = std::env::current_exe().expect("テストバイナリのパスを取得できること");
+        let mut cmd = std::process::Command::new(executable);
+        // `--nocapture` を必ず付ける: libtest はデフォルトで各テストの stdout を
+        // 内部バッファに取り込み成功時は破棄するため、`println!` によるマーカーが
+        // 親側の `output.stdout` に流れない。`--nocapture` で fd 1 に直接流す。
+        cmd.args(["--exact", child_name, "--nocapture"])
+            .env(LOAD_CONFIG_TEST_CHILD_ENV, "1")
+            .env_remove("DOCKER_AUTH_CONFIG");
+        match docker_config {
+            DockerConfigArg::Unset => {
+                cmd.env_remove("DOCKER_CONFIG");
+            }
+            DockerConfigArg::Empty => {
+                cmd.env("DOCKER_CONFIG", "");
+            }
+            DockerConfigArg::Set(p) => {
+                cmd.env("DOCKER_CONFIG", p);
+            }
+        }
+        match home {
+            Some(p) => {
+                cmd.env("HOME", p);
+            }
+            None => {
+                cmd.env_remove("HOME");
+            }
+        }
+        let output = cmd.output().expect("子テストを起動できること");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "子テストが成功すること: status={}, stdout={stdout}, stderr={stderr}",
+            output.status
+        );
+        // 子テスト名が --exact にマッチしなかった (タイポ等) 場合、libtest は
+        // 0 件マッチでも exit 0 を返すため status.success() だけでは silent-pass する。
+        // 子テストが実際に検証パスに入ったことをマーカーで確認する。
+        assert!(
+            stdout.contains(LOAD_CONFIG_CHILD_MARKER),
+            "子テストが検証パスに入ったこと (0 マッチ silent-pass 防止): child={child_name}, stdout={stdout}"
+        );
+    }
+
+    #[test]
+    fn load_config_json_reads_docker_config_dir_over_home() {
+        // DOCKER_CONFIG が指定されていれば ~/.docker/config.json より優先されること。
+        let base = TempDirGuard::new("docker-over-home");
+        let docker_config = base.path().join("docker_config");
+        std::fs::create_dir(&docker_config).expect("docker_config ディレクトリの作成に失敗した");
+        std::fs::write(docker_config.join("config.json"), b"from-docker-config")
+            .expect("docker_config の config.json 書き込みに失敗した");
+        let home = base.path().join("home");
+        std::fs::create_dir_all(home.join(".docker")).expect("home/.docker の作成に失敗した");
+        std::fs::write(home.join(".docker/config.json"), b"from-home")
+            .expect("home 側の config.json 書き込みに失敗した");
+
+        spawn_load_config_child(
+            "core::client::registry_auth::tests::load_config_json_reads_docker_config_dir_over_home_child",
+            DockerConfigArg::Set(&docker_config),
+            Some(&home),
+        );
+    }
+
+    #[test]
+    fn load_config_json_reads_docker_config_dir_over_home_child() {
+        if std::env::var_os(LOAD_CONFIG_TEST_CHILD_ENV).is_none() {
+            return;
+        }
+        println!("{LOAD_CONFIG_CHILD_MARKER}");
+        let actual = load_config_json();
+        assert_eq!(
+            actual.as_deref(),
+            Some("from-docker-config"),
+            "DOCKER_CONFIG 指定時はその config.json が優先されること (実際: {actual:?})"
+        );
+    }
+
+    #[test]
+    fn load_config_json_none_when_docker_config_missing_and_no_home_fallback() {
+        // DOCKER_CONFIG 指定 (非空) + そこに config.json が無い場合、
+        // ~/.docker/config.json にフォールバックせず None を返すこと (docker CLI 準拠)。
+        let base = TempDirGuard::new("no-fallback");
+        let docker_config = base.path().join("docker_config");
+        // 意図的に config.json は作らない (空ディレクトリ)。
+        std::fs::create_dir(&docker_config).expect("docker_config ディレクトリの作成に失敗した");
+        let home = base.path().join("home");
+        std::fs::create_dir_all(home.join(".docker")).expect("home/.docker の作成に失敗した");
+        // ~/.docker/config.json は存在するが、フォールバックしないため読まれないはず。
+        std::fs::write(home.join(".docker/config.json"), b"from-home")
+            .expect("home 側の config.json 書き込みに失敗した");
+
+        spawn_load_config_child(
+            "core::client::registry_auth::tests::load_config_json_none_when_docker_config_missing_and_no_home_fallback_child",
+            DockerConfigArg::Set(&docker_config),
+            Some(&home),
+        );
+    }
+
+    #[test]
+    fn load_config_json_none_when_docker_config_missing_and_no_home_fallback_child() {
+        if std::env::var_os(LOAD_CONFIG_TEST_CHILD_ENV).is_none() {
+            return;
+        }
+        println!("{LOAD_CONFIG_CHILD_MARKER}");
+        let actual = load_config_json();
+        assert_eq!(
+            actual, None,
+            "DOCKER_CONFIG 指定 (非空) + config.json 不在なら None を返し ~/.docker/config.json にフォールバックしないこと (実際: {actual:?})"
+        );
+    }
+
+    #[test]
+    fn load_config_json_reads_home_when_docker_config_unset() {
+        // DOCKER_CONFIG が未設定なら ~/.docker/config.json を読むこと (従来挙動)。
+        let base = TempDirGuard::new("home-fallback");
+        let home = base.path().join("home");
+        std::fs::create_dir_all(home.join(".docker")).expect("home/.docker の作成に失敗した");
+        std::fs::write(home.join(".docker/config.json"), b"from-home")
+            .expect("home 側の config.json 書き込みに失敗した");
+
+        spawn_load_config_child(
+            "core::client::registry_auth::tests::load_config_json_reads_home_when_docker_config_unset_child",
+            DockerConfigArg::Unset,
+            Some(&home),
+        );
+    }
+
+    #[test]
+    fn load_config_json_reads_home_when_docker_config_unset_child() {
+        if std::env::var_os(LOAD_CONFIG_TEST_CHILD_ENV).is_none() {
+            return;
+        }
+        println!("{LOAD_CONFIG_CHILD_MARKER}");
+        let actual = load_config_json();
+        assert_eq!(
+            actual.as_deref(),
+            Some("from-home"),
+            "DOCKER_CONFIG 未設定時は ~/.docker/config.json が読まれること (実際: {actual:?})"
+        );
+    }
+
+    #[test]
+    fn load_config_json_treats_empty_docker_config_as_unset() {
+        // DOCKER_CONFIG="" は未設定と同じ扱い (docker CLI 準拠)。
+        // ~/.docker/config.json にフォールバックする。
+        let base = TempDirGuard::new("empty-docker-config");
+        let home = base.path().join("home");
+        std::fs::create_dir_all(home.join(".docker")).expect("home/.docker の作成に失敗した");
+        std::fs::write(home.join(".docker/config.json"), b"from-home")
+            .expect("home 側の config.json 書き込みに失敗した");
+
+        spawn_load_config_child(
+            "core::client::registry_auth::tests::load_config_json_treats_empty_docker_config_as_unset_child",
+            DockerConfigArg::Empty,
+            Some(&home),
+        );
+    }
+
+    #[test]
+    fn load_config_json_treats_empty_docker_config_as_unset_child() {
+        if std::env::var_os(LOAD_CONFIG_TEST_CHILD_ENV).is_none() {
+            return;
+        }
+        println!("{LOAD_CONFIG_CHILD_MARKER}");
+        let actual = load_config_json();
+        assert_eq!(
+            actual.as_deref(),
+            Some("from-home"),
+            "DOCKER_CONFIG=\"\" は未設定と同じ扱いで ~/.docker/config.json が読まれること (実際: {actual:?})"
         );
     }
 
