@@ -1,7 +1,7 @@
 # バグ: DOCKER_CONFIG 指定時に ~/.docker/config.json へフォールバックする
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-18
 - Branch: feature/fix-registry-auth-config-fallback
 - Polished: 2026-08-12
 
@@ -42,3 +42,17 @@ if let Ok(dir) = std::env::var("DOCKER_CONFIG") {
 - 上記の検証は子プロセス分離方式の単体テストで行うこと (HOME を一時ディレクトリへ差し替え、親環境の `DOCKER_AUTH_CONFIG` は `env_remove` で排除する)
 - 修正で陳腐化する `skills/shiguredo-container/SKILL.md` の認証情報探索の記述が更新されること
 - `CHANGES.md` に `[FIX]` エントリが記載されること
+
+## 解決方法
+
+- `src/core/client/registry_auth.rs` の `load_config_json` を修正し、`DOCKER_CONFIG` が非空で設定されている場合はそのディレクトリのみを参照し、`read_to_string` が失敗しても `~/.docker/config.json` へフォールバックしないようにした (docker CLI の `config.Dir()` 相当の挙動)。`DOCKER_CONFIG=""` (空文字) は未設定と同じ扱いで `~/.docker/config.json` を読む
+- 単体テストは子プロセス分離方式で 4 ケースを検証: DOCKER_CONFIG 指定 (非空) + config.json 存在 → その config.json / DOCKER_CONFIG 指定 (非空) + config.json 不在 → None (~/.docker へフォールバックしない) / DOCKER_CONFIG 未設定 → ~/.docker/config.json / DOCKER_CONFIG="" → 未設定と同じ扱い
+- 子プロセス起動時に親環境の `DOCKER_AUTH_CONFIG` を `env_remove` で必ず排除する。子側 stdout にマーカー (`__LOAD_CONFIG_CHILD_RAN__`) を出力し親側で検出することで、libtest の `--exact` 0 マッチ silent-pass を防ぐ (子起動 args に `--nocapture` を付けて libtest の stdout capture を回避)
+- `DOCKER_CONFIG` の 3 状態 (未設定 / 空文字 / 非空) を `DockerConfigArg` enum で扱い、テストヘルパ `spawn_load_config_child` に統合した
+- 一時ディレクトリの後始末は `TempDirGuard` (Drop 実装) で管理し、テスト panic 時も `/tmp` に残骸を残さない
+- `skills/shiguredo-container/SKILL.md` の認証情報探索の記述に、`DOCKER_CONFIG` 指定時のフォールバック挙動と空文字の扱いを追記した
+- `CHANGES.md` の develop セクションに `[FIX]` エントリを追加した
+
+### 未対応 (別 issue 化候補)
+
+- 既存の `x_registry_auth_docker_hub_child` テストも同じ silent-pass 問題を抱える。共通ヘルパ化 or marker 対応の水平展開は本 PR の範囲外
