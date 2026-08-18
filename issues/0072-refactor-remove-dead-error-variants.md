@@ -1,7 +1,7 @@
 # リファクタリング: 未使用のエラー型バリアントを削除する
 
 - Created: 2026-08-02
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-18
 - Branch: feature/refactor-remove-dead-error-variants
 - Polished: {YYYY-MM-DD}
 
@@ -32,6 +32,12 @@
 
 ## 解決方法
 
-- `src/core/error.rs` から 5 個のバリアント・型・`From` 実装・Display を削除する
-- 削除に伴う単体テスト (`error.rs` 内の roundtrip テスト) を整理する
-- CHANGES.md に [CHANGE] を追記し、docs/TESTCONTAINERS.md 17 章を修正する
+- `src/core/error.rs` から以下を削除した (いずれも構築箇所 0 件を再確認済み):
+  - `Error::MissingInfo` バリアントと `ContainerMissingInfo` 型・`From<ContainerMissingInfo> for Error`・Display 実装
+  - `WaitContainerError::StateUnavailable` バリアント
+  - `ClientError::XpcNullReply` バリアント
+  - `ExecError::WaitLog` バリアントと `From<WaitLogError> for ExecError`
+- 削除に伴い `src/core/error.rs` 内の単体テスト (`exec_error_wait_log_roundtrip` / `container_missing_info_display_contains_id_and_path`) を削除した
+- `docs/TESTCONTAINERS.md` 17 章の該当行とサマリ件数 (対応 287→283 / shiguredo 拡張 24→23) を修正した。17 章の節番号は繰り上げた (`ContainerMissingInfo` 節の削除)
+- `skills/shiguredo-container/SKILL.md` のエラー型一覧も同様に修正した (docs と同じ情報のため)
+- CHANGES.md への [CHANGE] 追記は行わなかった。2026.1.0 の正式リリース前で変更履歴が未作成のため、リリース時に一括で記載する方針 (メンテナ判断) による
