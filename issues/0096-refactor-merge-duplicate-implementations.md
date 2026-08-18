@@ -1,7 +1,7 @@
 # リファクタリング: 同一実装の重複を統合する
 
 - Created: 2026-08-04
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-18
 - Branch: feature/refactor-merge-duplicate-implementations
 - Polished: {YYYY-MM-DD}
 - Updated: 2026-08-05
@@ -43,15 +43,16 @@
 
 ## 解決方法
 
-- `src/core/client/xpc_client.rs` の `wait_blocking` 系 2 関数と `bridge_ip_address` / `gateway_ip_address` を統合する
-- LogConsumer の行配信ループを共通ヘルパーに抽出する (両プラットフォームから呼ぶ)
-- `exec` の env マージを共通処理にまとめる
-- `src/runners/async_runner.rs` の `resolve_or_pull_linux` を macOS 側と同じ条件 (404 限定) に揃える
-- `xpc::Filters` の `labels` フィールドを削除する
-- `escape_json_value` と `escape_json` を共通のエスケープ本体に集約する (引用符の有無は呼び出し側で付ける)
-- `demux_exec_stream` と `FrameDemuxer` を共通の demux 処理に統合する
-- `percent_encode_path_segment` / `percent_encode_component` を 1 関数に統合する (必要なら呼び出し側に文脈コメントを付ける)
-- `docker_client.rs` の inspect エラー処理 4 箇所を共通ヘルパーに畳み込む
-- `ContainerAsync::rm` の macOS / Linux 2 重複を `rm_blocking` と同じ 1 本化に揃える
-- env の BTreeMap 畳み込み 4 箇所 (build 側 2 箇所 + exec 側 2 箇所) を共通処理にまとめる
-- `xpc_client.rs` に `spawn_blocking` + `connect` の共通ラッパーを導入し、各メソッドの定型 4 行を置換する
+- `wait_blocking` / `wait_blocking_with_timeout` (`src/core/client/xpc_client.rs`): `wait_blocking(id, process_id, timeout)` に統合した (呼び出し側 2 箇所を更新)
+- `bridge_ip_address` / `gateway_ip_address` (`xpc_client.rs`): キー (`ipv4Address` / `ipv4Gateway`) とエラーメッセージ用ラベルを引数に取る `network_address` に統合した
+- `xpc::Filters.labels` (`src/xpc/conn.rs`): 削除を試みたが、Apple container の XPC デコーダが `labels` キーを必須として要求することを統合テストで検出したため**復元した** (常に空でも送る必要がある。削除すると全 start が `DecodingError.keyNotFound: Key 'labels'` で失敗する)
+- `percent_encode_path_segment` / `percent_encode_component` (`docker_client.rs`): 実体が同一の別名だったため `percent_encode` 1 関数に統合した (呼び出し側・ログストリーム側を更新)
+- `escape_json_value` / `escape_json` (`docker_client.rs` / `registry_auth.rs`): 引用符なしのエスケープ本体 `escape_json_value` と、引用符付きラッパー `escape_json` に集約した。`registry_auth` は共通実装を `use` で参照し、重複テストは `docker_client` 側に集約した
+- `ContainerAsync::rm` の macOS / Linux 2 重複 (`async_container.rs`): `rm_blocking` と同じ cfg アームの 1 本化に揃えた
+- inspect エラー処理 4 重複 (`docker_client.rs`): `inspect_json` ヘルパー (404 → `ContainerNotFound`・4xx/5xx → `Other`・パース) に畳み込んだ。`nojson::RawJsonOwned` を返すため `parse_ports` の引数型も合わせた
+- env の BTreeMap 畳み込み 4 箇所 (build 側 2 箇所 + exec 側 2 箇所): `src/core/env.rs` の `fold_env(base, overrides)` に統合した
+- LogConsumer の行配信ループ (macOS / Linux): `src/core/logs/line.rs` の `deliver_line_to_consumers` に統合した (EOF / エラーの終了判定は呼び出し側の責任)
+- `spawn_blocking` + `connect` 定型パターン (`xpc_client.rs`): `call(service, |conn| ...)` ラッパーを導入し、13 メソッドの定型 4 行を置換した (同期関数 `wait_blocking` / `remove_blocking` と `with_first_container` は対象外)
+- pull の二重構造 (`docker_client.rs` / `async_runner.rs`): `DockerClient::resolve_image_descriptor` を純粋な resolve (pull しない) に変え、`resolve_or_pull_linux` を macOS と同じ「`ImageNotFound` のときだけ pull 再試行 (他エラーは伝播)」に統一した。pull が 2 回走り得る構造と、非 ImageNotFound エラーでも pull していた経路を解消した
+- **demux 統合 (`demux_exec_stream` / `FrameDemuxer`) は実施しなかった**: exec 用 (全蓄積後の一括 parse) とログ用 (上限付きストリーミング状態機械) は構造が本質的に異なり、無理に統合すると exec の 64 MiB 上限・部分フレーム破棄の挙動を変え得る。対象は Linux 専用コードで、ローカルでは Docker daemon ありの統合テストを実行できない (クロスリンカも無い)。`Filters.labels` の削除が実機 (XPC デコーダ) で必須キーにより失敗した事例を踏まえ、「消せる・統合できるはず」という前提を実機未検証のまま信じない判断とした。将来 2 経路の仕様が揃うタイミングで再検討する
+- 検証: `cargo fmt` / `cargo clippy --all-targets --all-features -- -D warnings` (macOS / Linux target 双方) / `cargo test --all-features` (357 本) がすべて通ることを確認した。Linux の統合テスト (Docker daemon 必要) は CI (`test-linux-docker`) で検証する
