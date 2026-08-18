@@ -115,11 +115,11 @@ impl DockerClient {
         // Docker Engine API は query 値の `/` 等を percent-encode する必要がある。
         let mut path = format!(
             "/images/create?fromImage={}&tag={}",
-            percent_encode_component(image),
-            percent_encode_component(tag)
+            percent_encode(image),
+            percent_encode(tag)
         );
         if let Some(platform) = platform {
-            path.push_str(&format!("&platform={}", percent_encode_component(platform)));
+            path.push_str(&format!("&platform={}", percent_encode(platform)));
         }
         // プライベートレジストリ認証があれば X-Registry-Auth ヘッダを付与する。
         let auth_header = super::registry_auth::x_registry_auth(descriptor);
@@ -158,48 +158,25 @@ impl DockerClient {
         Ok(())
     }
 
-    /// イメージの descriptor を解決する。
-    /// ローカルに存在しなければプルして再試行する。
-    pub(crate) async fn resolve_image_descriptor(
-        &self,
-        descriptor: &str,
-        platform: Option<&str>,
-    ) -> Result<String> {
+    /// イメージの descriptor を解決する (pull はしない)。
+    ///
+    /// 404 は `ImageNotFound`、それ以外の 4xx / 5xx は `Other` に分類する。
+    /// pull は呼び出し側 (async_runner の `resolve_or_pull_linux`) が
+    /// `ImageNotFound` のときだけ行う (macOS と同じ規則。この関数内の pull による
+    /// 二重構造は廃止した)。
+    pub(crate) async fn resolve_image_descriptor(&self, descriptor: &str) -> Result<String> {
         // path セグメントの `/` を生のまま埋め込むとルートが壊れる
         // (例: `ghcr.io/org/app:tag` → `/images/ghcr.io/org/...`)。
-        let path = format!("/images/{}/json", percent_encode_path_segment(descriptor));
+        let path = format!("/images/{}/json", percent_encode(descriptor));
         let response = self.request("GET", &path, None).await?;
-        if response.status_code() == 200 {
-            Ok(descriptor.to_string())
-        } else if response.status_code() == 404 {
-            self.pull_image(descriptor, platform).await?;
-            let response = self.request("GET", &path, None).await?;
-            if response.status_code() == 200 {
-                Ok(descriptor.to_string())
-            } else if response.status_code() == 404 {
-                // pull が成功しても存在しない場合 (pull と GET の間で消えた等) は
-                // イメージ無しとして最終エラーにする。この関数内の pull は初回 GET の
-                // 404 でのみ実行される。再 GET の 404 が返す `ImageNotFound` は
-                // 呼び出し元の pull を誘発し得るが、現状の呼び出し元は高々 1 回しか
-                // 再試行しないため無限ループにはならない。
-                Err(ClientError::ImageNotFound(descriptor.to_string()).into())
-            } else {
-                // pull 成功後の再 GET の失敗 (daemon 異常等の 4xx / 5xx) を
-                // ImageNotFound に誤分類すると、存在するイメージの起動が「存在しない」
-                // と誤診断される。初回 GET と同じ分類 (404 → `ImageNotFound`・
-                // それ以外 → `Other`) に揃える。
-                Err(ClientError::Other(format!(
-                    "failed to resolve image {descriptor}: {}",
-                    response.status_code()
-                ))
-                .into())
-            }
-        } else {
-            Err(ClientError::Other(format!(
+        match response.status_code() {
+            200 => Ok(descriptor.to_string()),
+            404 => Err(ClientError::ImageNotFound(descriptor.to_string()).into()),
+            _ => Err(ClientError::Other(format!(
                 "failed to resolve image {descriptor}: {}",
                 response.status_code()
             ))
-            .into())
+            .into()),
         }
     }
 
@@ -207,10 +184,10 @@ impl DockerClient {
     pub(crate) async fn create_container(&self, config: ContainerConfig) -> Result<String> {
         let mut params = Vec::new();
         if let Some(name) = &config.name {
-            params.push(format!("name={}", percent_encode_component(name)));
+            params.push(format!("name={}", percent_encode(name)));
         }
         if let Some(platform) = &config.platform {
-            params.push(format!("platform={}", percent_encode_component(platform)));
+            params.push(format!("platform={}", percent_encode(platform)));
         }
         let query = if params.is_empty() {
             String::new()
@@ -248,7 +225,7 @@ impl DockerClient {
 
     /// コンテナを起動する。
     pub(crate) async fn start_container(&self, id: &str) -> Result<()> {
-        let path = format!("/containers/{}/start", percent_encode_path_segment(id));
+        let path = format!("/containers/{}/start", percent_encode(id));
         let response = self.request("POST", &path, None).await?;
         if response.status_code() >= 400 {
             return Err(ClientError::Other(format!(
@@ -272,7 +249,7 @@ impl DockerClient {
             Some(t) if t >= 0 => t,
             _ => 30,
         };
-        let path = format!("/containers/{}/stop?t={t}", percent_encode_path_segment(id));
+        let path = format!("/containers/{}/stop?t={t}", percent_encode(id));
         let response = self.request("POST", &path, None).await?;
         if response.status_code() == 404 {
             return Ok(());
@@ -291,7 +268,7 @@ impl DockerClient {
     ///
     /// 既に一時停止済み (304) は冪等に成功とする。
     pub(crate) async fn pause(&self, id: &str) -> Result<()> {
-        let path = format!("/containers/{}/pause", percent_encode_path_segment(id));
+        let path = format!("/containers/{}/pause", percent_encode(id));
         let response = self.request("POST", &path, None).await?;
         if response.status_code() == 304 || response.status_code() == 404 {
             return Ok(());
@@ -310,7 +287,7 @@ impl DockerClient {
     ///
     /// 既に実行中 (304) は冪等に成功とする。
     pub(crate) async fn unpause(&self, id: &str) -> Result<()> {
-        let path = format!("/containers/{}/unpause", percent_encode_path_segment(id));
+        let path = format!("/containers/{}/unpause", percent_encode(id));
         let response = self.request("POST", &path, None).await?;
         if response.status_code() == 304 || response.status_code() == 404 {
             return Ok(());
@@ -329,10 +306,7 @@ impl DockerClient {
     ///
     /// コンテナが存在しない (404) ときは冪等に成功とする。
     pub(crate) async fn remove(&self, id: &str, force: bool) -> Result<()> {
-        let path = format!(
-            "/containers/{}?force={force}",
-            percent_encode_path_segment(id)
-        );
+        let path = format!("/containers/{}?force={force}", percent_encode(id));
         let response = self.request("DELETE", &path, None).await?;
         if response.status_code() == 404 {
             return Ok(());
@@ -351,10 +325,7 @@ impl DockerClient {
     ///
     /// コンテナが存在しない (404) ときは冪等に成功とする。
     pub(crate) fn remove_blocking(&self, id: &str, force: bool) -> Result<()> {
-        let path = format!(
-            "/containers/{}?force={force}",
-            percent_encode_path_segment(id)
-        );
+        let path = format!("/containers/{}?force={force}", percent_encode(id));
         let request_bytes = encode_docker_api_request("DELETE", &path, None)?;
         let mut stream = UnixStream::connect(&self.socket_path)?;
         stream.set_read_timeout(Some(DOCKER_STREAM_TIMEOUT))?;
@@ -385,7 +356,7 @@ impl DockerClient {
     pub(crate) fn wait_blocking(&self, id: &str) -> Result<i64> {
         let path = format!(
             "/containers/{}/wait?condition=not-running",
-            percent_encode_path_segment(id)
+            percent_encode(id)
         );
         let request_bytes = encode_docker_api_request("POST", &path, None)?;
         let mut stream = UnixStream::connect(&self.socket_path)?;
@@ -430,7 +401,7 @@ impl DockerClient {
         cmd: &[String],
         env: Vec<String>,
     ) -> Result<DockerExecResult> {
-        let exec_path = format!("/containers/{}/exec", percent_encode_path_segment(id));
+        let exec_path = format!("/containers/{}/exec", percent_encode(id));
         let exec_config = ExecConfig {
             cmd: cmd.to_vec(),
             attach_stdout: true,
@@ -466,7 +437,7 @@ impl DockerClient {
         // exec の出力はプロセス終了で EOF するが、任意のコマンドが実行可能なため
         // 大量出力 (例: `yes | head -c 1G`) で OOM になり得る。蓄積上限は 64 MiB で、
         // 超過時は切り詰めずエラーにする (フレーム途中切断で出力欠損するため)。
-        let start_path = format!("/exec/{}/start", percent_encode_path_segment(&exec_id));
+        let start_path = format!("/exec/{}/start", percent_encode(&exec_id));
         let start_config = ExecStartConfig {
             detach: false,
             tty: false,
@@ -500,7 +471,7 @@ impl DockerClient {
         // Running == false になるまで指数的バックオフで再試行する。
         // 初回は即時、失敗ごとに 10ms → 50ms → 200ms → 500ms → 1s の sleep を挟む
         // (試行最大 6 回・合計約 1.76 秒)。超過時は warn ログ + exit_code: None に倒す。
-        let inspect_path = format!("/exec/{}/json", percent_encode_path_segment(&exec_id));
+        let inspect_path = format!("/exec/{}/json", percent_encode(&exec_id));
         let mut states: Vec<(bool, Option<i64>)> = Vec::new();
         // 初回試行は即時。バックオフ列の長さ分の再試行 (sleep) を挟むため、
         // 試行回数はバックオフ列の長さ + 1 (最大 6 回) になる。列のイテレートでは
@@ -550,16 +521,12 @@ impl DockerClient {
         Ok(snapshot.ports)
     }
 
-    /// コンテナのブリッジネットワーク IP アドレスを取得する。
+    /// `GET /containers/{id}/json` を実行してパース済み inspect JSON を返す。
     ///
-    /// inspect (`GET /containers/{id}/json`) の `NetworkSettings.Networks` から
-    /// 先頭ネットワークの `IPAddress` を取得する。ネットワーク名のハードコードは
-    /// しない (カスタムネットワーク対応のため)。Docker の `Networks` は JSON オブジェクト
-    /// であり、「先頭」はキーのアルファベット順で決まる (macOS の配列順とは異なる)。
-    /// `IPAddress` が空文字列の場合 (host ネットワークモード等) や `Networks` が空・欠落
-    /// の場合はエラーを返す。
-    pub(crate) async fn bridge_ip_address(&self, id: &str) -> Result<std::net::IpAddr> {
-        let path = format!("/containers/{}/json", percent_encode_path_segment(id));
+    /// 404 は `ContainerNotFound`、それ以外の 4xx / 5xx は `Other` に分類する。
+    /// ボディが空・非 UTF-8・パース不能な場合はそれぞれエラーを返す。
+    async fn inspect_json(&self, id: &str) -> Result<nojson::RawJsonOwned> {
+        let path = format!("/containers/{}/json", percent_encode(id));
         let response = self.request("GET", &path, None).await?;
         if response.status_code() == 404 {
             return Err(ClientError::ContainerNotFound(id.to_string()).into());
@@ -575,7 +542,19 @@ impl DockerClient {
             .body_bytes()
             .ok_or_else(|| ClientError::Other("empty inspect body".into()))?;
         let text = std::str::from_utf8(body).map_err(|e| ClientError::Json(e.to_string()))?;
-        let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
+        Ok(nojson::RawJsonOwned::parse(text).map_err(|e| ClientError::Json(e.to_string()))?)
+    }
+
+    /// コンテナのブリッジネットワーク IP アドレスを取得する。
+    ///
+    /// inspect (`GET /containers/{id}/json`) の `NetworkSettings.Networks` から
+    /// 先頭ネットワークの `IPAddress` を取得する。ネットワーク名のハードコードは
+    /// しない (カスタムネットワーク対応のため)。Docker の `Networks` は JSON オブジェクト
+    /// であり、「先頭」はキーのアルファベット順で決まる (macOS の配列順とは異なる)。
+    /// `IPAddress` が空文字列の場合 (host ネットワークモード等) や `Networks` が空・欠落
+    /// の場合はエラーを返す。
+    pub(crate) async fn bridge_ip_address(&self, id: &str) -> Result<std::net::IpAddr> {
+        let parsed = self.inspect_json(id).await?;
 
         // NetworkSettings.Networks の先頭エントリの IPAddress を取得する
         let ip_str = parsed
@@ -606,23 +585,7 @@ impl DockerClient {
 
     /// コンテナの状態を取得する。
     pub(crate) async fn container_state(&self, id: &str) -> Result<ContainerSnapshot> {
-        let path = format!("/containers/{}/json", percent_encode_path_segment(id));
-        let response = self.request("GET", &path, None).await?;
-        if response.status_code() == 404 {
-            return Err(ClientError::ContainerNotFound(id.to_string()).into());
-        }
-        if response.status_code() >= 400 {
-            return Err(ClientError::Other(format!(
-                "failed to inspect container: {}",
-                response.status_code()
-            ))
-            .into());
-        }
-        let body = response
-            .body_bytes()
-            .ok_or_else(|| ClientError::Other("empty inspect body".into()))?;
-        let text = std::str::from_utf8(body).map_err(|e| ClientError::Json(e.to_string()))?;
-        let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
+        let parsed = self.inspect_json(id).await?;
 
         let state = parsed
             .value()
@@ -647,23 +610,7 @@ impl DockerClient {
     /// コンテナ env を置換する Docker Engine API のセマンティクスに対応するため、
     /// 呼び出し側で exec 分の env を上書きマージしてから `exec` に渡す。
     pub(crate) async fn container_env(&self, id: &str) -> Result<Vec<String>> {
-        let path = format!("/containers/{}/json", percent_encode_path_segment(id));
-        let response = self.request("GET", &path, None).await?;
-        if response.status_code() == 404 {
-            return Err(ClientError::ContainerNotFound(id.to_string()).into());
-        }
-        if response.status_code() >= 400 {
-            return Err(ClientError::Other(format!(
-                "failed to inspect container: {}",
-                response.status_code()
-            ))
-            .into());
-        }
-        let body = response
-            .body_bytes()
-            .ok_or_else(|| ClientError::Other("empty inspect body".into()))?;
-        let text = std::str::from_utf8(body).map_err(|e| ClientError::Json(e.to_string()))?;
-        let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
+        let parsed = self.inspect_json(id).await?;
 
         let mut env = Vec::new();
         if let Ok(config) = parsed.value().to_member("Config")
@@ -683,23 +630,7 @@ impl DockerClient {
 
     /// コンテナの running と `State.Health.Status` を取得する。
     pub(crate) async fn container_health(&self, id: &str) -> Result<HealthProbe> {
-        let path = format!("/containers/{}/json", percent_encode_path_segment(id));
-        let response = self.request("GET", &path, None).await?;
-        if response.status_code() == 404 {
-            return Err(ClientError::ContainerNotFound(id.to_string()).into());
-        }
-        if response.status_code() >= 400 {
-            return Err(ClientError::Other(format!(
-                "failed to inspect container: {}",
-                response.status_code()
-            ))
-            .into());
-        }
-        let body = response
-            .body_bytes()
-            .ok_or_else(|| ClientError::Other("empty inspect body".into()))?;
-        let text = std::str::from_utf8(body).map_err(|e| ClientError::Json(e.to_string()))?;
-        let parsed = nojson::RawJson::parse(text).map_err(|e| ClientError::Json(e.to_string()))?;
+        let parsed = self.inspect_json(id).await?;
 
         let state = parsed
             .value()
@@ -865,8 +796,8 @@ impl DockerClient {
     pub(crate) async fn copy_from(&self, id: &str, path: &str) -> Result<Vec<u8>> {
         let api_path = format!(
             "/containers/{}/archive?path={}",
-            percent_encode_path_segment(id),
-            percent_encode_component(path)
+            percent_encode(id),
+            percent_encode(path)
         );
         let response = self
             .request_with_body_limit(
@@ -898,8 +829,8 @@ impl DockerClient {
     pub(crate) async fn copy_to(&self, id: &str, dir: &str, tar: Vec<u8>) -> Result<()> {
         let api_path = format!(
             "/containers/{}/archive?path={}&copyUIDGID=true",
-            percent_encode_path_segment(id),
-            percent_encode_component(dir)
+            percent_encode(id),
+            percent_encode(dir)
         );
         let response = self
             .request_with_content_type("PUT", &api_path, tar, "application/x-tar")
@@ -1353,15 +1284,30 @@ impl ExecStartConfig {
     }
 }
 
-/// Docker Engine API の path セグメント用 percent-encode。
+/// Docker Engine API の URL パスセグメント / query 値用 percent-encode。
 ///
-/// `/` を含むイメージ参照を `/images/{name}/json` に埋め込むとき、生の `/` は
-/// ルート区切りになるため `%2F` に変換する。RFC 3986 unreserved 以外を符号化す
-/// る (Go の `PathEscape` に近い挙動)。
+/// RFC 3986 unreserved 以外を符号化する (Go の `PathEscape` に近い挙動)。
+/// - パスセグメント: `/` を含むイメージ参照を `/images/{name}/json` に埋め込むとき、
+///   生の `/` はルート区切りになるため `%2F` に変換する。
+/// - query 値: `fromImage` / `tag` / `name` など。スペースは `%20` (form の `+` は使わない)。
 ///
 /// ログストリーム (`docker_log_stream`) でも再利用するため `pub(crate)` で公開する。
-pub(crate) fn percent_encode_path_segment(s: &str) -> String {
-    percent_encode(s)
+pub(crate) fn percent_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0xf) as usize] as char);
+            }
+        }
+    }
+    out
 }
 
 /// Docker exec の multiplexed stream を demux して stdout / stderr に分離する。
@@ -1391,31 +1337,6 @@ fn demux_exec_stream(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
         pos = end;
     }
     (stdout, stderr)
-}
-
-/// Docker Engine API の query 値用 percent-encode。
-///
-/// `fromImage` / `tag` / `name` など。スペースは `%20` (form の `+` は使わない)。
-fn percent_encode_component(s: &str) -> String {
-    percent_encode(s)
-}
-
-fn percent_encode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                out.push('%');
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                out.push(HEX[(b >> 4) as usize] as char);
-                out.push(HEX[(b & 0xf) as usize] as char);
-            }
-        }
-    }
-    out
 }
 
 /// `POST /images/create` 用に descriptor を `fromImage` / `tag` に分解する。
@@ -1523,7 +1444,7 @@ fn build_exposed_ports(ports: &[PortMapping]) -> Vec<String> {
         .collect()
 }
 
-fn parse_ports(parsed: &nojson::RawJson<'_>) -> Ports {
+fn parse_ports(parsed: &nojson::RawJsonOwned) -> Ports {
     let mut ports = Ports::default();
     let network_settings = match parsed.value().to_member("NetworkSettings") {
         Ok(m) => match m.optional() {
@@ -1627,9 +1548,14 @@ fn json_port_bindings(map: &BTreeMap<String, Vec<PortBinding>>) -> String {
     json
 }
 
-pub(crate) fn escape_json(s: &str) -> String {
-    let mut escaped = String::with_capacity(s.len() + 2);
-    escaped.push('"');
+/// JSON 文字列値をエスケープする (引用符なし。呼び出し側の `format!` で包む)。
+///
+/// バックスラッシュ・ダブルクォートに加え、JSON 文字列内でエスケープ必須の制御文字
+/// (0x00-0x1F) を処理する。短縮エスケープ (`\b` / `\f` / `\n` / `\r` / `\t`) と、
+/// それ以外の `< 0x20` は `\uXXXX` 化する。`escape_json` は本関数の出力を引用符で包む。
+/// レジストリ認証 (`registry_auth`) でも再利用するため `pub(crate)` で公開する。
+pub(crate) fn escape_json_value(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
             '"' => escaped.push_str("\\\""),
@@ -1643,6 +1569,14 @@ pub(crate) fn escape_json(s: &str) -> String {
             c => escaped.push(c),
         }
     }
+    escaped
+}
+
+/// JSON 文字列リテラルをエスケープしてダブルクォートで包む。
+pub(crate) fn escape_json(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len() + 2);
+    escaped.push('"');
+    escaped.push_str(&escape_json_value(s));
     escaped.push('"');
     escaped
 }
@@ -1670,6 +1604,50 @@ mod tests {
                 .expect("escape_json の出力は JSON としてパースできること");
             let value = String::try_from(parsed.value()).expect("JSON 文字列値として読めること");
             assert_eq!(value, s);
+        }
+    }
+
+    #[test]
+    fn escape_json_value_escapes_control_characters() {
+        // 制御文字が JSON 文字列内で合法なエスケープになること (引用符なし形式)。
+        // 短縮エスケープ (\n / \r / \t 等) と \uXXXX 化の両系統を検証する。
+        assert_eq!(escape_json_value("a\nb"), "a\\nb");
+        assert_eq!(escape_json_value("a\rb"), "a\\rb");
+        assert_eq!(escape_json_value("a\tb"), "a\\tb");
+        assert_eq!(escape_json_value("a\u{0008}b"), "a\\bb");
+        assert_eq!(escape_json_value("a\u{000c}b"), "a\\fb");
+        // 短縮エスケープの無い制御文字は \uXXXX になる。
+        assert_eq!(escape_json_value("a\u{0001}b"), "a\\u0001b");
+        // バックスラッシュとダブルクォートもエスケープされる。
+        assert_eq!(escape_json_value("a\"b\\c"), "a\\\"b\\\\c");
+        // 通常文字はそのまま。
+        assert_eq!(escape_json_value("plain"), "plain");
+    }
+
+    #[test]
+    fn escape_json_value_roundtrips_through_nojson() {
+        // エスケープ済み文字列が JSON 文字列値としてパースできること (往復)。
+        // 制御文字の代表ケースに加え、境界値 (\u0000 / \u001f)・短縮エスケープ
+        // 全種・空文字列を検証する。
+        for s in [
+            "",
+            "a\nb",
+            "a\rb",
+            "a\tb",
+            "a\u{0008}b",
+            "a\u{000c}b",
+            "a\u{0000}b",
+            "a\u{001f}b",
+            "a\u{0001}b",
+            "a\"b\\c",
+            "plain",
+        ] {
+            let escaped = escape_json_value(s);
+            let json = format!("\"{escaped}\"");
+            let parsed = nojson::RawJson::parse(&json)
+                .expect("escape_json_value の出力は JSON 文字列としてパースできること");
+            let value = String::try_from(parsed.value()).expect("JSON 文字列値として読めること");
+            assert_eq!(value, s, "往復で元の文字列が復元されること");
         }
     }
 
@@ -1704,19 +1682,16 @@ mod tests {
     fn percent_encode_encodes_slash_in_image_refs() {
         // レジストリ付き参照の `/` と `:` が符号化されること。
         assert_eq!(
-            percent_encode_path_segment("ghcr.io/org/app:1.0"),
+            percent_encode("ghcr.io/org/app:1.0"),
             "ghcr.io%2Forg%2Fapp%3A1.0"
         );
-        assert_eq!(
-            percent_encode_component("ghcr.io/org/app"),
-            "ghcr.io%2Forg%2Fapp"
-        );
+        assert_eq!(percent_encode("ghcr.io/org/app"), "ghcr.io%2Forg%2Fapp");
     }
 
     #[test]
     fn parse_ports_extracts_tcp_udp_sctp() {
         let json = r#"{"NetworkSettings":{"Ports":{"80/tcp":[{"HostPort":"8080"}],"53/udp":[{"HostPort":"5353"}],"5060/sctp":[{"HostPort":"5061"}]}}}"#;
-        let parsed = nojson::RawJson::parse(json).expect("処理に失敗しないこと");
+        let parsed = nojson::RawJsonOwned::parse(json).expect("処理に失敗しないこと");
         let ports = parse_ports(&parsed);
         assert_eq!(
             ports.map_to_host_port_ipv4(80.tcp()),
@@ -1738,7 +1713,7 @@ mod tests {
     #[test]
     fn parse_ports_returns_empty_when_network_settings_missing() {
         let json = r#"{}"#;
-        let parsed = nojson::RawJson::parse(json).expect("処理に失敗しないこと");
+        let parsed = nojson::RawJsonOwned::parse(json).expect("処理に失敗しないこと");
         let ports = parse_ports(&parsed);
         assert!(
             ports.map_to_host_port_ipv4(80.tcp()).is_none(),
@@ -1749,7 +1724,7 @@ mod tests {
     #[test]
     fn parse_ports_returns_empty_when_ports_missing() {
         let json = r#"{"NetworkSettings":{}}"#;
-        let parsed = nojson::RawJson::parse(json).expect("処理に失敗しないこと");
+        let parsed = nojson::RawJsonOwned::parse(json).expect("処理に失敗しないこと");
         let ports = parse_ports(&parsed);
         assert!(
             ports.map_to_host_port_ipv4(80.tcp()).is_none(),
@@ -1760,7 +1735,7 @@ mod tests {
     #[test]
     fn parse_ports_ignores_invalid_port_strings() {
         let json = r#"{"NetworkSettings":{"Ports":{"abc/tcp":[{"HostPort":"8080"}],"80/xyz":[{"HostPort":"8080"}]}}}"#;
-        let parsed = nojson::RawJson::parse(json).expect("処理に失敗しないこと");
+        let parsed = nojson::RawJsonOwned::parse(json).expect("処理に失敗しないこと");
         let ports = parse_ports(&parsed);
         assert!(
             ports.map_to_host_port_ipv4(80.tcp()).is_none(),

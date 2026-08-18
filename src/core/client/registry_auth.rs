@@ -3,6 +3,10 @@
 //! `DOCKER_AUTH_CONFIG` / `DOCKER_CONFIG` / `~/.docker/config.json` から
 //! 静的エントリ (`auths`) のみを読む。credential helper は対象外。
 
+// JSON 文字列値のエスケープは docker_client 側の共通実装を再利用する
+// (実装とテストは docker_client に集約)。
+use crate::core::client::docker_client::escape_json_value;
+
 /// Docker Hub の auths 参照キー。docker login が config.json に書き込む形式。
 const DOCKER_HUB_AUTH_KEY: &str = "https://index.docker.io/v1/";
 
@@ -147,30 +151,6 @@ fn extract_auth_entry(config_json: &str, key: &str) -> Option<String> {
     Some(encoded)
 }
 
-/// JSON 文字列値をエスケープする (引用符なし。呼び出し側の `format!` で包む)。
-///
-/// バックスラッシュ・ダブルクォートに加え、JSON 文字列内でエスケープ必須の制御文字
-/// (0x00-0x1F) を処理する。短縮エスケープ (`\b` / `\f` / `\n` / `\r` / `\t`) と、
-/// それ以外の `< 0x20` は `\uXXXX` 化する。`docker_client::escape_json` と同じ
-/// エスケープロジック (制御文字を含む)。
-fn escape_json_value(s: &str) -> String {
-    let mut escaped = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\u{0008}' => escaped.push_str("\\b"),
-            '\u{000c}' => escaped.push_str("\\f"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            c if (c as u32) < 0x20 => escaped.push_str(&format!("\\u{:04x}", c as u32)),
-            c => escaped.push(c),
-        }
-    }
-    escaped
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,50 +291,6 @@ mod tests {
         // auths が空の場合は None を返すこと。
         let config = r#"{"auths":{}}"#;
         assert!(extract_auth_entry(config, "https://index.docker.io/v1/").is_none());
-    }
-
-    #[test]
-    fn escape_json_value_escapes_control_characters() {
-        // 制御文字が JSON 文字列内で合法なエスケープになること。
-        // 短縮エスケープ (\n / \r / \t 等) と \uXXXX 化の両系統を検証する。
-        assert_eq!(escape_json_value("a\nb"), "a\\nb");
-        assert_eq!(escape_json_value("a\rb"), "a\\rb");
-        assert_eq!(escape_json_value("a\tb"), "a\\tb");
-        assert_eq!(escape_json_value("a\u{0008}b"), "a\\bb");
-        assert_eq!(escape_json_value("a\u{000c}b"), "a\\fb");
-        // 短縮エスケープの無い制御文字は \uXXXX になる。
-        assert_eq!(escape_json_value("a\u{0001}b"), "a\\u0001b");
-        // バックスラッシュとダブルクォートもエスケープされる。
-        assert_eq!(escape_json_value("a\"b\\c"), "a\\\"b\\\\c");
-        // 通常文字はそのまま。
-        assert_eq!(escape_json_value("plain"), "plain");
-    }
-
-    #[test]
-    fn escape_json_value_roundtrips_through_nojson() {
-        // エスケープ済み文字列が JSON 文字列値としてパースできること (往復)。
-        // 制御文字の代表ケースに加え、境界値 (\u0000 / \u001f)・短縮エスケープ
-        // 全種・空文字列を検証する。
-        for s in [
-            "",
-            "a\nb",
-            "a\rb",
-            "a\tb",
-            "a\u{0008}b",
-            "a\u{000c}b",
-            "a\u{0000}b",
-            "a\u{001f}b",
-            "a\u{0001}b",
-            "a\"b\\c",
-            "plain",
-        ] {
-            let escaped = escape_json_value(s);
-            let json = format!("\"{escaped}\"");
-            let parsed = nojson::RawJson::parse(&json)
-                .expect("escape_json_value の出力は JSON 文字列としてパースできること");
-            let value = String::try_from(parsed.value()).expect("JSON 文字列値として読めること");
-            assert_eq!(value, s, "往復で元の文字列が復元されること");
-        }
     }
 
     #[test]

@@ -7,6 +7,8 @@
 
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
+use crate::core::logs::{LogFrame, consumer::LogConsumer};
+
 /// 配信タスクの行長上限 (バイト)。
 ///
 /// 改行を含まない巨大出力 (バイナリ・単一行ダンプ等) がコンテナから続いても、
@@ -114,6 +116,35 @@ pub(crate) async fn read_line_limited<R: AsyncBufRead + Unpin>(
 fn strip_trailing_cr(line: &mut Vec<u8>) {
     if line.last() == Some(&b'\r') {
         line.pop();
+    }
+}
+
+/// 1 行を読み取り、フレーム化して全 consumer に配信する。
+///
+/// macOS / Linux の LogConsumer 配信タスクが共用する行配信の共通部分。
+/// 戻り値は「ループ継続」の判定:
+/// - `Ok(true)`: 配信した (読み続ける)
+/// - `Ok(false)`: EOF (`Closed`)。終了判定は呼び出し側の責任
+///   (macOS は exit code 観測 + DRAIN_GRACE 猶予、Linux は即 break)
+/// - `Err(())`: 読み取り失敗 (配信を止める。warn はここで出す)
+pub(crate) async fn deliver_line_to_consumers<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    consumers: &[Box<dyn LogConsumer + 'static>],
+    to_frame: fn(Vec<u8>) -> LogFrame,
+) -> std::result::Result<bool, ()> {
+    match read_line_limited(reader, MAX_LINE_LENGTH).await {
+        Ok(LineRead::Closed) => Ok(false),
+        Ok(LineRead::Line(line) | LineRead::Final(line) | LineRead::Truncated(line)) => {
+            let frame = to_frame(line);
+            for consumer in consumers {
+                consumer.accept(&frame).await;
+            }
+            Ok(true)
+        }
+        Err(e) => {
+            tracing::warn!("log consumer read failed; stopping delivery: {e}");
+            Err(())
+        }
     }
 }
 

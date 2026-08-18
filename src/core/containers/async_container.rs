@@ -43,7 +43,7 @@ use crate::{
 use crate::core::copy::CopyFromContainerError;
 use crate::core::error::ExecError;
 #[cfg(target_os = "macos")]
-use crate::core::logs::line::{LineRead, MAX_LINE_LENGTH, read_line_limited};
+use crate::core::logs::line::deliver_line_to_consumers;
 
 /// ログ取得元の抽象。macOS は FD、Linux は Docker ログストリーム。
 ///
@@ -132,7 +132,11 @@ pub(crate) fn spawn_exit_code_waiter(
     generation: u64,
 ) {
     std::thread::spawn(move || {
-        if let Ok(code) = crate::core::client::xpc_client::XpcClient::wait_blocking(&id, &id) {
+        if let Ok(code) = crate::core::client::xpc_client::XpcClient::wait_blocking(
+            &id,
+            &id,
+            crate::xpc::LONG_TIMEOUT,
+        ) {
             let mut guard = wait_state
                 .lock()
                 .expect("wait state mutex must not be poisoned while recording exit code");
@@ -404,18 +408,12 @@ impl<I: Image> ContainerAsync<I> {
             Client::MacOs(c) => {
                 // XPC は environment が空だとコンテナ env を継承しないため、
                 // ContainerRequest の env を基底にし、ExecCommand の env で上書きする。
-                let mut merged: std::collections::BTreeMap<String, String> = self
-                    .image
-                    .env_vars()
-                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                    .collect();
-                for (k, v) in env_vars {
-                    merged.insert(k, v);
-                }
-                let environment: Vec<String> = merged
-                    .into_iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect();
+                let environment = crate::core::env::fold_env(
+                    self.image
+                        .env_vars()
+                        .map(|(k, v)| (k.into_owned(), v.into_owned())),
+                    env_vars,
+                );
                 c.exec(&self.id, &cmd_owned, environment).await?
             }
             #[cfg(target_os = "linux")]
@@ -426,21 +424,14 @@ impl<I: Image> ContainerAsync<I> {
                     c.exec(&self.id, &cmd_owned, Vec::new()).await?
                 } else {
                     let container_env = c.container_env(&self.id).await?;
-                    // "KEY=VALUE" 形式を BTreeMap に展開し、exec 分で上書きする
-                    let mut merged: std::collections::BTreeMap<String, String> = container_env
-                        .iter()
-                        .filter_map(|s| {
+                    // "KEY=VALUE" 形式を展開し、exec 分で上書きする
+                    let env = crate::core::env::fold_env(
+                        container_env.iter().filter_map(|s| {
                             let (k, v) = s.split_once('=')?;
                             Some((k.to_string(), v.to_string()))
-                        })
-                        .collect();
-                    for (k, v) in env_vars {
-                        merged.insert(k, v);
-                    }
-                    let env: Vec<String> = merged
-                        .into_iter()
-                        .map(|(k, v)| format!("{k}={v}"))
-                        .collect();
+                        }),
+                        env_vars,
+                    );
                     c.exec(&self.id, &cmd_owned, env).await?
                 }
             }
@@ -887,7 +878,7 @@ impl<I: Image> ContainerAsync<I> {
                         .expect("wait state mutex must not be poisoned")
                         .generation();
                     let result = tokio::task::spawn_blocking(move || {
-                        crate::core::client::xpc_client::XpcClient::wait_blocking_with_timeout(
+                        crate::core::client::xpc_client::XpcClient::wait_blocking(
                             &id,
                             &id,
                             std::time::Duration::from_secs(5),
@@ -928,29 +919,6 @@ impl<I: Image> ContainerAsync<I> {
     ///
     /// # 完了保証
     ///
-    /// `rm().await` の復帰時点で削除処理は終わっており、成否は返り値の `Result` として
-    /// 呼び出し側に届く。`Drop` は `DROP_REMOVE_TIMEOUT` (5 秒) 内で完了を待つが、
-    /// 超過時は best-effort であり成否の `Result` も返さないため、確実な完了保証と
-    /// 成否が必要ならこのメソッドを使うこと。
-    ///
-    /// # `keep` ゲートとの非対称
-    ///
-    /// このメソッドは `TESTCONTAINERS_COMMAND=keep` でも削除する。`keep` ゲートは
-    /// `Drop` の削除のみを抑止する仕様であり、明示 `rm` には効かない。
-    ///
-    /// 削除は常に `force=true` で行われるため実行中でもそのまま削除でき、バックエンドが
-    /// 404 を返した場合 (既に削除済み) は冪等成功として扱う。
-    #[cfg(target_os = "macos")]
-    pub async fn rm(mut self) -> Result<()> {
-        // 共通の前置き: remove より前にログ配信を止める。
-        self.stop_log_delivery();
-        match &self.client {
-            Client::MacOs(c) => c.remove(&self.id, true).await?,
-        }
-        self.dropped = true;
-        Ok(())
-    }
-
     /// コンテナを削除する。
     ///
     /// # 完了保証
@@ -967,12 +935,15 @@ impl<I: Image> ContainerAsync<I> {
     ///
     /// 削除は常に `force=true` で行われるため実行中でもそのまま削除でき、バックエンドが
     /// 404 を返した場合 (既に削除済み) は冪等成功として扱う。
-    #[cfg(target_os = "linux")]
     pub async fn rm(mut self) -> Result<()> {
-        // 共通の前置き: remove より前にログストリームを止める。remove の await 中に
-        // demux 側の完了フラグが立つため、後続の Drop での polling がほぼ即抜けする。
+        // 共通の前置き: remove より前にログストリームを止める。
+        // remove の await 中に demux 側の完了フラグが立つため、後続の Drop での polling が
+        // ほぼ即抜けする。
         self.stop_log_delivery();
         match &self.client {
+            #[cfg(target_os = "macos")]
+            Client::MacOs(c) => c.remove(&self.id, true).await?,
+            #[cfg(target_os = "linux")]
             Client::Linux(c) => c.remove(&self.id, true).await?,
         }
         self.dropped = true;
@@ -1514,8 +1485,9 @@ fn spawn_log_consumer_task(
         // タスクは EOF 観測時に即 break する (アンカー保持は保険の役割)。
         let mut exit_observed_at: Option<std::time::Instant> = None;
         loop {
-            match read_line_limited(&mut reader, MAX_LINE_LENGTH).await {
-                Ok(LineRead::Closed) => {
+            match deliver_line_to_consumers(&mut reader, consumers.as_ref(), to_frame).await {
+                Ok(true) => {}
+                Ok(false) => {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
@@ -1537,16 +1509,7 @@ fn spawn_log_consumer_task(
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
-                Ok(LineRead::Line(line) | LineRead::Final(line) | LineRead::Truncated(line)) => {
-                    let frame = to_frame(line);
-                    for consumer in consumers.as_ref() {
-                        consumer.accept(&frame).await;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("log consumer read failed; stopping delivery: {e}");
-                    break;
-                }
+                Err(()) => break,
             }
         }
     });

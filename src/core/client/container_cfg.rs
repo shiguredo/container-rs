@@ -2,7 +2,7 @@
 //!
 //! `AsyncRunner` が `ContainerRequest` から構築し、`XpcClient::create_container` に渡す。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use nojson::DisplayJson;
 
@@ -125,13 +125,11 @@ pub(crate) fn build_config<I: Image>(
     // BTreeMap に畳むことで、同名キーは後から来た値 (with_env_var) が勝つ
     // (exec 経路と同一規則)。chain のまま送ると glibc / musl の getenv が
     // envp の重複エントリの先頭を返すため、with_env_var による上書きが効かない。
-    let env: Vec<String> = req
-        .env_vars()
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect::<BTreeMap<String, String>>()
-        .into_iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    let env: Vec<String> = crate::core::env::fold_env(
+        req.env_vars()
+            .map(|(k, v)| (k.into_owned(), v.into_owned())),
+        [],
+    );
 
     // image_ref の正規化。pull / resolve と同じ規則で完全修飾形式にする。
     let image_ref = crate::core::client::xpc_client::normalize_image_reference(&req.descriptor());

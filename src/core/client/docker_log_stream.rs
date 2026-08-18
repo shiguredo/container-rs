@@ -25,11 +25,9 @@ use std::time::Duration;
 use shiguredo_http11::{BodyProgress, ResponseDecoder};
 use tokio::io::{AsyncBufRead, ReadBuf};
 
-use crate::core::logs::{
-    LogFrame,
-    consumer::LogConsumer,
-    line::{LineRead, MAX_LINE_LENGTH, read_line_limited},
-};
+#[cfg(test)]
+use crate::core::logs::line::MAX_LINE_LENGTH;
+use crate::core::logs::{LogFrame, consumer::LogConsumer};
 
 /// 共有バッファの既定上限 (ストリームあたり)。
 ///
@@ -531,7 +529,7 @@ fn start_and_demux(
 
     let path = format!(
         "/containers/{}/logs?stdout=1&stderr=1&follow=true&tail=all",
-        crate::core::client::docker_client::percent_encode_path_segment(id)
+        crate::core::client::docker_client::percent_encode(id)
     );
     let request_bytes =
         crate::core::client::docker_client::encode_docker_api_request("GET", &path, None)?;
@@ -734,7 +732,7 @@ fn fetch_logs_oneshot_blocking_with_limit(
     stream.set_write_timeout(LOG_SESSION_TIMEOUT)?;
     let path = format!(
         "/containers/{}/logs?stdout=1&stderr=1&follow=false&tail=all",
-        crate::core::client::docker_client::percent_encode_path_segment(id)
+        crate::core::client::docker_client::percent_encode(id)
     );
     let request_bytes =
         crate::core::client::docker_client::encode_docker_api_request("GET", &path, None)
@@ -1189,21 +1187,14 @@ pub(crate) fn spawn_log_consumer_task(
             handle: handle.clone(),
         };
         let mut reader = tokio::io::BufReader::new(LogReader::new(stream));
-        loop {
-            match read_line_limited(&mut reader, MAX_LINE_LENGTH).await {
-                Ok(LineRead::Closed) => break,
-                Ok(LineRead::Line(line) | LineRead::Final(line) | LineRead::Truncated(line)) => {
-                    let frame = to_frame(line);
-                    for consumer in consumers.as_ref() {
-                        consumer.accept(&frame).await;
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("log consumer read failed; stopping delivery: {e}");
-                    break;
-                }
-            }
-        }
+        // Ok(false) (EOF) と Err(()) (読み取り失敗) で配信を終了する。
+        while let Ok(true) = crate::core::logs::line::deliver_line_to_consumers(
+            &mut reader,
+            consumers.as_ref(),
+            to_frame,
+        )
+        .await
+        {}
     });
 }
 

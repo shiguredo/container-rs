@@ -70,30 +70,33 @@ fn host_path_for_xpc(path: &std::path::Path) -> Result<&str> {
     })
 }
 
+/// XPC 接続を確立してブロッキング処理を実行する (非同期ラッパ)。
+///
+/// XPC の送受信はブロッキング I/O のため、必ず `spawn_blocking` 上で実行する。
+/// 接続は各呼び出しで確立し、スレッドを跨がない (XPC 接続はスレッドに閉じた使い方)。
+/// `service` は XPC サービスの名前 (`SERVICE_NAME` / `IMAGE_SERVICE`)。
+async fn call<T, F>(service: &'static std::ffi::CStr, f: F) -> Result<T>
+where
+    F: FnOnce(XpcConn) -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let conn = XpcConn::connect(service)?;
+        f(conn)
+    })
+    .await?
+}
+
 impl XpcClient {
     /// コンテナ内のプロセスが終了するのを待ち、その exit code を返す (同期)。
     ///
-    /// `AsyncRunner::start` の常駐 exit code 監視はランタイム非管理の std スレッドから
-    /// これを呼ぶ。`spawn_blocking` 経由だと、コンテナ実行中にランタイムを drop した際に
-    /// tokio が LONG_TIMEOUT (24 時間) の containerWait を join しようとしてハングする。
-    pub(crate) fn wait_blocking(id: &str, process_id: &str) -> Result<i64> {
-        let conn = XpcConn::connect(SERVICE_NAME)?;
-        let reply = conn.send_with_timeout(
-            "containerWait",
-            &[(id_key(), s(id)), (k("processIdentifier"), s(process_id))],
-            crate::xpc::LONG_TIMEOUT,
-        )?;
-        reply.try_int64(&k("exitCode"))
-    }
-
-    /// タイムアウト付きでコンテナの exit code を待つ。
-    ///
-    /// 停止済みコンテナへの都度取得用。通常は即座に返る。
-    pub(crate) fn wait_blocking_with_timeout(
-        id: &str,
-        process_id: &str,
-        timeout: Duration,
-    ) -> Result<i64> {
+    /// `timeout` は XPC 呼び出し 1 回のタイムアウト。`AsyncRunner::start` の常駐
+    /// exit code 監視は `LONG_TIMEOUT` (24 時間) で呼び、ランタイム非管理の std
+    /// スレッドから実行する。`spawn_blocking` 経由だと、コンテナ実行中にランタイムを
+    /// drop した際に tokio が LONG_TIMEOUT (24 時間) の containerWait を join しよう
+    /// としてハングする。
+    /// 停止済みコンテナへの都度取得は短いタイムアウト (例: 5 秒) で呼ぶ。
+    pub(crate) fn wait_blocking(id: &str, process_id: &str, timeout: Duration) -> Result<i64> {
         let conn = XpcConn::connect(SERVICE_NAME)?;
         let reply = conn.send_with_timeout(
             "containerWait",
@@ -130,8 +133,7 @@ impl XpcClient {
         let xpc_timeout = xpc_timeout_for_grace(timeout);
         let id = id.to_string();
         let stop_options = j(&StopOptions { signal, timeout });
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(SERVICE_NAME)?;
+        call(SERVICE_NAME, move |conn| {
             let result = conn.send_with_timeout(
                 "containerStop",
                 &[
@@ -147,7 +149,7 @@ impl XpcClient {
                 Err(e) => Err(e),
             }
         })
-        .await?
+        .await
     }
 
     /// ホストからコンテナへファイルをコピーする。
@@ -164,8 +166,7 @@ impl XpcClient {
         let source = absolutize_host_path(source)?;
         let source = host_path_for_xpc(&source)?.to_string();
         let destination = destination.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(SERVICE_NAME)?;
+        call(SERVICE_NAME, move |conn| {
             conn.send(
                 "containerCopyIn",
                 &[
@@ -178,7 +179,7 @@ impl XpcClient {
             )?;
             Ok(())
         })
-        .await?
+        .await
     }
 
     /// コンテナからホストへファイルをコピーする。
@@ -193,8 +194,7 @@ impl XpcClient {
         // コピー先はホスト側パスなので、相対指定を呼び出し側の cwd 基準で解決する。
         let destination = absolutize_host_path(destination)?;
         let destination = host_path_for_xpc(&destination)?.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(SERVICE_NAME)?;
+        call(SERVICE_NAME, move |conn| {
             conn.send(
                 "containerCopyOut",
                 &[
@@ -206,7 +206,7 @@ impl XpcClient {
             )?;
             Ok(())
         })
-        .await?
+        .await
     }
 
     /// コンテナを削除する。
@@ -237,8 +237,7 @@ impl XpcClient {
     /// 返り値は `(stdout_fd, stderr_fd)`。XPC `containerLogs` が 2 個の FD を返す前提。
     pub(crate) async fn logs(&self, id: &str) -> Result<(std::os::fd::RawFd, std::os::fd::RawFd)> {
         let id = id.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(SERVICE_NAME)?;
+        call(SERVICE_NAME, move |conn| {
             let reply = conn.send("containerLogs", &[(id_key(), s(&id))])?;
             let fds = reply.log_fds();
             if fds.len() < 2 {
@@ -257,7 +256,7 @@ impl XpcClient {
             }
             Ok((fds[0], fds[1]))
         })
-        .await?
+        .await
     }
 
     /// 名前付きボリュームを解決し、その実体パスとファイルシステム形式を返す。
@@ -281,8 +280,7 @@ impl XpcClient {
             ))
             .into());
         }
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(SERVICE_NAME)?;
+        call(SERVICE_NAME, move |conn| {
             // まず自動作成を試みる。既に存在する場合は inspect にフォールバックする。
             let reply = conn.send(
                 "volumeCreate",
@@ -302,7 +300,7 @@ impl XpcClient {
             })?;
             parse_volume_configuration(&data)
         })
-        .await?
+        .await
     }
 
     /// コンテナの状態を取得する。
@@ -330,7 +328,22 @@ impl XpcClient {
     /// `containerList` のレスポンスから `networks[0].ipv4Address` を取得する。
     /// ネットワークが無い場合はエラー。
     pub(crate) async fn bridge_ip_address(&self, id: &str) -> Result<IpAddr> {
+        self.network_address(id, "ipv4Address", "bridge ip").await
+    }
+
+    /// `containerList` のレスポンスから `networks[0].ipv4Gateway` を取得する。
+    /// ゲートウェイが取得できない場合はエラー。
+    pub(crate) async fn gateway_ip_address(&self, id: &str) -> Result<IpAddr> {
+        self.network_address(id, "ipv4Gateway", "gateway ip").await
+    }
+
+    /// `containerList` のレスポンスから `networks[0].<key>` を IpAddr として取得する。
+    ///
+    /// ネットワークが無い場合やキーが無い場合はエラー。`label` はエラーメッセージ用。
+    async fn network_address(&self, id: &str, key: &str, label: &str) -> Result<IpAddr> {
         let id = id.to_string();
+        let key = key.to_string();
+        let label = label.to_string();
         tokio::task::spawn_blocking(move || {
             with_first_container(&id, |item| {
                 let networks = item
@@ -344,7 +357,7 @@ impl XpcClient {
                     .next()
                     .ok_or_else(|| ClientError::Other("no network attachments".into()))?;
                 let addr_str: String = first
-                    .to_member("ipv4Address")
+                    .to_member(&key)
                     .and_then(|m| m.required())
                     .and_then(|v| v.try_into())
                     .map_err(|e| ClientError::Json(e.to_string()))?;
@@ -352,42 +365,9 @@ impl XpcClient {
                 let addr_only = addr_str
                     .split_once('/')
                     .map_or(addr_str.as_str(), |(addr, _)| addr);
-                addr_only.parse::<IpAddr>().map_err(|e| {
-                    ClientError::Other(format!("invalid bridge ip address: {e}")).into()
-                })
-            })
-        })
-        .await?
-    }
-
-    /// `containerList` のレスポンスから `networks[0].ipv4Gateway` を取得する。
-    /// ゲートウェイが取得できない場合はエラー。
-    pub(crate) async fn gateway_ip_address(&self, id: &str) -> Result<IpAddr> {
-        let id = id.to_string();
-        tokio::task::spawn_blocking(move || {
-            with_first_container(&id, |item| {
-                let networks = item
-                    .to_member("networks")
-                    .ok()
-                    .and_then(|m| m.optional())
-                    .and_then(|v| v.to_array().ok())
-                    .ok_or_else(|| ClientError::Other("no network attachments".into()))?;
-                let first = networks
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| ClientError::Other("no network attachments".into()))?;
-                let addr_str: String = first
-                    .to_member("ipv4Gateway")
-                    .and_then(|m| m.required())
-                    .and_then(|v| v.try_into())
-                    .map_err(|e| ClientError::Json(e.to_string()))?;
-                // CIDR 表記の場合に備えてアドレス部分のみを取り出す。
-                let addr_only = addr_str
-                    .split_once('/')
-                    .map_or(addr_str.as_str(), |(addr, _)| addr);
-                addr_only.parse::<IpAddr>().map_err(|e| {
-                    ClientError::Other(format!("invalid gateway ip address: {e}")).into()
-                })
+                addr_only
+                    .parse::<IpAddr>()
+                    .map_err(|e| ClientError::Other(format!("invalid {label} address: {e}")).into())
             })
         })
         .await?
@@ -424,13 +404,12 @@ impl XpcClient {
         // processIdentifier はタイムスタンプだけでは並行 exec で衝突するため、
         // プロセス内カウンタを組み合わせる。
         let pid = format!("exec-{}", crate::core::util::unique_suffix());
-        tokio::task::spawn_blocking(move || {
+        call(SERVICE_NAME, move |conn| {
             // exec 結果の stdout / stderr 用 pipe を作成する。
             // fd は File として所有し、エラーパスでも Drop で確実に close する。
             let (out_read, out_write) = create_pipe()?;
             let (err_read, err_write) = create_pipe()?;
 
-            let conn = XpcConn::connect(SERVICE_NAME)?;
             let cfg = ProcCfg {
                 executable,
                 arguments,
@@ -517,7 +496,7 @@ impl XpcClient {
                 stderr,
             })
         })
-        .await?
+        .await
     }
 
     /// イメージをプルする。
@@ -530,8 +509,7 @@ impl XpcClient {
     pub(crate) async fn pull_image(&self, image: &str, platform_arch: Option<&str>) -> Result<()> {
         let image = normalize_image_reference(image);
         let oci_platform = platform_arch.map(oci_platform_json);
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(IMAGE_SERVICE)?;
+        call(IMAGE_SERVICE, move |conn| {
             let mut args = vec![
                 (k("imageReference"), s(&image)),
                 (k("insecureFlag"), KeyValue::Bool(false)),
@@ -543,7 +521,7 @@ impl XpcClient {
             conn.send_with_timeout("imagePull", &args, crate::xpc::LONG_TIMEOUT)?;
             Ok(())
         })
-        .await?
+        .await
     }
 
     /// デフォルトカーネルを取得する。
@@ -553,8 +531,7 @@ impl XpcClient {
     /// CLI の `container run --arch amd64` は arm64 カーネルのみの環境でも動作する。
     pub(crate) async fn get_default_kernel(&self) -> Result<Vec<u8>> {
         let pf = oci_platform_json("arm64");
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(SERVICE_NAME)?;
+        call(SERVICE_NAME, move |conn| {
             let reply = conn.send(
                 "getDefaultKernel",
                 &[(k("systemPlatform"), KeyValue::Data(pf))],
@@ -563,19 +540,18 @@ impl XpcClient {
                 .data(&k("kernel"))
                 .ok_or_else(|| ClientError::Other("no kernel".into()).into())
         })
-        .await?
+        .await
     }
 
     /// イメージの descriptor を解決する。
     pub(crate) async fn resolve_image_descriptor(&self, image: &str) -> Result<String> {
         let image = image.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(IMAGE_SERVICE)?;
+        call(IMAGE_SERVICE, move |conn| {
             let reply = conn.send("imageList", &[])?;
             let data = reply.data(&k("imageDescriptions")).unwrap_or_default();
             match_image_descriptor(&data, &image).map_err(Into::into)
         })
-        .await?
+        .await
     }
 
     /// 指定 digest の blob を content store から読み出す。
@@ -584,8 +560,7 @@ impl XpcClient {
     /// 返り値はそのファイルの内容。
     pub(crate) async fn content_get(&self, digest: &str) -> Result<Vec<u8>> {
         let digest = digest.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(IMAGE_SERVICE)?;
+        call(IMAGE_SERVICE, move |conn| {
             let reply = conn.send("contentGet", &[(k("digest"), s(&digest))])?;
             let path = reply.string(&k("contentPath")).ok_or_else(|| {
                 ClientError::Other("contentGet did not return contentPath".into())
@@ -597,7 +572,7 @@ impl XpcClient {
                 .into()
             })
         })
-        .await?
+        .await
     }
 
     /// コンテナを XPC で作成する。
@@ -614,8 +589,7 @@ impl XpcClient {
         // spawn_blocking に DisplayJson を持ち込まないため、先にバイト列化する。
         let container_cfg = j(container_cfg);
         let opts = j(&CreateOpts { auto_remove: false });
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(SERVICE_NAME)?;
+        call(SERVICE_NAME, move |conn| {
             conn.send(
                 "containerCreate",
                 &[
@@ -626,14 +600,13 @@ impl XpcClient {
             )?;
             Ok(())
         })
-        .await?
+        .await
     }
 
     /// コンテナをブートストラップする。
     pub(crate) async fn bootstrap_container(&self, id: &str) -> Result<()> {
         let id = id.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(SERVICE_NAME)?;
+        call(SERVICE_NAME, move |conn| {
             conn.send(
                 "containerBootstrap",
                 &[
@@ -643,21 +616,20 @@ impl XpcClient {
             )?;
             Ok(())
         })
-        .await?
+        .await
     }
 
     /// コンテナの初期プロセスを開始する。
     pub(crate) async fn start_process(&self, id: &str) -> Result<()> {
         let id = id.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = XpcConn::connect(SERVICE_NAME)?;
+        call(SERVICE_NAME, move |conn| {
             conn.send(
                 "containerStartProcess",
                 &[(id_key(), s(&id)), (k("processIdentifier"), s(&id))],
             )?;
             Ok(())
         })
-        .await?
+        .await
     }
 }
 

@@ -351,6 +351,7 @@ pub(crate) fn member_opt_string(item: &nojson::RawJsonValue, key: &str) -> Optio
 /// フィルタ用の JSON を構築するヘルパ（`containerList` / `volumeList` / `networkList` 用）。
 pub(crate) struct Filters {
     pub(crate) ids: Vec<String>,
+    // Apple container の XPC デコーダは labels キーを必須として要求する (空でも送る)。
     pub(crate) labels: HashMap<String, String>,
 }
 

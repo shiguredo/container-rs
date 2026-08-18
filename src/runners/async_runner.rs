@@ -16,7 +16,6 @@ use crate::{
     },
 };
 
-#[cfg(target_os = "macos")]
 use crate::core::error::ClientError;
 #[cfg(target_os = "macos")]
 use crate::core::util::{is_valid_container_id, unique_suffix};
@@ -398,25 +397,26 @@ async fn resolve_or_pull_macos(
     }
 }
 
-/// Linux: イメージ descriptor を解決し、失敗時は pull して再試行する。
+/// Linux: イメージ descriptor を解決し、必要なら pull して再試行する。
 ///
-/// `DockerClient::resolve_image_descriptor` 内の 404 pull との二重構造は維持する。
+/// macOS と同じく `ImageNotFound` のときだけ pull 再試行する (他エラーは伝播)。
+/// pull はここで 1 回だけ行い、`DockerClient::resolve_image_descriptor` は
+/// 純粋な解決に徹する (内部 pull の二重構造は持たない)。
 #[cfg(target_os = "linux")]
 async fn resolve_or_pull_linux(
     client: &crate::core::client::DockerClient,
     descriptor: &str,
     platform: Option<&str>,
 ) -> Result<()> {
-    match client.resolve_image_descriptor(descriptor, platform).await {
+    match client.resolve_image_descriptor(descriptor).await {
         Ok(_) => Ok(()),
-        Err(_) => {
+        Err(crate::Error::Client(ClientError::ImageNotFound(_))) => {
             client.pull_image(descriptor, platform).await?;
             // pull 後の再 resolve の戻り値 (digest) は未使用のため破棄する。
-            client
-                .resolve_image_descriptor(descriptor, platform)
-                .await?;
+            client.resolve_image_descriptor(descriptor).await?;
             Ok(())
         }
+        Err(e) => Err(e),
     }
 }
 
@@ -496,8 +496,6 @@ async fn cleanup_on_ready_failure<I: Image>(
 fn build_container_config<I: Image>(
     req: &ContainerRequest<I>,
 ) -> crate::core::client::ContainerConfig {
-    use std::collections::BTreeMap;
-
     use crate::core::containers::request::PortMapping;
 
     // 同一コンテナポートへの重複マッピングは黙って 1 本に潰れないよう明示エラーに
@@ -522,13 +520,11 @@ fn build_container_config<I: Image>(
     // (macOS の build_config / exec 経路と同一規則)。重複 Env のまま送っても Docker
     // Engine 側が解決する実挙動は観測されているが、ランタイム実装依存の挙動を排除し、
     // 経路間の規則を統一するために畳み込む。
-    let env: Vec<String> = req
-        .env_vars()
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect::<BTreeMap<String, String>>()
-        .into_iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    let env: Vec<String> = crate::core::env::fold_env(
+        req.env_vars()
+            .map(|(k, v)| (k.into_owned(), v.into_owned())),
+        [],
+    );
 
     crate::core::client::ContainerConfig {
         image: req.descriptor(),
