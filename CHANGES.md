@@ -95,6 +95,8 @@
   - @voluntas
 - [FIX] macOS の exec で `containerWait` 失敗時に読み取りスレッド 2 本と pipe FD がプロセス終了まで残るのを修正する (キャンセルフラグ + poll ベースの読み取りで有限時間内に FD を回収する)
   - @voluntas
+- [FIX] macOS の exec の成功経路で読み取りスレッドの join にタイムアウトが無く EOF 未着信の異常系で永久ハングし得るのを修正する (mpsc + `recv_timeout` の 5 秒上限で読み取り結果を待ち、超過時はキャンセルフラグでスレッドと FD を回収してエラーにする)
+  - @voluntas
 - [FIX] Linux exec の exit code 取得リトライを指数的バックオフ (最大 6 回・約 1.76 秒) に拡大し、デーモンの状態記録遅延でも exit code を取得できるようにする
   - @voluntas
 - [FIX] `ContainerAsync::exec` の ready_conditions 待機がタイムアウト無しで永久待ちになり得るのを修正する (startup_timeout を適用し、ログ取得元欠如 + `WaitFor::Log` は実行前に明示エラーにする)

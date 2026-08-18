@@ -25,6 +25,16 @@ use crate::xpc::{self, IMAGE_SERVICE, KeyValue, SERVICE_NAME, XpcConn, id_key, j
 #[derive(Clone)]
 pub(crate) struct XpcClient;
 
+/// exec の `containerWait` 成功後、読み取りスレッドから mpsc 経由で結果が届くのを
+/// 待つ上限時間。
+///
+/// この時点でプロセスは終了済み (containerWait が成功で返っているため)。
+/// 上限は「プロセス終了後にデーモンが write FD を閉じるまでの猶予」であり、
+/// exec 自体の実行時間を制限するものではない (この上限が課されるのは containerWait
+/// 応答受信後のみ)。大出力の読み取りは containerWait と並行に進むため、この上限で
+/// 待つのはデーモンの FD クローズ遅延のみ、という分析に基づく固定値。
+const EXEC_READER_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// 停止処理の XPC 送信タイムアウトを求める。
 ///
 /// apiserver は停止処理の完了 (グレース経過 + SIGKILL) を待って reply を返すため、
@@ -452,16 +462,29 @@ impl XpcClient {
             // stdout / stderr は containerWait と並行に読む。
             // 終了待ちを先にすると、出力がパイプバッファ (64KB) を超えた時点で
             // プロセスが write でブロックし、永遠に終了しないデッドロックになる。
-            // 読み取りスレッドはキャンセルフラグ付きで起動する。containerWait が
-            // 失敗した場合にフラグを立てると、poll の確認間隔以内に FD を閉じて
-            // 終了する (FD を握り続けるリークを防ぐ)。
+            // 読み取りスレッドはキャンセルフラグ付きで起動する。containerWait
+            // 失敗時、および containerWait 成功後の join 待ちがタイムアウトした
+            // 際にフラグを立てると、poll の確認間隔以内に FD を閉じて終了する
+            // (FD を握り続けるリークを防ぐ)。
+            //
+            // 結果は 1 本の mpsc チャネルで受け取る。std::thread::join には
+            // タイムアウトが無いため、`recv_timeout` で上限時間を課す。
+            // 2 本のチャネルを直列に待つと最悪合計 2 倍の時間がかかるため、
+            // ストリーム識別付き enum を 1 本のチャネルで受ける構造にする。
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = std::sync::mpsc::channel::<ExecReaderMsg>();
             let out_cancel = cancel.clone();
             let err_cancel = cancel.clone();
-            let out_handle =
-                std::thread::spawn(move || read_file_to_vec_cancellable(out_read, out_cancel));
-            let err_handle =
-                std::thread::spawn(move || read_file_to_vec_cancellable(err_read, err_cancel));
+            let out_tx = tx.clone();
+            let err_tx = tx;
+            std::thread::spawn(move || {
+                let r = read_file_to_vec_cancellable(out_read, out_cancel);
+                let _ = out_tx.send(ExecReaderMsg::Stdout(r));
+            });
+            std::thread::spawn(move || {
+                let r = read_file_to_vec_cancellable(err_read, err_cancel);
+                let _ = err_tx.send(ExecReaderMsg::Stderr(r));
+            });
 
             let reply = match conn.send_with_timeout(
                 "containerWait",
@@ -473,22 +496,19 @@ impl XpcClient {
                     // wait 失敗時は読み取りスレッドに終了指示を出してから戻る。
                     // join するとデーモン側が書き込み端を閉じるまで戻れない可能性が
                     // あるため、join はせずデタッチのままにする。フラグが立つと
-                    // 読み取りスレッドは上限時間以内に FD を閉じて終了する。
+                    // 読み取りスレッドは poll 間隔以内に FD を閉じて終了する
+                    // (FD を握り続けるリークを防ぐ)。
                     cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     return Err(e);
                 }
             };
 
-            // プロセス終了後、デーモンが書き込み端を閉じると EOF になり join が返る。
-            // 正常系ではフラグは立たないため `Some(bytes)` が返る (None は実装バグ)。
-            let stdout = out_handle
-                .join()
-                .map_err(|_| ClientError::Other("stdout reader thread panicked".into()))??
-                .expect("正常系の exec では読み取りが打ち切られないため Some になること");
-            let stderr = err_handle
-                .join()
-                .map_err(|_| ClientError::Other("stderr reader thread panicked".into()))??
-                .expect("正常系の exec では読み取りが打ち切られないため Some になること");
+            // プロセス終了後、デーモンが書き込み端を閉じると EOF になり読み取り
+            // スレッドから結果が届く。EOF が来ない異常系 (デーモンが dup 済みの
+            // write FD を閉じない、exec 子プロセスが write FD を継承したまま残る)
+            // では EXEC_READER_JOIN_TIMEOUT を超えた時点でキャンセルフラグを立てて
+            // 打ち切り、エラーを返す。打ち切り時は読み切れた分の出力と exit code を捨てる。
+            let (stdout, stderr) = join_exec_readers(&rx, &cancel, EXEC_READER_JOIN_TIMEOUT)?;
 
             let exit_code = reply.try_int64(&k("exitCode"))?;
             Ok(XpcExecResult {
@@ -895,22 +915,145 @@ fn close_valid_fds(fds: &[std::os::fd::RawFd]) {
     }
 }
 
+/// exec の読み取りスレッドから結果を受け取る際のメッセージ。
+///
+/// stdout / stderr のどちらのストリームからの結果かを識別する。
+/// 1 本の mpsc チャネルで両方を受け取るために enum で束ねる。
+enum ExecReaderMsg {
+    Stdout(std::io::Result<Option<Vec<u8>>>),
+    Stderr(std::io::Result<Option<Vec<u8>>>),
+}
+
+/// 未受信のストリーム名を人間可読な形で返す。
+///
+/// エラーメッセージ用の共通ヘルパ。「少なくとも片方が未受信」の状況でのみ使う契約で、
+/// `has_stdout` と `has_stderr` の両方が `true` の場合は呼び出し規約違反として
+/// `unreachable!` にする。
+fn describe_missing(has_stdout: bool, has_stderr: bool) -> &'static str {
+    match (has_stdout, has_stderr) {
+        (false, false) => "stdout/stderr",
+        (false, true) => "stdout",
+        (true, false) => "stderr",
+        (true, true) => unreachable!("stdout / stderr の少なくとも一方が未受信"),
+    }
+}
+
+/// exec の読み取りスレッド 2 本の結果を上限時間付きで待ち、stdout / stderr のバイト列を返す。
+///
+/// `containerWait` が成功で返った時点でプロセスは終了済みなので、通常はデーモンが
+/// write FD を閉じて即座に EOF が届き、この関数はほぼブロックせずに返る。
+/// EOF が来ない異常系 (デーモンが dup 済みの write FD を閉じない、exec 子プロセスが
+/// write FD を継承したまま残る等) では `timeout` を超えた時点で `cancel` フラグを
+/// 立てて両方のスレッドを打ち切る。フラグ観測から poll 間隔 100ms + read 1 回以内に
+/// スレッドは終了し、FD を回収する。
+///
+/// 打ち切り時は読み切れた分の出力を捨て、どのストリームが応答しなかったかを含めた
+/// エラーを返す。読み取りスレッドが結果を送らずに終了した (panic 等) 場合も
+/// エラーになる (通常は起こらない)。
+fn join_exec_readers(
+    rx: &std::sync::mpsc::Receiver<ExecReaderMsg>,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    timeout: Duration,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Instant;
+
+    let deadline = Instant::now() + timeout;
+    let mut stdout: Option<std::io::Result<Option<Vec<u8>>>> = None;
+    let mut stderr: Option<std::io::Result<Option<Vec<u8>>>> = None;
+
+    // 2 通のメッセージ (stdout / stderr) を上限時間内に受け取る。
+    // 片方が届いても、もう一方の deadline 残り時間で recv_timeout を続ける。
+    while stdout.is_none() || stderr.is_none() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(remaining) {
+            Ok(ExecReaderMsg::Stdout(r)) => stdout = Some(r),
+            Ok(ExecReaderMsg::Stderr(r)) => stderr = Some(r),
+            Err(RecvTimeoutError::Timeout) => break,
+            Err(RecvTimeoutError::Disconnected) => {
+                // 送信側 (両方の読み取りスレッド) が結果を送らずに全て終了した状態
+                // (panic 等)。通常は起こらないが、片方だけ受信済みで残りが panic した
+                // 場合も含めて、どのストリームが応答しなかったかを明示する。
+                let missing = describe_missing(stdout.is_some(), stderr.is_some());
+                return Err(ClientError::Other(format!(
+                    "exec reader thread for {missing} terminated without sending result"
+                ))
+                .into());
+            }
+        }
+    }
+
+    if stdout.is_none() || stderr.is_none() {
+        // 待ち上限を超過。キャンセルフラグを立てて、残っているスレッド (両方未着なら
+        // 2 本、片方だけ未着なら残り 1 本) の終了を待ち、FD を回収する。
+        // フラグ観測後は poll 間隔 (100ms) + read 1 回以内に終了する契約
+        // (read_file_to_vec_cancellable の doc 参照) のため無限待ちしてよい。
+        // 未受信ストリーム名は 2 段目 recv 前にスナップショットする
+        // (期限内に届かなかった、という判定は 2 段目の結果で変わらない)。
+        cancel.store(true, Ordering::Relaxed);
+        let missing = describe_missing(stdout.is_some(), stderr.is_some());
+        while stdout.is_none() || stderr.is_none() {
+            match rx.recv() {
+                Ok(ExecReaderMsg::Stdout(r)) => stdout = Some(r),
+                Ok(ExecReaderMsg::Stderr(r)) => stderr = Some(r),
+                Err(std::sync::mpsc::RecvError) => break,
+            }
+        }
+        return Err(ClientError::Other(format!(
+            "read {missing} timed out after {}ms",
+            timeout.as_millis()
+        ))
+        .into());
+    }
+
+    // 両方のストリームが期限内に届いた。
+    // 読み取り自体のエラーはそのまま伝播する。フラグを立てていない正常系では
+    // `Ok(None)` は返らないため、`Ok(None)` は打ち切りエラーに変換する
+    // (通常はここには到達しない: cancel フラグを立てるのは上のタイムアウト分岐のみ)。
+    let stdout_bytes = match stdout.expect("上のループでチェック済み") {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            return Err(
+                ClientError::Other("exec stdout reader was cancelled unexpectedly".into()).into(),
+            );
+        }
+        Err(e) => return Err(ClientError::Other(format!("read stdout failed: {e}")).into()),
+    };
+    let stderr_bytes = match stderr.expect("上のループでチェック済み") {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            return Err(
+                ClientError::Other("exec stderr reader was cancelled unexpectedly".into()).into(),
+            );
+        }
+        Err(e) => return Err(ClientError::Other(format!("read stderr failed: {e}")).into()),
+    };
+    Ok((stdout_bytes, stderr_bytes))
+}
+
 /// `File` を EOF まで読み出すが、キャンセルフラグが立つと読み取りを打ち切って
-/// `Ok(None)` を返す (エラーパス専用)。
+/// `Ok(None)` を返す。
 ///
 /// `libc::poll` で FD の読み取り可能性を監視しつつ、poll のタイムアウトごとに
 /// フラグを確認する。フラグが立っているのを観測したら即座に読み取りを打ち切って
 /// 終了する (poll のタイムアウト 100ms 以内に観測される)。64 MiB を超える場合は
 /// エラーを返す (OOM 防止)。
 ///
-/// フラグが立たない正常系では EOF まで読み切って `Ok(Some(bytes))` を返し、
-/// 従来の読み取り契約 (EOF までブロックして読み切る) を維持する (時間による
-/// 打ち切りはしない。5 秒超の exec でも出力を失わない)。
+/// フラグが立たない正常系では EOF まで読み切って `Ok(Some(bytes))` を返す。
+/// 時間による打ち切りはこの関数自体には無い (5 秒超の exec でも出力を失わない)。
 ///
-/// この関数の目的は、exec の `containerWait` 失敗時にデタッチした読み取りスレッドが
-/// 読み取り端 FD を握り続けるのを防ぐこと。エラーパスでフラグを立てると、
-/// 継続実行中のプロセスが書き込み端への書き込みで EPIPE を受け得るが、
-/// exec は失敗済みであるため許容する。
+/// 呼び出し元は 2 通りの場面でフラグを立て得る:
+/// - `XpcClient::exec` の `containerWait` 失敗時のエラーパス。デタッチした読み取り
+///   スレッドが読み取り端 FD を握り続けるのを防ぐ。
+/// - `join_exec_readers` のタイムアウト分岐。`containerWait` 成功後、EOF が
+///   来ない異常系 (デーモンが dup 済みの write FD を閉じない、exec 子プロセスが
+///   write FD を継承したまま残る等) で `EXEC_READER_JOIN_TIMEOUT` を超えた場合。
+///
+/// フラグを立てると、継続実行中のプロセスが書き込み端への書き込みで EPIPE を
+/// 受け得るが、いずれの場合も exec は既に失敗扱いのため許容する
+/// (containerWait 成功後の打ち切りではプロセスは終了済み、エラーパスでは exec
+/// 呼び出し自体が失敗を返すため)。
 fn read_file_to_vec_cancellable(
     mut f: std::fs::File,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1702,6 +1845,233 @@ mod tests {
             .expect("読み取りスレッドが panic しないこと")
             .expect("read がエラーにならないこと");
         assert_eq!(result, Some(b"hello".to_vec()), "EOF まで読み切ること");
+    }
+
+    /// mpsc 経由で両方のストリームが期限内に届いた場合、`(stdout, stderr)` として
+    /// 正しく組み立てられて返ること。
+    #[test]
+    fn join_exec_readers_succeeds_when_both_streams_deliver_in_time() {
+        use std::sync::atomic::AtomicBool;
+
+        let (tx, rx) = std::sync::mpsc::channel::<ExecReaderMsg>();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        // 送信順が stderr → stdout の場合でも、stdout / stderr の組み立てが
+        // 正しく行われることを確認する (mpsc は FIFO なので、この順序でも正しく
+        // enum バリアントで振り分けられれば結果に反映される)。
+        tx.send(ExecReaderMsg::Stderr(Ok(Some(b"err-body".to_vec()))))
+            .expect("stderr 送信に成功すること");
+        tx.send(ExecReaderMsg::Stdout(Ok(Some(b"out-body".to_vec()))))
+            .expect("stdout 送信に成功すること");
+        drop(tx);
+
+        let (stdout, stderr) = join_exec_readers(&rx, &cancel, Duration::from_secs(1))
+            .expect("両方のストリームが届いていれば成功すること");
+        assert_eq!(stdout, b"out-body");
+        assert_eq!(stderr, b"err-body");
+        assert!(
+            !cancel.load(std::sync::atomic::Ordering::Relaxed),
+            "正常系ではキャンセルフラグは立たないこと"
+        );
+    }
+
+    /// どちらのストリームも届かない状態で待ち上限を超過した場合、キャンセルフラグが
+    /// 立てられ、エラーメッセージに stdout / stderr の両方が含まれること。
+    #[test]
+    fn join_exec_readers_times_out_when_both_streams_missing() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (tx, rx) = std::sync::mpsc::channel::<ExecReaderMsg>();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+
+        // 上限超過後にスレッド側 (実際は無い) がフラグを見て終了する挙動を模す。
+        // ここではフラグを見てチャネルを閉じるだけ (実スレッド無しでロジックを検証)。
+        let bg_cancel = cancel.clone();
+        std::thread::spawn(move || {
+            while !bg_cancel.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            drop(tx);
+        });
+
+        let err = join_exec_readers(&rx, &cancel, Duration::from_millis(200))
+            .expect_err("上限超過はエラーであること");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("stdout/stderr"),
+            "両方のストリームが未受信であることが分かること: {msg}"
+        );
+        assert!(
+            msg.contains("timed out"),
+            "タイムアウトを示すメッセージであること: {msg}"
+        );
+        assert!(
+            cancel.load(Ordering::Relaxed),
+            "タイムアウト後にキャンセルフラグが立てられること"
+        );
+    }
+
+    /// stdout だけ届いて stderr が上限内に届かなかった場合、エラーメッセージに
+    /// `stderr` が含まれ、`stdout` は含まれないこと (どのストリームが応答しなかった
+    /// かを識別できる)。
+    #[test]
+    fn join_exec_readers_times_out_reports_which_stream_missing() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (tx, rx) = std::sync::mpsc::channel::<ExecReaderMsg>();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+
+        tx.send(ExecReaderMsg::Stdout(Ok(Some(b"partial".to_vec()))))
+            .expect("stdout 送信に成功すること");
+
+        let bg_cancel = cancel.clone();
+        std::thread::spawn(move || {
+            while !bg_cancel.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            drop(tx);
+        });
+
+        let err = join_exec_readers(&rx, &cancel, Duration::from_millis(200))
+            .expect_err("上限超過はエラーであること");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("read stderr timed out"),
+            "stderr がタイムアウトしたことが分かること: {msg}"
+        );
+        assert!(
+            !msg.contains("stdout"),
+            "届いた側のストリーム名 (stdout) は含めないこと: {msg}"
+        );
+    }
+
+    /// スレッドが結果を送らずに全て終了した (Disconnected) 場合はエラーになること
+    /// (通常は起こらないが、panic 対策として)。両方のストリームが未受信であることが
+    /// エラーメッセージから分かること。
+    #[test]
+    fn join_exec_readers_returns_error_on_disconnect() {
+        use std::sync::atomic::AtomicBool;
+
+        let (tx, rx) = std::sync::mpsc::channel::<ExecReaderMsg>();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        drop(tx);
+
+        let err = join_exec_readers(&rx, &cancel, Duration::from_secs(1))
+            .expect_err("Disconnected はエラーであること");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("terminated without sending"),
+            "Disconnected のエラーメッセージであること: {msg}"
+        );
+        assert!(
+            msg.contains("stdout/stderr"),
+            "両方のストリームが未受信であることがメッセージから分かること: {msg}"
+        );
+    }
+
+    /// stdout だけ届いた状態で残りの送信端が drop される (もう片方のスレッドが結果を
+    /// 送らずに終了した) と、`stderr` が未受信であることがエラーメッセージから
+    /// 分かること。届いた側 (stdout) は「未受信」として報告しないこと。
+    #[test]
+    fn join_exec_readers_disconnect_reports_missing_stream() {
+        use std::sync::atomic::AtomicBool;
+
+        let (tx, rx) = std::sync::mpsc::channel::<ExecReaderMsg>();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        tx.send(ExecReaderMsg::Stdout(Ok(Some(b"partial".to_vec()))))
+            .expect("stdout 送信に成功すること");
+        drop(tx);
+
+        let err = join_exec_readers(&rx, &cancel, Duration::from_secs(1))
+            .expect_err("Disconnected はエラーであること");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("stderr"),
+            "stderr が未受信であることが分かること: {msg}"
+        );
+        assert!(
+            !msg.contains("stdout"),
+            "届いた側 (stdout) の名前は未受信対象として現れないこと: {msg}"
+        );
+        assert!(
+            msg.contains("terminated without sending"),
+            "Disconnected のエラー種別であることが分かること: {msg}"
+        );
+    }
+
+    /// 読み取りがエラーで終わった場合はそのエラーが伝播すること。
+    #[test]
+    fn join_exec_readers_returns_read_error() {
+        use std::sync::atomic::AtomicBool;
+
+        let (tx, rx) = std::sync::mpsc::channel::<ExecReaderMsg>();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        tx.send(ExecReaderMsg::Stdout(Err(std::io::Error::other(
+            "broken pipe",
+        ))))
+        .expect("stdout エラー送信に成功すること");
+        tx.send(ExecReaderMsg::Stderr(Ok(Some(Vec::new()))))
+            .expect("stderr 送信に成功すること");
+        drop(tx);
+
+        let err = join_exec_readers(&rx, &cancel, Duration::from_secs(1))
+            .expect_err("読み取りエラーは伝播すること");
+        assert!(
+            err.to_string().contains("read stdout failed"),
+            "stdout の読み取り失敗であることが分かること: {err}"
+        );
+    }
+
+    /// 実際の読み取りスレッドを 2 本 pipe に対して起動し、書き込み端を閉じない (EOF が
+    /// 来ない) 異常系を再現する。`join_exec_readers` の上限内にキャンセルフラグを立てて
+    /// スレッドを回収し、エラーを返すこと (統合的な検証)。
+    #[test]
+    fn join_exec_readers_reclaims_reader_threads_on_timeout() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (out_read, out_write) = super::create_pipe().expect("pipe の作成に成功すること");
+        let (err_read, err_write) = super::create_pipe().expect("pipe の作成に成功すること");
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel::<ExecReaderMsg>();
+        let out_cancel = cancel.clone();
+        let err_cancel = cancel.clone();
+        let out_tx = tx.clone();
+        let err_tx = tx;
+        let out_thread = std::thread::spawn(move || {
+            let r = read_file_to_vec_cancellable(out_read, out_cancel);
+            let _ = out_tx.send(ExecReaderMsg::Stdout(r));
+        });
+        let err_thread = std::thread::spawn(move || {
+            let r = read_file_to_vec_cancellable(err_read, err_cancel);
+            let _ = err_tx.send(ExecReaderMsg::Stderr(r));
+        });
+
+        // 書き込み端は開いたまま (EOF が来ない異常系)。300ms の上限で打ち切りを検証する。
+        let err = join_exec_readers(&rx, &cancel, Duration::from_millis(300))
+            .expect_err("EOF が来ない場合は上限で打ち切りエラーになること");
+        assert!(
+            err.to_string().contains("timed out"),
+            "タイムアウトのエラーメッセージであること: {err}"
+        );
+        assert!(
+            cancel.load(Ordering::Relaxed),
+            "打ち切り時にキャンセルフラグが立てられること"
+        );
+
+        // スレッドが FD を握り続けないこと (poll 間隔 100ms + read 1 回以内に終了する
+        // ため、余裕を持って 2 秒以内に join できること)。
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send((out_thread.join(), err_thread.join()));
+        });
+        let (out_join, err_join) = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("打ち切り後 2 秒以内に両方の読み取りスレッドが終了すること");
+        out_join.expect("stdout スレッドが panic しないこと");
+        err_join.expect("stderr スレッドが panic しないこと");
+
+        // pipe の書き込み端は最後まで開いたままにしていたことを確認 (異常系の再現条件)。
+        drop(out_write);
+        drop(err_write);
     }
 
     /// キャンセルフラグを立てず、EOF も来ない状態が 5 秒を超えても、正常系の
