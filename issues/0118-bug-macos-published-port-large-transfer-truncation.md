@@ -1,7 +1,7 @@
 # バグ: macOS の published port で大容量レスポンスが遅い消費者に対して途中で切断される
 
 - Created: 2026-08-18
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-18
 - Branch: feature/fix-macos-published-port-large-transfer-truncation
 - Polished: 2026-08-18
 
@@ -33,6 +33,16 @@ http11-rs の nginx 統合テスト (`examples/http11_client/tests/nginx_upload.
 - Linux (Docker) では同一テストが 3/3 回成功する
 - container CLI / ランタイム 1.2.2 でも再現する
 
+### 観測記録 (2026-08-18 追加)
+
+再現テスト実装時に、macOS (Apple Container 1.2.2) で「観測結果」のプローブと同様の遅い消費者 (8 KiB 読み + 読み合間に 1 ms 待機) を使って 10 MiB GET の観測を行った。
+
+- published port 経由: 4 回中 3 回で途中切断を観測 (Content-Length 10,485,760 に対し、受信 10,458,108 / 10,341,308 / 9,915,648 バイトで EOF。残り 1 回は完全受信)
+- コンテナ IP 直結 (`get_bridge_ip_address` で取得した IP へ直接接続、同条件): 3 回中 3 回で 10 MiB を完全受信 (途中切断なし)
+- 再現テスト (published port 経由) の実行でも、Content-Length 10,485,760 に対し受信 8,367,416 バイトで途中切断を観測
+
+コンテナ IP 直結は遅い消費者でも大容量レスポンスを完全受信できたため、回避策として文書化する。
+
 ### 原因の切り分け
 
 - データ経路に shiguredo_container のコードは介在しない。published port の設定は `src/core/client/container_cfg.rs` の `build_config` が `publishedPorts` に反映するのみで、転送自体は Apple 側のポートフォワーダー (`container-runtime-linux`) が担う
@@ -56,3 +66,13 @@ http11-rs の nginx 統合テスト (`examples/http11_client/tests/nginx_upload.
 - コンテナ IP 直結で遅い消費者でも 10 MiB レスポンスを完全受信できることを確認した観測記録が本 issue に残されている
 - `docs/TESTCONTAINERS.md`・`README.md`・`skills/shiguredo-container/SKILL.md` に、macOS の published port で大容量レスポンスが遅い消費者に対して途中切断され得る制約と回避策 (コンテナ IP 直結等) が記載されている
 - Apple へのフィードバックの送信状況 (送信した / 送らない判断) が本 issue に記録されている
+
+## 解決方法
+
+原因は Apple 側 (ポートフォワーダー) と推定され、本クレート側からは直接修正できないため、コードの修正は行わない。代わりに次を実施した。
+
+- `tests/nginx_http11.rs` に再現テスト `published_port_large_response_truncates_for_slow_consumer` を追加した。`RUN_HOST_NETWORK_TESTS=1` ゲート付きで、nginx を published port で起動し 10 MiB の静的ファイルを遅い消費者 (8 KiB 読み + 読み合間に 1 ms 待機) で GET し、切断の有無を報告する。切断は確率的なため、切断を観測しても観測しなくても失敗にはしない (観測の道具として使う。Apple 側で修正された場合は完全受信を期待する検証に変更する)
+- 遅い消費者での 10 MiB GET の観測を macOS (Apple Container 1.2.2) で行い、「観測記録 (2026-08-18 追加)」節に追記した。published port 経由は 4 回中 3 回で途中切断 (受信 10,458,108 / 10,341,308 / 9,915,648 バイトで EOF)、コンテナ IP 直結は 3 回中 3 回で完全受信した。この観測からコンテナ IP 直結を回避策として文書化した
+- `docs/TESTCONTAINERS.md` の 10.3 節の注記・`README.md` の WARNING・`skills/shiguredo-container/SKILL.md` の既知の制限事項に、macOS の published port で大容量レスポンスが遅い消費者に対して途中切断され得る制約と回避策 (コンテナ IP 直結) を明記した
+- `CHANGES.md` の misc セクションに、再現テスト追加のエントリを追記した (`.md` ドキュメント変更分は非対象)
+- Apple へのフィードバック (Feedback Assistant 等) は送付しない判断とした。本 issue の観測記録 (再現手順・切り分け結果・観測数値) を報告材料として残す
