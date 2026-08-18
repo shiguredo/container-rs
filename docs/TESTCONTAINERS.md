@@ -81,12 +81,12 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 
 判定内訳の傾向 (Apple Container):
 
-- **対応** (287): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` / `Healthcheck` 型はほぼ揃っている
+- **対応** (283): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` / `Healthcheck` 型はほぼ揃っている
 - **部分対応** (19): シグネチャあり + 動作するが XPC の情報不足 / 型不一致 / 挙動制約付き (例: `get_host` = `localhost` 固定 など)。うち 4 行は「部分対応 (意図的)」で、API 設計上の置き換えによる差分 (10.3 参照)
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
 - **未実装 (XPC 制約)** (4): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機)・`with_health_check` (start 時明示エラー)・`HealthWaitStrategy::wait_until_ready` (10.2 参照)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` は `ContainerAsync` が `#[cfg(target_os = "linux")]` でクローズ、sync `Container` はシグネチャ自体を削除したため「なし」に分類
 - **なし** (58): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
-- **shiguredo 拡張** (24): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths` (4 行)、`ContainerAsync::container_state` / `rm_blocking` (2 行)、`Container::container_state` / `rm_blocking` (2 行)、`ClientError::XpcConnect` / `Xpc` / `XpcNullReply` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` (9 行)、`ContainerRequest` の `init` / `ssh` accessor (1 行)、`ContainerRequest` の `masked_paths` / `readonly_paths` accessor (1 行)、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` (4 行)、`HttpWaitStrategy::with_request_timeout` (1 行)
+- **shiguredo 拡張** (23): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths` (4 行)、`ContainerAsync::container_state` / `rm_blocking` (2 行)、`Container::container_state` / `rm_blocking` (2 行)、`ClientError::XpcConnect` / `Xpc` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` (8 行)、`ContainerRequest` の `init` / `ssh` accessor (1 行)、`ContainerRequest` の `masked_paths` / `readonly_paths` accessor (1 行)、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` (4 行)、`HttpWaitStrategy::with_request_timeout` (1 行)
   - 件数は対応表の「shiguredo 拡張」判定の行数。`ContainerRequest` の accessor は対応表ではいずれも 1 行にまとめている
 
 ## サマリ (Docker Engine API)
@@ -648,31 +648,22 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `Client(#[from] ClientError)` | あり | 対応 | 対応 | ClientError の中身は違う (17.4 参照) |
+| `Client(#[from] ClientError)` | あり | 対応 | 対応 | ClientError の中身は違う (17.3 参照) |
 | `WaitContainer(#[from] WaitContainerError)` | あり | 対応 | 対応 |  |
 | `PortNotExposed { id, port }` | あり | 対応 | 対応 |  |
-| `MissingInfo(#[from] ContainerMissingInfo)` | あり | 対応 | 対応 |  |
 | `Exec(#[from] ExecError)` | あり | 対応 | 対応 | Docker: exit code mismatch 等で利用 |
 | `Io(#[from] std::io::Error)` | あり | 対応 | 対応 |  |
 | `Other(Box<dyn Error + Sync + Send>)` | あり | 対応 | 対応 |  |
 | `Error::other<E>(e) -> Self` | あり | 対応 | 対応 |  |
 | `pub type Result<T>` | あり | 対応 | 対応 |  |
 
-### 17.2 `ContainerMissingInfo`
-
-| API | 本家 | Apple Container | Docker Engine API | 備考 |
-|:--|:--|:--|:--|:--|
-| `#[error("container '{id}' does not have: {path}")]` | あり | 対応 | 対応 |  |
-| `pub(crate) fn new(id, path)` | あり | 対応 | 対応 |  |
-
-### 17.3 `ExecError`
+### 17.2 `ExecError`
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `ExitCodeMismatch { expected: i64, actual: i64 }` | あり | 対応 | 対応 |  |
-| `WaitLog(#[from] WaitLogError)` | あり | 対応 | 対応 |  |
 
-### 17.4 `ClientError`
+### 17.3 `ClientError`
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
@@ -682,7 +673,6 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `PullImage / BuildImage / PortMapping / ListContainers / CreateContainer / RemoveContainer / StartContainer / StopContainer / PauseContainer / UnpauseContainer / InspectContainer / CreateNetwork / InspectNetwork / ListNetworks / RemoveNetwork / InitExec / InspectExec / UploadToContainerError / CopyToContainerError / CopyFromContainerError` | あり | なし | なし | shiguredo は Xpc 系エラーに置換 |
 | `XpcConnect` | なし | shiguredo 拡張 | なし | XPC 接続失敗 / Docker: XPC 固有 |
 | `Xpc(String)` | なし | shiguredo 拡張 | なし | Docker: XPC 固有 |
-| `XpcNullReply` | なし | shiguredo 拡張 | なし | Docker: XPC 固有 |
 | `XpcTimeout` | なし | shiguredo 拡張 | なし | XPC 呼び出しがタイムアウト / Docker: XPC 固有 |
 | `ImageNotFound(String)` | なし | shiguredo 拡張 | 対応 | Docker: Linux の DockerClient でも使用 |
 | `ContainerNotFound(String)` | なし | shiguredo 拡張 | 対応 | Docker: Linux の DockerClient でも使用 |
@@ -690,23 +680,22 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `Json(String)` | なし | shiguredo 拡張 | 対応 | Docker: Linux の DockerClient でも使用 |
 | `Other(String)` | なし | shiguredo 拡張 | 対応 | Docker: Linux の DockerClient でも使用 |
 
-### 17.5 `ConfigurationError`
+### 17.4 `ConfigurationError`
 
 本家の `ConfigurationError` 型 (バリアント: `InvalidDockerHost` / `UnknownCommand` / `WrongPropertiesFormat` (feature = `properties-config`) / `MissingContainerNameAndLabels` (feature = `reusable-containers`)) は存在しない。shiguredo の設定エラーは `ClientError::Configuration(String)` で表す。
 
-### 17.6 `WaitContainerError`
+### 17.5 `WaitContainerError`
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
 | `WaitLog(#[from] WaitLogError)` | あり | 対応 | 対応 |  |
-| `StateUnavailable` | あり | 対応 | 対応 |  |
 | `HttpWait(#[from] HttpWaitError)` (feature) | あり | 対応 | 対応 | feature = `http_wait_plain`。non-feature ビルドではバリアント自体が無い (本家と同じ) |
 | `HealthCheckNotConfigured(String)` | あり | 対応 | 対応 |  |
 | `Unhealthy(String)` | あり | 対応 | 対応 | 本家は `Unhealthy` (ユニットバリアント)。shiguredo は原因を保持する `Unhealthy(String)` (意図的差分) |
 | `StartupTimeout` | あり | 対応 | 対応 |  |
 | `UnexpectedExitCode { expected: i64, actual: Option<i64> }` | あり | 対応 | 対応 |  |
 
-### 17.7 `WaitLogError`
+### 17.6 `WaitLogError`
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
@@ -829,7 +818,7 @@ Apple container の XPC には対応 route が無いが、本家 API 互換の�
 - `ContainerAsync::rm_blocking` — Apple: `remove_blocking` を直接呼び出し (deadlock しない)。Docker: 対応
 - `Container::container_state` — Apple: 対応 (ContainerAsync に委譲)。Docker: 配線済み
 - `Container::rm_blocking` — Apple: 対応 (ContainerAsync に委譲)。Docker: 対応
-- `ClientError::XpcConnect` / `Xpc` / `XpcNullReply` / `XpcTimeout` — Apple: XPC 固有のエラーバリアント。Docker: なし
+- `ClientError::XpcConnect` / `Xpc` / `XpcTimeout` — Apple: XPC 固有のエラーバリアント。Docker: なし
 - `ClientError::ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` — Apple: 対応。Docker: Linux の DockerClient でも使用
 - `ContainerRequest` の `init` / `ssh` accessor — Apple: 対応。Docker: `init()` は HostConfig.Init に配線済み、`ssh()` は未反映
 - `ContainerRequest` の `masked_paths` / `readonly_paths` accessor — Apple: 対応。Docker: `Some` を返すと start 時に明示エラー

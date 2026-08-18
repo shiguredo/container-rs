@@ -28,8 +28,6 @@ pub enum Error {
         /// 公開されていないポート。
         port: ContainerPort,
     },
-    /// コンテナの情報が足りない。
-    MissingInfo(ContainerMissingInfo),
     /// exec 操作の失敗。
     Exec(ExecError),
     /// I/O エラー。
@@ -46,7 +44,6 @@ impl fmt::Display for Error {
             Error::PortNotExposed { id, port } => {
                 write!(f, "container '{id}' does not expose port {port}")
             }
-            Error::MissingInfo(e) => write!(f, "{e}"),
             Error::Exec(e) => write!(f, "exec operation failed: {e}"),
             Error::Io(e) => write!(f, "I/O error: {e}"),
             Error::Other(e) => write!(f, "other error: {e}"),
@@ -59,7 +56,6 @@ impl StdError for Error {
         match self {
             Error::Client(e) => Some(e),
             Error::WaitContainer(e) => Some(e),
-            Error::MissingInfo(e) => Some(e),
             Error::Exec(e) => Some(e),
             Error::Io(e) => Some(e),
             Error::Other(e) => Some(e.as_ref()),
@@ -83,12 +79,6 @@ impl From<WaitContainerError> for Error {
 impl From<WaitLogError> for Error {
     fn from(e: WaitLogError) -> Self {
         Self::WaitContainer(WaitContainerError::WaitLog(e))
-    }
-}
-
-impl From<ContainerMissingInfo> for Error {
-    fn from(e: ContainerMissingInfo) -> Self {
-        Self::MissingInfo(e)
     }
 }
 
@@ -117,8 +107,6 @@ pub enum ClientError {
     XpcConnect,
     /// XPC からエラー応答が返った。
     Xpc(String),
-    /// XPC から null 応答が返った。
-    XpcNullReply,
     /// XPC 呼び出しがタイムアウトした。
     XpcTimeout,
     /// イメージが見つからない。
@@ -140,7 +128,6 @@ impl fmt::Display for ClientError {
         match self {
             ClientError::XpcConnect => write!(f, "XPC connect failed"),
             ClientError::Xpc(s) => write!(f, "XPC error: {s}"),
-            ClientError::XpcNullReply => write!(f, "XPC returned null reply"),
             ClientError::XpcTimeout => write!(f, "XPC request timed out"),
             ClientError::ImageNotFound(s) => write!(f, "image not found: {s}"),
             ClientError::ContainerNotFound(s) => write!(f, "container not found: {s}"),
@@ -154,21 +141,6 @@ impl fmt::Display for ClientError {
 
 impl StdError for ClientError {}
 
-/// コンテナに必要な情報が存在しないことを示すエラー。
-#[derive(Debug)]
-pub struct ContainerMissingInfo {
-    pub(crate) id: String,
-    pub(crate) path: String,
-}
-
-impl fmt::Display for ContainerMissingInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "container '{}' does not have: {}", self.id, self.path)
-    }
-}
-
-impl StdError for ContainerMissingInfo {}
-
 /// exec 操作のエラー。
 #[derive(Debug)]
 pub enum ExecError {
@@ -179,8 +151,6 @@ pub enum ExecError {
         /// 実際の終了コード。
         actual: i64,
     },
-    /// exec のログ待機に失敗した。
-    WaitLog(WaitLogError),
 }
 
 impl fmt::Display for ExecError {
@@ -192,7 +162,6 @@ impl fmt::Display for ExecError {
                     "exec process exited with code {actual}, expected {expected}"
                 )
             }
-            ExecError::WaitLog(e) => write!(f, "failed to wait for exec log: {e}"),
         }
     }
 }
@@ -200,15 +169,8 @@ impl fmt::Display for ExecError {
 impl StdError for ExecError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
-            ExecError::WaitLog(e) => Some(e),
             ExecError::ExitCodeMismatch { .. } => None,
         }
-    }
-}
-
-impl From<WaitLogError> for ExecError {
-    fn from(e: WaitLogError) -> Self {
-        Self::WaitLog(e)
     }
 }
 
@@ -217,8 +179,6 @@ impl From<WaitLogError> for ExecError {
 pub enum WaitContainerError {
     /// ログ待機に失敗した。
     WaitLog(WaitLogError),
-    /// コンテナの状態を取得できない。
-    StateUnavailable,
     /// HTTP 待機に失敗した。
     #[cfg(feature = "http_wait_plain")]
     HttpWait(crate::core::wait::http_strategy::HttpWaitError),
@@ -246,7 +206,6 @@ impl fmt::Display for WaitContainerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             WaitContainerError::WaitLog(e) => write!(f, "failed to wait for container log: {e}"),
-            WaitContainerError::StateUnavailable => write!(f, "container state is unavailable"),
             #[cfg(feature = "http_wait_plain")]
             WaitContainerError::HttpWait(e) => write!(f, "{e}"),
             WaitContainerError::HealthCheckNotConfigured(s) => {
@@ -281,7 +240,6 @@ impl StdError for WaitContainerError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             WaitContainerError::WaitLog(e) => Some(e),
-            WaitContainerError::StateUnavailable => None,
             #[cfg(feature = "http_wait_plain")]
             WaitContainerError::HttpWait(e) => Some(e),
             WaitContainerError::HealthCheckNotConfigured(_) => None,
@@ -431,33 +389,6 @@ mod tests {
         assert!(
             err.source().is_some(),
             "WaitLogError::Io は source を持つこと"
-        );
-    }
-
-    #[test]
-    fn exec_error_wait_log_roundtrip() {
-        let wait = WaitLogError::EndOfStream(vec![b"x".to_vec()]);
-        let exec: ExecError = wait.into();
-        assert!(
-            matches!(exec, ExecError::WaitLog(_)),
-            "WaitLogError から ExecError::WaitLog への変換が正しいこと"
-        );
-        assert!(
-            exec.source().is_some(),
-            "ExecError::WaitLog は source を持つこと"
-        );
-    }
-
-    #[test]
-    fn container_missing_info_display_contains_id_and_path() {
-        let info = ContainerMissingInfo {
-            id: "abc".to_owned(),
-            path: "bridge ip".to_owned(),
-        };
-        let text = info.to_string();
-        assert!(
-            text.contains("abc") && text.contains("bridge ip"),
-            "ContainerMissingInfo の Display が id と path を含むこと"
         );
     }
 

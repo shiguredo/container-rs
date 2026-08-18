@@ -276,11 +276,11 @@ let container = GenericImage::new("nginx", "latest")
 
 ## エラー型
 
-`Error` (crate root): `Client(ClientError)`, `WaitContainer(WaitContainerError)`, `PortNotExposed { id, port }`, `MissingInfo(ContainerMissingInfo)`, `Exec(ExecError)`, `Io(std::io::Error)`, `Other(Box<dyn Error>)`。`pub type Result<T>` あり。
+`Error` (crate root): `Client(ClientError)`, `WaitContainer(WaitContainerError)`, `PortNotExposed { id, port }`, `Exec(ExecError)`, `Io(std::io::Error)`, `Other(Box<dyn Error>)`。`pub type Result<T>` あり。
 
-- `ClientError`: shiguredo 拡張として `XpcConnect` / `Xpc(String)` / `XpcNullReply` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` を持つ (bollard 系エラーは無い)
-- `WaitContainerError`: `WaitLog`, `StateUnavailable`, `HttpWait(HttpWaitError)` (feature), `HealthCheckNotConfigured`, `Unhealthy`, `StartupTimeout`, `UnexpectedExitCode { expected, actual }`
-- `ExecError`: `ExitCodeMismatch { expected, actual }`, `WaitLog(WaitLogError)`
+- `ClientError`: shiguredo 拡張として `XpcConnect` / `Xpc(String)` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` を持つ (bollard 系エラーは無い)
+- `WaitContainerError`: `WaitLog`, `HttpWait(HttpWaitError)` (feature), `HealthCheckNotConfigured`, `Unhealthy`, `StartupTimeout`, `UnexpectedExitCode { expected, actual }`
+- `ExecError`: `ExitCodeMismatch { expected, actual }`
 - `WaitLogError`: `EndOfStream(Vec<Vec<u8>>)` (本家は `Vec<Bytes>`。意図的差分), `Io`
 - `CopyToContainerError`: `IoError`, `PathNameError`, `SizeLimitExceeded { limit, name }`
 
