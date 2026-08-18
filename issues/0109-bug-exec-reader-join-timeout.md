@@ -1,7 +1,7 @@
 # バグ: macOS exec の成功経路で読み取りスレッドの join にタイムアウトが無く永久ハングし得る
 
 - Created: 2026-08-12
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-18
 - Branch: feature/fix-exec-reader-join-timeout
 - Polished: 2026-08-12
 
@@ -33,3 +33,15 @@ exec の出力読み取りスレッドが、デーモン側が pipe の書き込
 - 正常系の exec (stdout / stderr 取得) が従来どおり動作すること (既存の exec 統合テストが引き続き通ること)
 - 修正で陳腐化するコメント・`expect` (`read_file_to_vec_cancellable` の doc の「エラーパス専用」・「正常系の exec では読み取りが打ち切られないため Some になること」) が更新されること
 - `CHANGES.md` に `[FIX]` エントリが記載されること
+
+## 解決方法
+
+- `src/core/client/xpc_client.rs` の `XpcClient::exec` から、読み取りスレッドの結果を 1 本の mpsc チャネル (`ExecReaderMsg` enum で stdout / stderr を識別) で受け取り `recv_timeout` で待つ構造に変更した
+- 待ち上限を求めるロジックを新設した `join_exec_readers` 関数に抽出し、`EXEC_READER_JOIN_TIMEOUT` (5 秒固定) を渡して単体テストからは短縮注入できるようにした
+- タイムアウト時はキャンセルフラグを立て (0083 のパターン踏襲)、残っているスレッドの結果を 2 段目 recv で回収してから、どのストリームが応答しなかったかを含めたエラー (`read stdout/stderr timed out after 5000ms` 相当) を返す。読み切れた分の出力と exit code は捨てる
+- 打ち切り時のエラー種別は `ClientError::Other`、メッセージは英語で統一 (未受信ストリーム名は共通ヘルパ `describe_missing` で組み立て)
+- Disconnected (読み取りスレッドが結果を送らず終了) も同ヘルパで未受信ストリーム名を含めたエラーに変換する。読み取りエラーは `read stdout failed: ...` / `read stderr failed: ...` に変換して伝播する
+- `containerWait` 失敗時のエラーパスは 0083 の設計 (デタッチ + キャンセルフラグ) を維持する。mpsc 化は成功経路のみ
+- `read_file_to_vec_cancellable` の doc を更新し、キャンセル契機の 2 通り (`XpcClient::exec` の containerWait 失敗パス、`join_exec_readers` のタイムアウト分岐) と目的を明記した。従来の「エラーパス専用」の記述と `expect("正常系の exec では読み取りが打ち切られないため Some になること")` を除去した
+- テスト: `join_exec_readers` の単体テスト 6 件 (両ストリーム受信・両方タイムアウト・片方タイムアウトのストリーム名報告・Disconnected 両方 missing・Disconnected 片方 missing・読み取りエラー伝播) と、実 pipe + 実読み取りスレッド 2 本で EOF 未着信の異常系を再現しキャンセルフラグでスレッドを回収する統合的な単体テスト 1 件を追加した
+- `CHANGES.md` の develop セクションに `[FIX]` エントリを追加した
