@@ -69,23 +69,23 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 
 | 状態 | 件数 |
 |:--|--:|
-| 対応 | 287 |
+| 対応 | 284 |
 | 部分対応 | 19 |
 | 未実装 (実装可能) | 0 |
 | 未実装 (XPC 制約) | 4 |
-| なし | 58 |
-| shiguredo 拡張 (本家に無い追加 API) | 24 |
+| なし | 64 |
+| shiguredo 拡張 (本家に無い追加 API) | 23 |
 | 内部型/内部関数 (対象外) | 5 |
 
-内訳合計: 392 API 程度 (判定対象。対象外 5 は含まない。feature ゲート表の「備考」列も集計外)。件数は参考値で、対応表の行数を機械集計したもの。API の追加・削除で随時変わる。
+内訳合計: 394 API 程度 (判定対象。対象外 5 は含まない。feature ゲート表の「備考」列も集計外)。件数は参考値で、対応表の行数を機械集計したもの。API の追加・削除で随時変わる。
 
 判定内訳の傾向 (Apple Container):
 
-- **対応** (283): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` / `Healthcheck` 型はほぼ揃っている
+- **対応** (284): 基本的な `Image` / `ImageExt` / `AsyncRunner` / `SyncRunner` / `ContainerRequest` / `WaitFor` / `LogConsumer` / `Mount` / `ContainerPort` / `Error` / `GenericImage` / `Healthcheck` 型はほぼ揃っている
 - **部分対応** (19): シグネチャあり + 動作するが XPC の情報不足 / 型不一致 / 挙動制約付き (例: `get_host` = `localhost` 固定 など)。うち 4 行は「部分対応 (意図的)」で、API 設計上の置き換えによる差分 (10.3 参照)
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
 - **未実装 (XPC 制約)** (4): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機)・`with_health_check` (start 時明示エラー)・`HealthWaitStrategy::wait_until_ready` (10.2 参照)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` は `ContainerAsync` が `#[cfg(target_os = "linux")]` でクローズ、sync `Container` はシグネチャ自体を削除したため「なし」に分類
-- **なし** (58): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
+- **なし** (64): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
 - **shiguredo 拡張** (23): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths` (4 行)、`ContainerAsync::container_state` / `rm_blocking` (2 行)、`Container::container_state` / `rm_blocking` (2 行)、`ClientError::XpcConnect` / `Xpc` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` (8 行)、`ContainerRequest` の `init` / `ssh` accessor (1 行)、`ContainerRequest` の `masked_paths` / `readonly_paths` accessor (1 行)、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` (4 行)、`HttpWaitStrategy::with_request_timeout` (1 行)
   - 件数は対応表の「shiguredo 拡張」判定の行数。`ContainerRequest` の accessor は対応表ではいずれも 1 行にまとめている
 
