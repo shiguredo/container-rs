@@ -49,23 +49,13 @@ static EXHAUSTED_WARNED: AtomicBool = AtomicBool::new(false);
 /// spawn 再試行の上限回数。
 const MAX_SPAWN_FAILURES: u32 = 3;
 
-/// コンテナ ID が reaper に安全に渡せる形式か検証する。
-///
-/// Apple container 1.2.0 の `nameValid` 相当の制約 (先頭は英数字・実質 2 文字以上・63 文字以下・
-/// 文字種は英数字 / `_` / `.` / `-`) に委譲する。新規則の受理集合は従来の `[A-Za-z0-9._-]` の
-/// 受理集合の部分集合であり、空文字・空白・改行・glob 文字の拒否による reaper スクリプトの
-/// シェル安全性は維持される (1 文字 ID は `nameValid` が許さないため拒否する)。
-fn is_valid_container_id(id: &str) -> bool {
-    crate::core::util::is_valid_container_id(id)
-}
-
 /// コンテナ ID を reaper に登録する。
 ///
 /// reaper が未起動または pipe が死んでいる場合は、失敗回数が上限未満なら再 spawn する。
 /// ID は Apple container 1.2.0 の `nameValid` 相当の制約で検証し、不適合なら登録しない。
 pub(crate) fn register(id: &str) {
     // 不適合な ID は reaper スクリプトの行分割を壊すため登録しない。
-    if !is_valid_container_id(id) {
+    if !crate::core::util::is_valid_container_id(id) {
         tracing::warn!("watchdog refused invalid container id: {id:?}");
         return;
     }
@@ -211,53 +201,6 @@ mod tests {
     fn reset_global_failures() {
         SPAWN_FAILURES.store(0, Ordering::Relaxed);
         EXHAUSTED_WARNED.store(false, Ordering::Relaxed);
-    }
-
-    /// デフォルト生成 ID 形式と一般的な名前が適合すること。
-    #[test]
-    fn accepts_valid_container_ids() {
-        assert!(
-            is_valid_container_id("c-1-2-3"),
-            "デフォルト形式の ID は適合するべき"
-        );
-        assert!(
-            is_valid_container_id("my_container.test-01"),
-            "許可文字のみの名前は適合するべき"
-        );
-        assert!(
-            is_valid_container_id("A1"),
-            "英数字 2 文字以上の名前は適合するべき"
-        );
-    }
-
-    /// 空文字・空白・改行・glob 文字など不適合 ID を拒否すること。
-    #[test]
-    fn rejects_invalid_container_ids() {
-        assert!(!is_valid_container_id(""), "空文字は拒否するべき");
-        assert!(
-            !is_valid_container_id("A"),
-            "1 文字の ID は拒否するべき (nameValid は実質 2 文字以上)"
-        );
-        assert!(
-            !is_valid_container_id("has space"),
-            "空白を含む ID は拒否するべき"
-        );
-        assert!(
-            !is_valid_container_id("glob*"),
-            "glob 文字を含む ID は拒否するべき"
-        );
-        assert!(
-            !is_valid_container_id("line\nbreak"),
-            "改行を含む ID は拒否するべき"
-        );
-        assert!(
-            !is_valid_container_id("q?"),
-            "クエスチョンマークを含む ID は拒否するべき"
-        );
-        assert!(
-            !is_valid_container_id("a/b"),
-            "スラッシュを含む ID は拒否するべき"
-        );
     }
 
     /// 既存 reaper への write 失敗 (外部 kill 相当) は失敗回数に加算されないこと。

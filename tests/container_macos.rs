@@ -2728,18 +2728,13 @@ mod test_container_xpc {
 
         match result {
             Err(shiguredo_container::Error::WaitContainer(WaitContainerError::WaitLog(
-                WaitLogError::EndOfStream(chunks),
+                WaitLogError::EndOfStream(bytes),
             ))) => {
                 assert!(
-                    chunks.len() <= 1,
-                    "EndOfStream のログチャンク数は 0 または 1 であること: {chunks:?}"
-                );
-                assert!(
-                    chunks
-                        .concat()
+                    bytes
                         .windows(b"BEFORE_EXIT".len())
                         .any(|w| w == b"BEFORE_EXIT"),
-                    "EndOfStream の診断ログに BEFORE_EXIT が含まれること: {chunks:?}"
+                    "EndOfStream の診断ログに BEFORE_EXIT が含まれること: {bytes:?}"
                 );
             }
             other => panic!("ログ待機は EndOfStream になること: {other:?}"),

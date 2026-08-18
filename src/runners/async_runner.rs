@@ -148,10 +148,7 @@ where
             // クラッシュでも孤立コンテナを掃除できるようにする。
             // TESTCONTAINERS_COMMAND=keep 指定時はコンテナを残す意図なので登録しない。
             #[cfg(feature = "watchdog")]
-            if !matches!(
-                crate::core::env::Config.command(),
-                crate::core::env::Command::Keep
-            ) {
+            if !matches!(crate::core::env::command(), crate::core::env::Command::Keep) {
                 crate::watchdog::register(&id);
             }
 
@@ -272,8 +269,7 @@ where
 
             // イメージの descriptor を解決。未発見時はプルして再試行。
             let platform = container_req.platform();
-            let _desc_raw =
-                resolve_or_pull_linux(&client, &descriptor, platform.as_deref()).await?;
+            resolve_or_pull_linux(&client, &descriptor, platform.as_deref()).await?;
 
             // コンテナ設定を構築。
             let config = build_container_config(&container_req);
@@ -410,12 +406,16 @@ async fn resolve_or_pull_linux(
     client: &crate::core::client::DockerClient,
     descriptor: &str,
     platform: Option<&str>,
-) -> Result<String> {
+) -> Result<()> {
     match client.resolve_image_descriptor(descriptor, platform).await {
-        Ok(d) => Ok(d),
+        Ok(_) => Ok(()),
         Err(_) => {
             client.pull_image(descriptor, platform).await?;
-            client.resolve_image_descriptor(descriptor, platform).await
+            // pull 後の再 resolve の戻り値 (digest) は未使用のため破棄する。
+            client
+                .resolve_image_descriptor(descriptor, platform)
+                .await?;
+            Ok(())
         }
     }
 }
@@ -478,7 +478,7 @@ async fn cleanup_on_ready_failure<I: Image>(
     // rm(self) は所有権を消費するため、ログ用に ID を先に確保する。
     let id = container.id().to_string();
     if matches!(
-        crate::core::env::Config.command(),
+        crate::core::env::command(),
         crate::core::env::Command::Remove
     ) && let Err(re) = container.rm().await
     {
@@ -571,7 +571,7 @@ fn log_fd_required_error(cause: &crate::Error) -> crate::Error {
 /// 削除失敗時は warn ログを出し、呼び出し元の元エラーを隠蔽しない。
 async fn rollback_remove(id: &str, remove_future: impl std::future::Future<Output = Result<()>>) {
     if !matches!(
-        crate::core::env::Config.command(),
+        crate::core::env::command(),
         crate::core::env::Command::Remove
     ) {
         return;

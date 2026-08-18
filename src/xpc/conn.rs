@@ -188,9 +188,6 @@ pub(crate) struct XpcConn {
     conn: xpc_connection_t,
 }
 
-// `xpc_connection_t` は `*mut c_void` だが、XPC 接続はスレッドセーフに cancel できる。
-unsafe impl Send for XpcConn {}
-
 impl XpcConn {
     /// 指定サービスに接続する。
     pub(crate) fn connect(service: &CStr) -> Result<XpcConn> {

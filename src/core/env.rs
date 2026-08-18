@@ -9,16 +9,11 @@ pub enum Command {
     Keep,
 }
 
-/// 設定。macOS では実質的に空。
-#[derive(Debug, Clone, Default)]
-pub struct Config;
-
-impl Config {
-    pub fn command(&self) -> Command {
-        // `TESTCONTAINERS_COMMAND=keep` 環境変数で挙動を変える（本家と同じ）。
-        match std::env::var("TESTCONTAINERS_COMMAND").as_deref() {
-            Ok("keep") => Command::Keep,
-            _ => Command::Remove,
-        }
+/// `TESTCONTAINERS_COMMAND` 環境変数からコンテナ終了コマンドを返す。
+pub fn command() -> Command {
+    // `TESTCONTAINERS_COMMAND=keep` 環境変数で挙動を変える（本家と同じ）。
+    match std::env::var("TESTCONTAINERS_COMMAND").as_deref() {
+        Ok("keep") => Command::Keep,
+        _ => Command::Remove,
     }
 }

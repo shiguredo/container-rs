@@ -260,8 +260,8 @@ impl From<WaitLogError> for WaitContainerError {
 #[derive(Debug)]
 pub enum WaitLogError {
     /// ストリームがメッセージを見つける前に終端に達した。
-    /// 診断のため、上限内で保持した直近ログを含める (連結済み、要素は 0 または 1)。
-    EndOfStream(Vec<Vec<u8>>),
+    /// 診断のため、上限内で保持した直近ログを含める (空の可能性あり)。
+    EndOfStream(Vec<u8>),
     /// I/O エラー。
     Io(std::io::Error),
 }
@@ -269,22 +269,14 @@ pub enum WaitLogError {
 impl fmt::Display for WaitLogError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WaitLogError::EndOfStream(chunks) => {
-                let total = chunks.iter().map(|c| c.len()).sum::<usize>();
-                let mut preview = Vec::new();
-                for chunk in chunks.iter().rev() {
-                    let remaining = MAX_END_OF_STREAM_PREVIEW_BYTES - preview.len();
-                    preview.extend(chunk.iter().rev().take(remaining).copied());
-                    if preview.len() == MAX_END_OF_STREAM_PREVIEW_BYTES {
-                        break;
-                    }
-                }
-                preview.reverse();
-                let preview = String::from_utf8_lossy(&preview);
+            WaitLogError::EndOfStream(bytes) => {
+                let total = bytes.len();
+                // プレビューはログ末尾の上限バイト数のみ表示する。
+                let tail = bytes.len().saturating_sub(MAX_END_OF_STREAM_PREVIEW_BYTES);
+                let preview = String::from_utf8_lossy(&bytes[tail..]);
                 write!(
                     f,
-                    "end of stream reached before finding message (collected {total} bytes across {} chunks); log preview: {preview}",
-                    chunks.len(),
+                    "end of stream reached before finding message (collected {total} bytes); log preview: {preview}",
                 )
             }
             WaitLogError::Io(e) => write!(f, "I/O error: {e}"),
@@ -352,25 +344,21 @@ mod tests {
     }
 
     #[test]
-    fn wait_log_error_end_of_stream_display_contains_counts_and_preview() {
-        let chunks = vec![b"hello".to_vec(), b" world".to_vec()];
-        let err = WaitLogError::EndOfStream(chunks);
+    fn wait_log_error_end_of_stream_display_contains_count_and_preview() {
+        let bytes = b"hello world".to_vec();
+        let err = WaitLogError::EndOfStream(bytes);
         let text = err.to_string();
         assert!(
-            text.contains("11 bytes")
-                && text.contains("2 chunks")
-                && text.contains("log preview: hello world"),
-            "EndOfStream の Display がチャンク数、合計バイト数、ログプレビューを含むこと: {text}"
+            text.contains("11 bytes") && text.contains("log preview: hello world"),
+            "EndOfStream の Display が合計バイト数とログプレビューを含むこと: {text}"
         );
     }
 
     #[test]
     fn wait_log_error_end_of_stream_display_limits_preview_to_tail() {
-        let chunks = vec![
-            vec![b'a'; MAX_END_OF_STREAM_PREVIEW_BYTES],
-            b"tail".to_vec(),
-        ];
-        let err = WaitLogError::EndOfStream(chunks);
+        let mut bytes = vec![b'a'; MAX_END_OF_STREAM_PREVIEW_BYTES];
+        bytes.extend_from_slice(b"tail");
+        let err = WaitLogError::EndOfStream(bytes);
         let text = err.to_string();
         assert!(
             text.contains("log preview: ") && text.ends_with("tail"),

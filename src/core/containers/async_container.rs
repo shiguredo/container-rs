@@ -1654,7 +1654,7 @@ impl<I: Image> Drop for ContainerAsync<I> {
             return;
         }
         if !matches!(
-            crate::core::env::Config.command(),
+            crate::core::env::command(),
             crate::core::env::Command::Remove
         ) {
             return;

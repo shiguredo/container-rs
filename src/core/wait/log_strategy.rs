@@ -62,13 +62,9 @@ impl CollectedLogs {
         }
     }
 
-    /// `EndOfStream` 用に連結済みチャンク列へ変換する (要素は 0 または 1)。
-    pub(crate) fn into_chunks(self) -> Vec<Vec<u8>> {
-        if self.buf.is_empty() {
-            Vec::new()
-        } else {
-            vec![self.buf.into_iter().collect()]
-        }
+    /// `EndOfStream` 用に保持したログを 1 本のバイト列へ変換する (空の可能性あり)。
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.buf.into_iter().collect()
     }
 }
 
@@ -185,7 +181,7 @@ impl LogWaitStrategy {
                 let at = exited_at.get_or_insert_with(tokio::time::Instant::now);
                 if at.elapsed() >= DRAIN_GRACE {
                     return Err(WaitContainerError::WaitLog(WaitLogError::EndOfStream(
-                        collected.into_chunks(),
+                        collected.into_bytes(),
                     ))
                     .into());
                 }
@@ -248,10 +244,9 @@ mod tests {
         let second = b"TAIL";
         logs.push(&first);
         logs.push(second);
-        let chunks = logs.into_chunks();
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].len(), MAX_COLLECTED_LOG_BYTES);
-        assert!(chunks[0].ends_with(second));
+        let bytes = logs.into_bytes();
+        assert_eq!(bytes.len(), MAX_COLLECTED_LOG_BYTES);
+        assert!(bytes.ends_with(second));
     }
 
     #[test]
@@ -260,8 +255,8 @@ mod tests {
         let mut logs = CollectedLogs::new();
         let exact = vec![b'x'; MAX_COLLECTED_LOG_BYTES];
         logs.push(&exact);
-        let chunks = logs.into_chunks();
-        assert_eq!(chunks, vec![exact]);
+        let bytes = logs.into_bytes();
+        assert_eq!(bytes, exact);
     }
 
     #[test]
@@ -271,12 +266,11 @@ mod tests {
         let mut oversized = vec![b'0'; MAX_COLLECTED_LOG_BYTES];
         oversized.extend_from_slice(b"END!");
         logs.push(&oversized);
-        let chunks = logs.into_chunks();
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].len(), MAX_COLLECTED_LOG_BYTES);
-        assert!(chunks[0].ends_with(b"END!"));
+        let bytes = logs.into_bytes();
+        assert_eq!(bytes.len(), MAX_COLLECTED_LOG_BYTES);
+        assert!(bytes.ends_with(b"END!"));
         assert_eq!(
-            chunks[0],
+            bytes,
             oversized[oversized.len() - MAX_COLLECTED_LOG_BYTES..]
         );
     }
@@ -289,24 +283,22 @@ mod tests {
         for i in 0..total {
             logs.push(&[((i % 256) as u8)]);
         }
-        let chunks = logs.into_chunks();
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].len(), MAX_COLLECTED_LOG_BYTES);
+        let bytes = logs.into_bytes();
+        assert_eq!(bytes.len(), MAX_COLLECTED_LOG_BYTES);
         let start = total - MAX_COLLECTED_LOG_BYTES;
         let expected: Vec<u8> = (start..total).map(|i| (i % 256) as u8).collect();
-        assert_eq!(chunks[0], expected);
+        assert_eq!(bytes, expected);
     }
 
     #[test]
-    fn collected_logs_into_chunks_is_empty_or_single() {
-        // into_chunks は空または要素 1 個であること。
-        assert!(CollectedLogs::new().into_chunks().is_empty());
+    fn collected_logs_into_bytes_returns_all_pushed() {
+        // 空なら空、push 分は連結された 1 本のバイト列になること。
+        assert!(CollectedLogs::new().into_bytes().is_empty());
         let mut logs = CollectedLogs::new();
         logs.push(b"abc");
         logs.push(b"def");
-        let chunks = logs.into_chunks();
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0], b"abcdef");
+        let bytes = logs.into_bytes();
+        assert_eq!(bytes, b"abcdef");
     }
 
     #[test]

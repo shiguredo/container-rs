@@ -390,7 +390,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 | `LogSource::BothStd` | あり | 対応 | 対応 | 待機戦略では stdout / stderr を並行照合。出現回数は両ストリーム合算 |
 | `LogSource::includes_stdout()` (`pub(super)`) | あり | なし | なし | 内部メソッド |
 | `LogSource::includes_stderr()` (`pub(super)`) | あり | なし | なし | 内部メソッド |
-| `WaitLogError::EndOfStream(Vec<Bytes>)` | あり | 部分対応 | 部分対応 | payload は上限 (1 MiB) 内の直近ログ・連結済み (要素 0 または 1)。要素型は本家 `Bytes` / shiguredo `Vec<u8>` (意図的差分) |
+| `WaitLogError::EndOfStream(Vec<Bytes>)` | あり | 部分対応 | 部分対応 | payload は上限 (1 MiB) 内の直近ログ (空の可能性あり)。要素型は本家 `Bytes` / shiguredo `Vec<u8>` (意図的差分) |
 | `WaitLogError::Io(io::Error)` | あり | 対応 | 対応 |  |
 | `LogConsumer::accept(&self, &LogFrame) -> BoxFuture<'a, ()>` | あり | 対応 | 対応 | macOS: 配信タスクは `stop` フラグ、またはコンテナ終了 (exit code 記録) の観測から 2 秒 (`DRAIN_GRACE`) の猶予で停止する (自然終了時も 100ms ポーリングを残さない。XPC 障害で exit code が記録されない場合は継続し得る) / Linux: demux 終端 (TCP FIN) で配信が終了する |
 | `impl<F: Fn(&LogFrame)> LogConsumer for F` | あり | 対応 | 対応 |  |
@@ -699,7 +699,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 
 | API | 本家 | Apple Container | Docker Engine API | 備考 |
 |:--|:--|:--|:--|:--|
-| `EndOfStream(Vec<Bytes>)` | あり | 部分対応 | 部分対応 | 11 章と同一。payload は上限 (1 MiB) 内の直近ログ・連結済み (要素 0 または 1)。要素型は本家 `Bytes` / shiguredo `Vec<u8>` (意図的差分) |
+| `EndOfStream(Vec<Bytes>)` | あり | 部分対応 | 部分対応 | 11 章と同一。payload は上限 (1 MiB) 内の直近ログ (空の可能性あり)。要素型は本家 `Bytes` / shiguredo `Vec<u8>` (意図的差分) |
 | `Io(#[from] std::io::Error)` | あり | 対応 | 対応 |  |
 
 ## 18. `Network` (内部型)
@@ -834,7 +834,7 @@ Apple container の XPC には対応 route が無いが、本家 API 互換の�
 | API | 本家型 | shiguredo 型 | 備考 |
 |:--|:--|:--|:--|
 | `CopyFromContainerError::UnsupportedEntry` 型 | `tokio_tar::EntryType` | `&'static str` | 意図的な差分 (tokio_tar 依存を追加しない方針) |
-| `WaitLogError::EndOfStream` 要素型 | `Vec<Bytes>` | `Vec<Vec<u8>>` | 意図的な差分 (`bytes` 依存を追加しない方針) |
+| `WaitLogError::EndOfStream` 要素型 | `Vec<Bytes>` | `Vec<u8>` | 意図的な差分 (`bytes` 依存を追加しない方針) |
 | `WaitContainerError::Unhealthy` | `Unhealthy` (ユニットバリアント) | `Unhealthy(String)` | 意図的な差分 (エラー内容を保持するため) |
 | `WaitContainerError::StartupTimeout` | `StartupTimeout` (ユニットバリアント) | `StartupTimeout { id, timeout }` (構造体) | match が壊れる。shiguredo はコンテナ ID とタイムアウト値をエラーに保持する |
 | `Healthcheck::with_interval` / `with_timeout` / `with_start_period` / `with_start_interval` / `with_retries` | `impl Into<Option<Duration>>` / `impl Into<Option<u32>>` | `Duration` / `u64` | `None` を渡して Docker 既定値に戻せない |

@@ -281,7 +281,7 @@ let container = GenericImage::new("nginx", "latest")
 - `ClientError`: shiguredo 拡張として `XpcConnect` / `Xpc(String)` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` を持つ (bollard 系エラーは無い)
 - `WaitContainerError`: `WaitLog`, `HttpWait(HttpWaitError)` (feature), `HealthCheckNotConfigured`, `Unhealthy`, `StartupTimeout`, `UnexpectedExitCode { expected, actual }`
 - `ExecError`: `ExitCodeMismatch { expected, actual }`
-- `WaitLogError`: `EndOfStream(Vec<Vec<u8>>)` (本家は `Vec<Bytes>`。意図的差分), `Io`
+- `WaitLogError`: `EndOfStream(Vec<u8>)` (本家は `Vec<Bytes>`。意図的差分), `Io`
 - `CopyToContainerError`: `IoError`, `PathNameError`, `SizeLimitExceeded { limit, name }`
 
 ## 既知の制限事項
@@ -293,7 +293,7 @@ let container = GenericImage::new("nginx", "latest")
 - **Linux の残ギャップ**: `with_ssh` / `with_masked_paths` / `with_readonly_paths` とネットワークの自動作成・自動削除が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
 - **イメージビルド未対応**: `GenericBuildableImage` / `BuildableImage` 等の build 系 API は無い
 - **reuse 未対応**: `reusable-containers` 相当の feature・型は無い
-- **本家との型不整合**: `CopyFromContainerError::UnsupportedEntry` は `&'static str` (本家 `tokio_tar::EntryType`)、`WaitLogError::EndOfStream` は `Vec<Vec<u8>>` (本家 `Vec<Bytes>`)、`WaitContainerError::Unhealthy` は `Unhealthy(String)` (本家はユニットバリアント)。いずれも依存最小方針による意図的差分
+- **本家との型不整合**: `CopyFromContainerError::UnsupportedEntry` は `&'static str` (本家 `tokio_tar::EntryType`)、`WaitLogError::EndOfStream` は `Vec<u8>` (本家 `Vec<Bytes>`)、`WaitContainerError::Unhealthy` は `Unhealthy(String)` (本家はユニットバリアント)。いずれも依存最小方針による意図的差分
 
 ## 参考資料
 
