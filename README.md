@@ -106,6 +106,9 @@ async fn test_with_nginx() {
 
 macOS では `container system start` 済みであること、および Local Network Privacy でコンテナへの接続が許可されていることが必要です。
 
+> [!WARNING]
+> macOS の published port 経由の転送では、サーバー → クライアント方向の大容量レスポンスが遅い消費者 (読み込みが遅いクライアント) に対して途中で切断され得ます。切断は TCP の RST ではなくきれいな EOF (FIN) として観測されるため、クライアントが不完全なレスポンスを正常な EOF として受信してしまうことに注意してください。大容量レスポンスを扱う場合は、published port ではなくコンテナ IP 直結 (`ContainerAsync::get_bridge_ip_address` で取得した IP へ直接接続) を使うことを推奨します。直結も Local Network Privacy 未許可の環境では接続がブロックされ得ます。詳細は [docs/TESTCONTAINERS.md](docs/TESTCONTAINERS.md) を参照してください。
+
 ### ブロッキング API
 
 `blocking` feature を有効にすると `SyncRunner` が使えます。`#[tokio::test]` ではなく通常の `#[test]` で書けます。

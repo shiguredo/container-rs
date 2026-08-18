@@ -287,6 +287,7 @@ let container = GenericImage::new("nginx", "latest")
 
 - **macOS のコンテナ ID 制約**: コンテナ ID (`with_container_name` の値) は Apple container 1.2.0 の `nameValid` と同じ制約 (先頭は英数字・実質 2 文字以上・63 文字以下・文字種は英数字 / `_` / `.` / `-`) を持つ。違反すると `AsyncRunner::start` が pull / resolve より前に明示エラーを返す
 - **macOS の Local Network Privacy (LNP)**: `HttpWaitStrategy` や published port への接続は macOS 15+ の LNP にブロックされ得る。LNP は TCC / MDM で事前付与できない。CI ではコンテナ IP 直結テストを基本とし、published port 依存テストは許可済み環境でのみ実行する
+- **macOS の published port の大容量転送**: Apple container のポートフォワーダー (`container-runtime-linux`) は、サーバー → クライアント方向の大容量レスポンスを遅い消費者に対して途中で切断し得る (切断は EOF (FIN) として観測され、不完全なレスポンスが正常な EOF として受信される)。大容量レスポンスを扱う場合は、published port ではなくコンテナ IP 直結 (`ContainerAsync::get_bridge_ip_address` で取得した IP へ直接接続) を使うこと。直結も LNP 未許可の環境では接続がブロックされ得る。消費者側の読み間隔を詰めても安全なサイズ域は環境依存であり保証できない
 - **blocking の再入 deadlock**: `LogConsumer` コールバック内や既存の tokio ランタイムコンテキストから `SyncRunner::start` 等の同期 API を呼ぶと共有 Runtime への再入で deadlock する。ライブラリは再入を検出して即エラーにする。共有 Runtime 内から `spawn_blocking` したスレッドでも安全側に倒して再入エラーになる。同期ログリーダー (`Container::stdout` / `stderr`) はコールバック内で取得すると読み取り時に `io::Error` を返すが、コールバック外で取得済みのリーダーをコールバック内で読むケースは検出しない。共有 Runtime ワーカースレッド上で最後の同期 `Container` を drop するとハングし得る既知の限界もある
 - **Linux の残ギャップ**: `with_ssh` / `with_masked_paths` / `with_readonly_paths` とネットワークの自動作成・自動削除が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
 - **イメージビルド未対応**: `GenericBuildableImage` / `BuildableImage` 等の build 系 API は無い
