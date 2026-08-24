@@ -105,7 +105,6 @@ dependencies = [
  "cc",
  "libc",
  "nojson",
- "noprop",
  "shiguredo_http11",
  "tokio",
  "tracing",
