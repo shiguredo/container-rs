@@ -46,10 +46,6 @@ features = [
   "time"
 ]
 
-[dev-dependencies]
-# docker_tar の PBT (プロパティベーステスト) に使用
-noprop = "0.2"
-
 [build-dependencies]
 # xpc_bridge.c をコンパイルするため
 cc = "1.2"

@@ -1,8 +1,12 @@
+//! macOS 限定の統合テスト用ヘルパー。
+//!
+//! 各テストバイナリは macOS 専用の `#[cfg]` / `#![cfg]` 付きでこのヘルパーを
+//! インクルードするため、Linux ビルドではコンパイルされない。
+
 /// CI 環境ではコンテナ API サーバーが無いためテストをスキップする。
 ///
 /// Apple container が使える self-hosted runner では `RUN_CONTAINER_TESTS=1` で実行する。
 /// 値が `"1"` のときだけ有効化する（存在だけでは足りない）。
-/// Linux CI では macOS 限定の統合テストからしか呼ばれないため、未使用扱いにする。
 ///
 /// # コンテナ後始末について
 ///
@@ -10,7 +14,6 @@
 /// `stop()` の既定は SIGTERM + 30 秒猶予で、Apple container 上の `sleep` 等は
 /// SIGTERM にすぐ反応しないため、後始末のたびに約 30 秒待たされる。
 /// `Some(0)` は即時 SIGKILL なので、シナリオ検証に不要な待ちを避けられる。
-#[cfg_attr(not(target_os = "macos"), expect(dead_code))]
 pub fn skip_if_ci() -> bool {
     if std::env::var("RUN_CONTAINER_TESTS").as_deref() == Ok("1") {
         return false;
