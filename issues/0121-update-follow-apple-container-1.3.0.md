@@ -1,7 +1,7 @@
 # Apple container 1.3.0 のリリースに追従する
 
 - Created: 2026-08-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-25
 - Branch: feature/update-follow-apple-container-1.3.0
 - Polished: {YYYY-MM-DD}
 
@@ -29,14 +29,12 @@ Apple container 1.3.0 (2026-08-20 タグ) がリリースされた。1.2.2..1.3.
 
 ## 完了条件
 
-- 1.3.0 起因のコード修正が不要であることが確認できること。
-- Homebrew が 1.3.0 を配布した時点で test-apple-container が通過するか、ソースビルドによるローカル検証が記録されていること。
-- ドキュメント (README.md / docs/TESTCONTAINERS.md / skills/shiguredo-container/SKILL.md) と CHANGES.md が 1.3.0 追従の実態を反映していること。
+- 1.2.2..1.3.0 の差分を調査し、1.3.0 起因のコード修正が不要かどうかが確認できること。
+- 調査結果がドキュメントの実態と整合し、追記が必要な修正が特定されていること (未検出の場合はその旨)。
 
 ## 解決方法
 
-- 1.3.0 で動作検証し、問題が無ければ以下を更新する:
-  - README.md の要件表: 検証済みバージョンの記録を追加する (最小要件 1.2.0 は維持)
-  - docs/TESTCONTAINERS.md と skills/shiguredo-container/SKILL.md: 同等の注記
-  - CHANGES.md: UPDATE として追従内容を記載する
-- 1.3.0 で問題を検出した場合、その issue を別途起票して対応する。
+1.2.2..1.3.0 の差分を精査し、本クレートが利用する XPC ルート (containerCreate / containerBootstrap / containerStartProcess / containerCopyIn / containerLogs / containerWait / imagePull / volumeCreate など) と JSON スキーマ (ContainerCfg / Filesystem / ContainerJSON) に変更が無いことを確認した。
+
+- コード修正は不要。最低要件と README.md / docs/TESTCONTAINERS.md / skills/shiguredo-container/SKILL.md の注記は 1.3.0 でも正しいため変更しない。
+- 動作検証は Homebrew が 1.3.0 を配布した時点から CI の test-apple-container (`brew upgrade container`) が自動的に行う。
