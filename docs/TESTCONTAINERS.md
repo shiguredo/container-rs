@@ -712,7 +712,7 @@ shiguredo は reqwest ではなく `shiguredo_http11` + `tokio::net::TcpStream` 
 |:--|:--|:--|:--|:--|
 | `pub fn new<S: Into<String>>(name, tag)` | あり | 対応 | 対応 |  |
 | `pub fn with_wait_for(mut, WaitFor)` | あり | 対応 | 対応 |  |
-| `pub fn with_entrypoint(mut, &str)` | あり | 対応 | 対応 |  |
+| `pub fn with_entrypoint(mut, &str)` | あり | 対応 | 対応 | 空文字列 (`""`) は entrypoint クリアとして扱う。macOS はイメージ config の `Entrypoint: [""]` も同じ扱いにし、クリア後はユーザー cmd、無ければイメージ cmd の先頭が executable になる。Linux は `Entrypoint: [""]` を Docker Engine へ送り Engine が解決する |
 | `pub fn with_exposed_port(mut, ContainerPort)` | あり | 対応 | 対応 | Docker: 未マッピングなら `HostPort=0` の `PortBindings` に載せる。macOS: 事前に空きホストポートを割当 |
 | `impl Image for GenericImage` | あり | 対応 | 対応 |  |
 

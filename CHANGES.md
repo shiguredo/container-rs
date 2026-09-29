@@ -11,6 +11,9 @@
 
 ## develop
 
+- [FIX] macOS でイメージ config の `Entrypoint` が `[""]` のとき executable が空文字になりコンテナが起動できない問題と、`with_entrypoint("")` がイメージ entrypoint にフォールバックする問題を修正する (単一要素の空文字列を entrypoint クリアとして扱い、ユーザー cmd、無ければイメージ cmd の先頭を executable にする)
+  - @voluntas
+
 ### misc
 - [UPDATE] PBT を proptest から noprop に切り替える
   - @voluntas
