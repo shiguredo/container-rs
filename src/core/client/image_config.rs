@@ -24,6 +24,9 @@ impl ImageConfig {
     ///   無ければイメージ cmd を引数にする。
     /// - ユーザー entrypoint 無し、イメージ entrypoint 有りの場合も同様。
     /// - entrypoint が無く cmd がある場合、cmd の先頭が executable、残りが引数。
+    /// - entrypoint が単一要素の空文字列 `[""]` のときは entrypoint クリアとして扱い、
+    ///   ユーザー cmd またはイメージ cmd の先頭を executable にする。ユーザー指定の
+    ///   `""` (空文字列) もクリアとして扱う。
     pub(crate) fn effective_command(
         &self,
         entrypoint_override: Option<&str>,
@@ -31,10 +34,21 @@ impl ImageConfig {
     ) -> Result<(String, Vec<String>)> {
         let cmd_override: Vec<String> = cmd_override.into_iter().map(Into::into).collect();
 
-        // ユーザー指定 entrypoint が空でなければそれを優先する。
+        // ユーザー指定 entrypoint。空文字列は entrypoint クリアを意味するため、
+        // イメージ entrypoint へフォールバックせず None にする。
         let entrypoint: Option<Vec<String>> = match entrypoint_override {
-            Some(ep) if !ep.is_empty() => Some(vec![ep.to_string()]),
-            _ => self.entrypoint.clone(),
+            Some("") => None,
+            Some(ep) => Some(vec![ep.to_string()]),
+            None => self.entrypoint.clone(),
+        };
+
+        // 単一要素の空文字列は entrypoint クリア扱いにする。Docker はマージ後の
+        // entrypoint が `[""]` のとき entrypoint 無しへ戻し (moby の
+        // `mergeAndVerifyConfig`)、Apple container 1.5.0 の CLI も同じ扱いになった。
+        // 複数要素 (`["", "/bin/sh"]`) は対象外。
+        let entrypoint = match entrypoint {
+            Some(ep) if is_cleared_entrypoint(&ep) => None,
+            ep => ep,
         };
 
         // ユーザー指定 cmd が空でなければそれを優先する。
@@ -68,6 +82,16 @@ impl ImageConfig {
             )),
         }
     }
+}
+
+/// entrypoint が「単一要素の空文字列」(`[""]`) かどうか。
+///
+/// `[""]` は entrypoint クリアを意味する。Docker はマージ後の entrypoint が
+/// `[""]` のとき entrypoint 無しへ戻し (moby の `mergeAndVerifyConfig`)、
+/// Apple container 1.5.0 の CLI も同じ規則になった。複数要素の空文字列
+/// (`["", "/bin/sh"]`) はクリア扱いにしない。
+fn is_cleared_entrypoint(entrypoint: &[String]) -> bool {
+    entrypoint.len() == 1 && entrypoint[0].is_empty()
 }
 
 /// 解決済み descriptor (raw JSON) から OCI image config を取得する。
@@ -427,6 +451,83 @@ mod tests {
             cfg.effective_command(None, std::iter::empty::<String>())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn effective_command_treats_single_empty_image_entrypoint_as_cleared_and_uses_image_cmd() {
+        // イメージ Entrypoint が [""] のときは entrypoint クリア扱いになり、
+        // イメージ Cmd の先頭が executable になること (distroless 系イメージの
+        // ように ENTRYPOINT を空文字列で打ち消す構成)。
+        let cfg = ImageConfig {
+            entrypoint: Some(vec!["".into()]),
+            cmd: Some(vec!["nginx".into(), "-g".into(), "daemon off;".into()]),
+        };
+        let (exe, args) = cfg
+            .effective_command(None, std::iter::empty::<String>())
+            .expect("処理に失敗しないこと");
+        assert_eq!(exe, "nginx");
+        assert_eq!(args, vec!["-g", "daemon off;"]);
+    }
+
+    #[test]
+    fn effective_command_treats_single_empty_image_entrypoint_as_cleared_and_uses_user_cmd() {
+        // イメージ Entrypoint が [""] でも、ユーザー cmd があればその先頭が
+        // executable になること。
+        let cfg = ImageConfig {
+            entrypoint: Some(vec!["".into()]),
+            cmd: Some(vec!["image-cmd".into()]),
+        };
+        let (exe, args) = cfg
+            .effective_command(None, ["sh", "-c", "echo hi"])
+            .expect("処理に失敗しないこと");
+        assert_eq!(exe, "sh");
+        assert_eq!(args, vec!["-c", "echo hi"]);
+    }
+
+    #[test]
+    fn effective_command_treats_empty_user_entrypoint_as_cleared() {
+        // ユーザー指定 with_entrypoint("") は entrypoint クリアとして扱い、
+        // イメージ entrypoint にフォールバックせずユーザー cmd を executable に
+        // すること。
+        let cfg = ImageConfig {
+            entrypoint: Some(vec!["/bin/sh".into(), "-c".into()]),
+            cmd: Some(vec!["image-cmd".into()]),
+        };
+        let (exe, args) = cfg
+            .effective_command(Some(""), ["user-cmd"])
+            .expect("処理に失敗しないこと");
+        assert_eq!(exe, "user-cmd");
+        assert_eq!(args, Vec::<String>::new());
+    }
+
+    #[test]
+    fn effective_command_empty_user_entrypoint_falls_back_to_image_cmd() {
+        // ユーザー指定 with_entrypoint("") でユーザー cmd が無い場合は、
+        // 既存規則どおりイメージ cmd の先頭が executable になること。
+        let cfg = ImageConfig {
+            entrypoint: Some(vec!["/bin/sh".into()]),
+            cmd: Some(vec!["serve".into()]),
+        };
+        let (exe, args) = cfg
+            .effective_command(Some(""), std::iter::empty::<String>())
+            .expect("処理に失敗しないこと");
+        assert_eq!(exe, "serve");
+        assert_eq!(args, Vec::<String>::new());
+    }
+
+    #[test]
+    fn effective_command_does_not_clear_multi_element_entrypoint_with_empty_first() {
+        // 複数要素の先頭が空文字列でも entrypoint クリア扱いにはしないこと (回帰)。
+        // Docker も ["", ...] はリセットしない。
+        let cfg = ImageConfig {
+            entrypoint: Some(vec!["".into(), "/bin/sh".into()]),
+            cmd: None,
+        };
+        let (exe, args) = cfg
+            .effective_command(None, std::iter::empty::<String>())
+            .expect("処理に失敗しないこと");
+        assert_eq!(exe, "");
+        assert_eq!(args, vec!["/bin/sh"]);
     }
 
     #[test]
