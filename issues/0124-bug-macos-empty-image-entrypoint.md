@@ -1,7 +1,7 @@
 # イメージの Entrypoint が [""] のときコンテナが起動できない問題を修正する
 
 - Created: 2026-09-29
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-09-29
 - Branch: feature/fix-macos-empty-image-entrypoint
 - Polished: 2026-09-29
 
@@ -35,4 +35,10 @@ Apple container 1.5.0 は、イメージ config の `Entrypoint` が `[""]` の�
 
 ## 解決方法
 
-どのように対応するのかを明確にすること (例: どのようなコードを追加・修正するのか、どのようなテストを追加するのかなど)
+`src/core/client/image_config.rs` の `ImageConfig::effective_command` に entrypoint クリア判定 (`is_cleared_entrypoint`) を追加した。
+
+- イメージ config の entrypoint が単一要素の空文字列 `[""]` のときは entrypoint 無しとして扱い、ユーザー cmd、無ければイメージ cmd の先頭を executable にする。複数要素 (`["", "/bin/sh"]`) はクリア扱いにしない。
+- ユーザー指定 `with_entrypoint("")` も entrypoint クリアとして扱い、イメージ entrypoint へフォールバックしない。
+- 単体テスト 5 件を追加した (イメージ `[""]` + イメージ cmd / ユーザー cmd、ユーザー `""` + ユーザー cmd / イメージ cmd、複数要素の非クリア回帰)。
+- `docs/TESTCONTAINERS.md` の `with_entrypoint` に挙動を追記し、`CHANGES.md` に `[FIX]` エントリを追加した。
+- 検証: `cargo test --all-features` (lib 245 件と macOS 統合テスト 92 件を含めすべて成功)、`cargo clippy --all-targets --all-features -- -D warnings`、`cargo fmt --all -- --check` を実行した。
