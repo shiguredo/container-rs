@@ -1,7 +1,7 @@
 # Apple container 1.5.0 のリリースに追従する
 
 - Created: 2026-09-29
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-09-29
 - Branch: feature/update-follow-apple-container-1.5.0
 - Polished: 2026-09-29
 
@@ -50,4 +50,10 @@ Apple container 1.5.0 (2026-09-29 タグ) がリリースされた。前回追�
 
 ## 解決方法
 
-どのように対応するのかを明確にすること (例: どのようなコードを追加・修正するのか、どのようなテストを追加するのかなど)
+1.4.1..1.5.0 (17 commits / 27 ファイル) と containerization 0.45.0..0.47.0 (11 commits) の差分を精査し、本クレートが利用する XPC ルート (containerCreate / containerBootstrap / containerStartProcess / containerCopyIn / containerLogs / containerWait / imagePull / volumeCreate など 17 ルート) と JSON スキーマに変更が無いことを確認した。
+
+- 互換性のためのコード修正は不要。CLI 変更 (k8s start 削除・PLUGINS 節削除・エラーメッセージ) と apiserver / containerization の内部修正 (pf アンカー、SocketForwarder、VM リソース、pull 検証強化など) はいずれも本クレートの経路と無関係。
+- イメージ `Entrypoint: [""]` の CLI 修正 (#2296) は XPC スキーマを変えず、本クレートは自前解決のため別途対応が必要。これは既存の実装漏れとして 0124 で対応する。
+- 最低要件と README.md / docs/TESTCONTAINERS.md / skills/shiguredo-container/SKILL.md の注記は 1.5.0 でも正しいため変更しない。
+- macOS 26.6.2 / Apple container 1.5.0 で nginx / alpine の統合テストが成功し、published port の大容量レスポンス切断 (10 MiB 中 9,785,900 バイトで EOF) が再現することを確認した。警告は維持する。
+- 動作検証は Homebrew が 1.5.0 を配布済みのため CI の test-apple-container (`brew upgrade container`) が自動的に行う。
