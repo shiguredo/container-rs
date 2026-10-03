@@ -17,6 +17,10 @@
 ### misc
 - [UPDATE] PBT を proptest から noprop に切り替える
   - @voluntas
+- [UPDATE] ツールチェーンを `rust-toolchain.toml` で MSRV の 1.93 に固定する
+  - `Cargo.toml` の `rust-version` を `1.93` 表記に統一する
+  - CI で `rustup show` により MSRV のツールチェーンを導入する
+  - @voluntas
 
 ## 2026.1.0
 

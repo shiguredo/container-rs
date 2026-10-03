@@ -2,7 +2,7 @@
 name = "shiguredo_container"
 version = "2026.1.0"
 edition = "2024"
-rust-version = "1.93.0"
+rust-version = "1.93"
 description = "Runtime-agnostic container library for Rust on macOS and Linux"
 repository = "https://github.com/shiguredo/container-rs"
 license = "Apache-2.0"
@@ -32,7 +32,7 @@ shiguredo_http11 = "2026.6"
 tracing = "0.1"
 
 # 非同期ランタイム
-# MSRV 1.93.0 の TOML パーサがインラインテーブルの改行を未サポートのため、テーブル形式で記述する。
+# MSRV 1.93 の TOML パーサがインラインテーブルの改行を未サポートのため、テーブル形式で記述する。
 [dependencies.tokio]
 version = "1.53"
 features = [
