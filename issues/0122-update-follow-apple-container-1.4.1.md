@@ -1,7 +1,7 @@
 # Apple container 1.4.0 / 1.4.1 のリリースに追従する
 
 - Created: 2026-09-09
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-07
 - Branch: feature/update-follow-apple-container-1.4.1
 - Polished: {YYYY-MM-DD}
 
@@ -29,7 +29,7 @@ apiserver の XPC ルートと JSON スキーマは不変のため、本クレ�
 
 ### 1.3.0..1.4.0
 
-15 commits (42 ファイル) を調査した。本クレートが利用する XPC ルートと JSON スキーマの変更は確認できない。影響し得る変更は以下に限られ、いずれも本クレートの経路とは無関係である。
+14 commits (42 ファイル) を調査した。本クレートが利用する XPC ルートと JSON スキーマの変更は確認できない。影響し得る変更は以下に限られ、いずれも本クレートの経路とは無関係である。
 
 - 新規 XPC ルート `containerClean` (apiserver) と `com.apple.container.runtime/clean` (runtime) が追加された。`container clean` コマンド用であり additive。本クレートは未使用で、testcontainers-rs にも clean 相当の API は無い。
 - tmpfs の `source` 修正 (`Sources/Services/ContainerAPIService/Client/Parser.swift` の `Parser`) は CLI パーサーの話。本クレートは `src/core/client/container_cfg.rs` の `MountCfg` 変換で tmpfs に既に `source: "tmpfs"` を送っているため影響しない。
@@ -47,3 +47,11 @@ apiserver の XPC ルートと JSON スキーマは不変のため、本クレ�
 
 - 1.3.0..1.4.0 と 1.4.0..1.4.1 の差分を調査し、1.4.0 / 1.4.1 起因のコード修正が不要かどうかが確認できること。
 - 調査結果がドキュメントの実態と整合し、追記が必要な修正が特定されていること (未検出の場合はその旨)。
+
+## 解決方法
+
+1.3.0..1.4.0 (14 commits / 42 ファイル)、1.4.0..1.4.1 (2 ファイル)、containerization 0.43.0..0.45.0 (11 commits / 40 ファイル) の差分を精査し、本クレートが利用する XPC ルート (containerCreate / containerBootstrap / containerStartProcess / containerCopyIn / containerLogs / containerWait / imagePull / volumeCreate など) と JSON スキーマに変更が無いことを確認した。
+
+- コード修正は不要。最低要件と README.md / docs/TESTCONTAINERS.md / skills/shiguredo-container/SKILL.md の注記は 1.4.0 / 1.4.1 でも正しいため変更しない。
+- 後続の 1.5.0 追従 (issues/closed/0123) で 1.4.1..1.5.0 の確認まで完了しており、1.4.x 由来の残作業は無い。
+- 1.4.0 / 1.4.1 の配布期間中 (2026-09-08 から 2026-09-28 まで) の CI の test-apple-container (`brew upgrade container`) はいずれも成功している。
