@@ -6,6 +6,7 @@ use std::{
     collections::BTreeMap,
     fmt::{Debug, Formatter},
     net::IpAddr,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -56,6 +57,7 @@ pub struct ContainerRequest<I: Image> {
     pub(crate) ssh: bool,
     pub(crate) masked_paths: Option<Vec<String>>,
     pub(crate) readonly_paths: Option<Vec<String>>,
+    pub(crate) kernel: Option<PathBuf>,
 }
 
 /// ポートマッピング。
@@ -282,6 +284,13 @@ impl<I: Image> ContainerRequest<I> {
     pub fn readonly_paths(&self) -> Option<&Vec<String>> {
         self.readonly_paths.as_ref()
     }
+
+    /// コンテナが使うカスタムカーネルのパスを返す。
+    ///
+    /// `None` はランタイム既定カーネル。macOS (Apple container) のみ対応する。
+    pub fn kernel(&self) -> Option<&Path> {
+        self.kernel.as_deref()
+    }
 }
 
 impl<I: Image> From<I> for ContainerRequest<I> {
@@ -317,6 +326,7 @@ impl<I: Image> From<I> for ContainerRequest<I> {
             ssh: false,
             masked_paths: None,
             readonly_paths: None,
+            kernel: None,
         }
     }
 }
@@ -401,7 +411,8 @@ impl<I: Image + Debug> Debug for ContainerRequest<I> {
             .field("platform", &self.platform)
             .field("ssh", &self.ssh)
             .field("masked_paths", &self.masked_paths)
-            .field("readonly_paths", &self.readonly_paths);
+            .field("readonly_paths", &self.readonly_paths)
+            .field("kernel", &self.kernel);
         repr.finish()
     }
 }
@@ -423,7 +434,26 @@ impl<'a> Iterator for CmdIter<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::{GenericImage, ImageExt};
+
     use super::*;
+
+    #[test]
+    fn kernel_setter_is_exposed_by_accessor_and_overwrites_on_repeat_calls() {
+        // with_kernel は kernel() に反映されること。未指定は None、複数回呼び出しは
+        // 後から指定したパスで上書きされること (with_ready_conditions と同じパターン)。
+        let req = ContainerRequest::from(GenericImage::new("alpine", "latest"));
+        assert_eq!(req.kernel(), None, "未指定は None であること");
+
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_kernel("/tmp/first-vmlinux")
+            .with_kernel("/tmp/second-vmlinux");
+        assert_eq!(
+            req.kernel(),
+            Some(Path::new("/tmp/second-vmlinux")),
+            "後から指定したパスで上書きされること"
+        );
+    }
 
     #[test]
     fn reject_duplicate_mapped_ports_detects_same_container_port() {

@@ -39,7 +39,8 @@
 //! # プラットフォーム差
 //!
 //! - macOS: Apple Container の XPC 経由でコンテナを管理する。pause / unpause は未対応。
-//! - Linux: Docker Engine API 経由でコンテナを管理する。`with_ssh` は未対応。
+//! - Linux: Docker Engine API 経由でコンテナを管理する。`with_ssh` / `with_masked_paths` /
+//!   `with_readonly_paths` / `with_kernel` は未対応 (start 時に明示エラー)。
 //!
 //! 対応範囲の詳細は `docs/TESTCONTAINERS.md` と README の WARNING を参照すること。
 //!

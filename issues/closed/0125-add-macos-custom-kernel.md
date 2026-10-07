@@ -1,7 +1,7 @@
 # 機能追加: macOS でカスタムカーネルを指定できるようにする
 
 - Created: 2026-10-07
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-07
 - Branch: feature/add-macos-custom-kernel
 - Polished: 2026-10-07
 
@@ -50,3 +50,17 @@ Apple container の既定カーネルは tc (netem / htb / u32) 非搭載で、t
 - [ ] `CHANGES.md` に `[ADD]` エントリが記載されること
 - [ ] `cargo test --all-features` が pass すること
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` が pass すること
+
+## 解決方法
+
+`ImageExt` に shiguredo 拡張として `with_kernel(self, kernel_path: impl AsRef<Path>)` を追加し、`ContainerRequest` に `kernel` (`Option<PathBuf>`) と `kernel() -> Option<&Path>` accessor を追加した (`src/core/image/image_ext.rs` / `src/core/containers/request.rs`)。複数回呼び出しは後から指定したパスで上書きする。
+
+macOS の `AsyncRunner::start` は `with_kernel` 指定時に `getDefaultKernel` を呼ばず、`src/core/client/xpc_client.rs` の `kernel_json` で `containerCreate` へ載せる containerization の `Kernel` JSON を組み立てる。`path` は Swift の `URL(filePath:).absoluteString` と同じ規則でパーセントエンコードし (`file_url_string`)、`platform` は既存の `oci_platform("arm64")` を `oci_platform_json` と共有、`commandLine` は `Kernel(path:platform:)` の既定 (`console=hvc0` / `tsc=reliable` / `panic=0`、`initArgs` は空) を常に出す。
+
+`validate_kernel_path` は pull / resolve より前に絶対パス・UTF-8・実ファイルであることを検証し、違反時は `ClientError::Configuration` を返す。Linux は `linux_unsupported_request_reason` に追加し、`with_ssh` と同じく start 時に `with_kernel() is not implemented on Linux` の明示エラーになる。
+
+テストは次を追加した: `kernel_json` の完全一致と `file_url_string` の Swift 一致 (単体)、`kernel()` accessor と上書き (単体)、`validate_kernel_path` の正常系 (単体)、Linux の fail-fast (Linux 単体)、不正パス 4 種 (macOS 統合)、カスタムカーネルでの起動と特殊文字を含むパスでの起動 (macOS 統合、`CONTAINER_TEST_KERNEL_PATH` 指定時のみ実行)。
+
+検証は Apple container 1.5.0 で行った。カスタムカーネルは containerization の `kernel/Makefile` でビルドした netem 入りのものを使い、既定カーネルを指定した場合は netem 検証が失敗すること (空テストでないこと) も確認した。
+
+ドキュメントは `docs/TESTCONTAINERS.md` (2 章 `ImageExt` 対応表・8 章 accessor 一覧・Docker 節の Linux fail-fast 記述・サマリの shiguredo 拡張 23 → 25 と内訳合計 394 → 396・「意図的に保持する shiguredo 拡張」)、`skills/shiguredo-container/SKILL.md` (ImageExt 表・既知の制限事項・環境変数表)、`README.md` と `src/lib.rs` (Linux の未対応 API 列挙) を更新し、`CHANGES.md` に `[ADD]` を追記した。

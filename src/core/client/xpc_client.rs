@@ -580,7 +580,8 @@ impl XpcClient {
     /// `container_cfg` は呼び出し側が構築した DisplayJson ペイロード
     /// (典型的には `container_cfg::ContainerCfg`)。シリアライズ (`j`) は
     /// `spawn_blocking` の前に行い、閉包へはバイト列だけを move する。
-    /// `kernel` は `get_default_kernel` の戻り値。
+    /// `kernel` は `get_default_kernel` または `kernel_json` の戻り値 (containerization の
+    /// `Kernel` JSON)。
     pub(crate) async fn create_container(
         &self,
         container_cfg: &impl DisplayJson,
@@ -1215,14 +1216,147 @@ impl DisplayJson for Platform {
     }
 }
 
+/// `ContainerizationOCI.Platform` 相当の値。
+///
+/// `oci_platform_json` と `Kernel` JSON の `platform` で共用し、
+/// イメージとカーネルでプラットフォーム表記がずれないようにする。
+fn oci_platform(architecture: &str) -> Platform {
+    Platform {
+        os: "linux".into(),
+        architecture: architecture.into(),
+    }
+}
+
 /// `ContainerizationOCI.Platform` 相当の JSON バイト列を組み立てる。
 ///
 /// `imagePull` の `ociPlatform` と `getDefaultKernel` の `systemPlatform` で共用する。
 fn oci_platform_json(architecture: &str) -> Vec<u8> {
-    j(&Platform {
-        os: "linux".into(),
-        architecture: architecture.into(),
+    j(&oci_platform(architecture))
+}
+
+/// `Kernel.commandLine` の既定カーネル引数。
+///
+/// containerization の `Kernel.CommandLine(debug: false, panic: 0)` と同じ値。ランタイム側の
+/// 既定の写しなので、Apple container を更新したら差分を確認して追随すること
+/// (既定カーネル経路は `getDefaultKernel` の応答をそのまま使うため追随不要)。
+const DEFAULT_KERNEL_ARGS: [&str; 3] = ["console=hvc0", "tsc=reliable", "panic=0"];
+
+/// containerization の `Kernel` 構造体に相当する JSON。
+struct KernelCfg {
+    /// カーネル実体の file URL 文字列。
+    path: String,
+    /// カーネルのプラットフォーム。
+    platform: Platform,
+    /// カーネルと init プロセスのコマンドライン。
+    command_line: KernelCommandLine,
+}
+impl DisplayJson for KernelCfg {
+    fn fmt(&self, f: &mut nojson::JsonFormatter) -> std::fmt::Result {
+        f.object(|f| {
+            f.member("path", &self.path)?;
+            f.member("platform", &self.platform)?;
+            f.member("commandLine", &self.command_line)
+        })
+    }
+}
+
+/// containerization の `Kernel.CommandLine` 構造体に相当する JSON。
+///
+/// `init_args` は現状のランタイム既定 (空) の写しで、これも更新時に追随が必要になる。
+struct KernelCommandLine {
+    /// カーネルに渡す引数。
+    kernel_args: Vec<String>,
+    /// init プロセスに渡す引数。
+    init_args: Vec<String>,
+}
+impl DisplayJson for KernelCommandLine {
+    fn fmt(&self, f: &mut nojson::JsonFormatter) -> std::fmt::Result {
+        f.object(|f| {
+            f.member("kernelArgs", &self.kernel_args)?;
+            f.member("initArgs", &self.init_args)
+        })
+    }
+}
+
+/// カスタムカーネル指定時に `containerCreate` へ載せる `Kernel` JSON を組み立てる。
+///
+/// サーバー側 (`ContainersHarness.create`) は `kernel` を containerization の `Kernel` として
+/// JSON デコードする。フィールドは `path` / `platform` / `commandLine` の 3 つで、既定カーネル
+/// 経路では `getDefaultKernel` の応答に同じ形の JSON が入る。
+///
+/// - `path` は Swift の `URL` Codable と同じ file URL 文字列にする
+/// - `platform` はホストのアーキテクチャである arm64 に固定する
+///   (amd64 / Rosetta ゲストでもカーネルはホスト側に合わせる。CLI と同方針)
+/// - `commandLine` は `Kernel(path:platform:)` の既定値を使う。`commandLine` は
+///   省略できない (サーバー側のデコードが失敗する) ため常に出す
+///
+/// Apple container 1.5.0 (containerization 0.47.0) で検証している。`Kernel` の Codable
+/// 形式は containerization のバージョンに依存するため、将来のバージョンで変わると
+/// この JSON ではデコードできなくなる可能性がある。
+pub(crate) fn kernel_json(kernel_path: &std::path::Path) -> Vec<u8> {
+    j(&KernelCfg {
+        path: file_url_string(kernel_path),
+        platform: oci_platform("arm64"),
+        command_line: KernelCommandLine {
+            kernel_args: DEFAULT_KERNEL_ARGS
+                .iter()
+                .map(|a| (*a).to_string())
+                .collect(),
+            init_args: Vec::new(),
+        },
     })
+}
+
+/// 絶対パスを Swift の `URL(filePath:).absoluteString` 相当の file URL 文字列へ変換する。
+///
+/// サーバー側は `Kernel.path` を `URL` としてデコードしてからカーネル実体を読むため、
+/// Swift と同じ規則でパーセントエンコードする。Swift の file URL がそのまま残すのは
+/// `A-Za-z0-9` と `!$&'()*+,-./:;=@_~` のみで、空白・`%`・`#`・`?`・`[`・`]`・制御文字・
+/// 非 ASCII などはバイト単位で `%XX` (16 進大文字) になる。呼び出し側で絶対パスであることを
+/// 検証済み。
+fn file_url_string(path: &std::path::Path) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut url = String::from("file://");
+    for b in path.as_os_str().as_encoded_bytes() {
+        if is_file_url_path_byte(*b) {
+            url.push(*b as char);
+        } else {
+            url.push('%');
+            url.push(HEX[usize::from(b >> 4)] as char);
+            url.push(HEX[usize::from(b & 0x0f)] as char);
+        }
+    }
+    url
+}
+
+/// Swift の file URL がパーセントエンコードせずに残す ASCII バイトか。
+///
+/// 判定対象は `URL(filePath:)` の実測結果に合わせている (`%` は `%25` になるため含めない)。
+fn is_file_url_path_byte(b: u8) -> bool {
+    matches!(
+        b,
+        b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'!'
+            | b'$'
+            | b'&'
+            | b'\''
+            | b'('
+            | b')'
+            | b'*'
+            | b'+'
+            | b','
+            | b'-'
+            | b'.'
+            | b'/'
+            | b':'
+            | b';'
+            | b'='
+            | b'@'
+            | b'_'
+            | b'~'
+    )
 }
 
 struct ProcCfg {
@@ -1510,6 +1644,49 @@ mod tests {
         assert_eq!(amd64, r#"{"os":"linux","architecture":"amd64"}"#);
         let arm64 = String::from_utf8(oci_platform_json("arm64")).expect("有効な UTF-8 であること");
         assert_eq!(arm64, r#"{"os":"linux","architecture":"arm64"}"#);
+    }
+
+    #[test]
+    fn kernel_json_contains_file_url_platform_and_command_line() {
+        // カスタムカーネル指定時に containerCreate へ載せる Kernel JSON。
+        // path はファイルパスを file URL 化したもの、platform は linux/arm64
+        // (imagePull の ociPlatform / getDefaultKernel の systemPlatform と同じ
+        // oci_platform を共有する)、commandLine は Kernel(path:platform:) の既定値であること。
+        let json = kernel_json(std::path::Path::new("/tmp/My Kernel/vmlinux #1"));
+        let json = String::from_utf8(json).expect("有効な UTF-8 であること");
+        assert_eq!(
+            json,
+            r#"{"path":"file:///tmp/My%20Kernel/vmlinux%20%231","platform":{"os":"linux","architecture":"arm64"},"commandLine":{"kernelArgs":["console=hvc0","tsc=reliable","panic=0"],"initArgs":[]}}"#
+        );
+    }
+
+    #[test]
+    fn file_url_string_encodes_swift_compatible_characters() {
+        // Swift の URL(filePath:).absoluteString と同じ規則であること。
+        // 残すのは A-Za-z0-9 と !$&'()*+,-./:;=@_~ のみで、他は %XX (16 進大文字) にする。
+        for (path, expected) in [
+            ("/tmp/vmlinux", "file:///tmp/vmlinux"),
+            ("/tmp/My Kernel/vmlinux", "file:///tmp/My%20Kernel/vmlinux"),
+            (
+                "/tmp/vmlinux #1?[a]",
+                "file:///tmp/vmlinux%20%231%3F%5Ba%5D",
+            ),
+            (
+                "/tmp/カーネル",
+                "file:///tmp/%E3%82%AB%E3%83%BC%E3%83%8D%E3%83%AB",
+            ),
+            (
+                "/tmp/a+b~c,d=e;f@g'h$i%j&k(l)m*n",
+                "file:///tmp/a+b~c,d=e;f@g'h$i%25j&k(l)m*n",
+            ),
+            ("/tmp/a\u{1}b\u{7f}c!d", "file:///tmp/a%01b%7Fc!d"),
+        ] {
+            assert_eq!(
+                file_url_string(std::path::Path::new(path)),
+                expected,
+                "file URL の変換結果が一致すること: {path}"
+            );
+        }
     }
 
     #[test]

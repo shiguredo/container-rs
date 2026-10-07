@@ -42,6 +42,26 @@ fn skip_unless_rosetta() -> bool {
     }
 }
 
+/// カスタムカーネルを指定するテストで使うカーネルパスを返す。未設定なら `None`。
+///
+/// 環境変数 `CONTAINER_TEST_KERNEL_PATH` に絶対パスが設定されているときだけ実行する
+/// (値が `1` かどうかは見ず、値の有無と絶対性で判定する)。既定カーネルは
+/// tc (netem / htb / u32) 非搭載のため、カスタムカーネルには netem 入りのものを指定する。
+#[cfg(target_os = "macos")]
+fn custom_kernel_path() -> Option<std::path::PathBuf> {
+    match std::env::var_os("CONTAINER_TEST_KERNEL_PATH") {
+        Some(value) if std::path::Path::new(&value).is_absolute() => {
+            Some(std::path::PathBuf::from(value))
+        }
+        _ => {
+            eprintln!(
+                "スキップ: カスタムカーネルは CONTAINER_TEST_KERNEL_PATH に絶対パスで指定すること"
+            );
+            None
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod test_container_macos {
     use std::borrow::Cow;
@@ -736,11 +756,11 @@ mod test_container_xpc {
     use std::time::Duration;
 
     use shiguredo_container::{
-        GenericImage, ImageExt,
+        Error, GenericImage, ImageExt,
         core::{
             ExecCommand, ExtraHost, WaitFor,
             copy::CopyTargetOptions,
-            error::{WaitContainerError, WaitLogError},
+            error::{ClientError, WaitContainerError, WaitLogError},
             logs::LogFrame,
         },
         runners::AsyncRunner,
@@ -2828,6 +2848,163 @@ mod test_container_xpc {
             assert!(
                 message.contains(&format!("{invalid:?}")),
                 "エラーに ID 値が引用符付きで含まれること: {message}"
+            );
+        }
+    }
+
+    /// 起動済みコンテナのカーネルで netem が有効であることを検証する。
+    ///
+    /// 既定カーネルは tc (netem / htb / u32) 非搭載なので、これが通れば指定したカスタム
+    /// カーネルで起動したことになる。既定カーネルでも `# CONFIG_NET_SCH_NETEM is not set`
+    /// として文字列自体は `/proc/config.gz` に現れるため、有無ではなく値で判定する。
+    async fn assert_netem_enabled(container: &shiguredo_container::ContainerAsync<GenericImage>) {
+        // netem が有効 (組み込み or モジュール) なら 1 行一致する。既定カーネルは 0 行になる。
+        // `/proc/config.gz` 自体が無いカーネル (CONFIG_IKCONFIG_PROC 無効) は判定不能なので、
+        // netem 無効とは別のメッセージで落とす。
+        let mut result = container
+            .exec(ExecCommand::new([
+                "sh",
+                "-c",
+                "if [ ! -r /proc/config.gz ]; then echo no-config-gz; \
+                 else zcat /proc/config.gz | grep -cE '^CONFIG_NET_SCH_NETEM=(y|m)'; fi",
+            ]))
+            .await
+            .expect("カーネル config の取得に失敗した");
+        let stdout = result
+            .stdout_to_vec()
+            .await
+            .expect("stdout の取得に失敗した");
+        let stdout = String::from_utf8_lossy(&stdout).trim().to_string();
+        assert_ne!(
+            stdout, "no-config-gz",
+            "カーネルが /proc/config.gz を持たず netem の有無を判定できない"
+        );
+        assert_eq!(
+            stdout, "1",
+            "指定したカーネルで netem が有効であること (既定カーネルでは無効)"
+        );
+    }
+
+    /// `with_kernel` に指定したカスタムカーネルでコンテナが起動すること。
+    ///
+    /// カーネルは環境変数 `CONTAINER_TEST_KERNEL_PATH` の絶対パスで指定し、未設定なら
+    /// スキップする。指定が効いたことは `assert_netem_enabled` の判定で確認する
+    /// (既定カーネルを指すだけの空テストにしないこと)。
+    #[tokio::test]
+    async fn xpc_custom_kernel_is_used_for_boot() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+        let Some(kernel_path) = super::custom_kernel_path() else {
+            return;
+        };
+
+        let container = GenericImage::new("alpine", "latest")
+            .with_kernel(&kernel_path)
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .start()
+            .await
+            .expect("カスタムカーネルでのコンテナ起動に失敗した");
+
+        assert_netem_enabled(&container).await;
+
+        container.rm().await.expect("コンテナの削除に失敗した");
+    }
+
+    /// 特殊文字 (空白・`#`・非 ASCII) を含むカーネルパスでも起動できること。
+    ///
+    /// `with_kernel` の `path` はパーセントエンコードした file URL で apiserver へ渡すため、
+    /// apiserver がそれを復号してカーネル実体を開けることを実機で確認する。カーネル実体の
+    /// コピーを避けるため symlink で指定する (既定カーネルも symlink で運用されている)。
+    #[tokio::test]
+    async fn xpc_custom_kernel_path_with_special_characters_is_used_for_boot() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+        let Some(kernel_path) = super::custom_kernel_path() else {
+            return;
+        };
+
+        // ディレクトリ名に空白・`#`・非 ASCII を含める。並列実行で衝突しないよう
+        // pid とナノ秒で一意にする (残骸があっても張り替える)。
+        let dir = std::env::temp_dir().join(format!(
+            "shiguredo container テスト #1 {} {}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("UNIX_EPOCH 以降の時刻であること")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("一時ディレクトリの作成に失敗した");
+        let link = dir.join("vmlinux");
+        std::os::unix::fs::symlink(&kernel_path, &link).expect("カーネルの symlink 作成に失敗した");
+
+        let container = GenericImage::new("alpine", "latest")
+            .with_kernel(&link)
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .start()
+            .await
+            .expect("特殊文字を含むカーネルパスでのコンテナ起動に失敗した");
+
+        assert_netem_enabled(&container).await;
+
+        container.rm().await.expect("コンテナの削除に失敗した");
+
+        std::fs::remove_file(&link).expect("symlink の削除に失敗した");
+        std::fs::remove_dir(&dir).expect("一時ディレクトリの削除に失敗した");
+    }
+
+    /// 不正なカーネルパスが start 時に明示エラーになること。
+    ///
+    /// 相対パス・存在しないパス・ディレクトリ・非 UTF-8 パスのいずれも、pull / resolve より前に
+    /// `ClientError::Configuration` になる。検証が pull より先に走ることを実証するため、
+    /// 存在しないイメージ名を使う (検証が pull より後に移動するとこのテストは落ちる)。
+    /// apiserver への接続を伴わないため、ランタイム無しでも検証できる。
+    /// 期待メッセージまで見るのは、どの検証で落ちたかを区別するため
+    /// (存在しないパスも非 UTF-8 も同じ variant になる)。
+    #[tokio::test]
+    async fn xpc_invalid_kernel_path_is_rejected() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let dir = std::env::temp_dir();
+        let cases = [
+            (
+                "相対パス",
+                std::path::PathBuf::from("vmlinux"),
+                "must be absolute",
+            ),
+            (
+                "存在しないパス",
+                dir.join("shiguredo-container-no-such-vmlinux"),
+                "is not a file",
+            ),
+            ("ディレクトリ", dir.clone(), "is not a file"),
+            // XPC は Swift の String 経由でパスを渡すため、非 UTF-8 は載せられない。
+            (
+                "非 UTF-8 パス",
+                std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![
+                    b'/', 0x2f, 0xff, 0xfe,
+                ])),
+                "not valid UTF-8",
+            ),
+        ];
+
+        for (case, path, expected) in cases {
+            let err = GenericImage::new("shiguredo/no-such-image", "latest")
+                .with_kernel(&path)
+                .with_cmd(["sleep", "30"])
+                .start()
+                .await
+                .expect_err("不正なカーネルパスは start で拒否されること");
+
+            assert!(
+                matches!(err, Error::Client(ClientError::Configuration(_))),
+                "{case} は ClientError::Configuration になること: {err:?}"
+            );
+            let message = err.to_string();
+            assert!(
+                message.contains("kernel path") && message.contains(expected),
+                "{case} のエラーに kernel path と {expected} が含まれること: {message}"
             );
         }
     }

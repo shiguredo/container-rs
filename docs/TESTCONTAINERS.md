@@ -61,7 +61,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` は demux 済みログを返す。`WaitFor::Log` (`message_on_stdout` / `message_on_stderr` / `message_on_either_std`) と `with_log_consumer` も成立する。`follow=true` は 8 MiB リングで上限超過時は先頭 drop して `warn` ログを出し読み進める。`follow=false` は呼び出しごとに新規 HTTP セッションを張る (1-shot は各ストリーム 64 MiB 上限・超過時はエラーで切り詰めない。stdout / stderr は同一セッションのため片方の超過で両方の取得が失敗する)。`pull_image` の進捗ストリームも 64 MiB 上限・超過時エラー
 - `copy_file_from` は `GET /containers/{id}/archive` の tar を自前 ustar パーサで展開して返す (source は絶対パス必須・ファイル専用)。受信する tar 全体 (ヘッダ + データ + トレーラ) は 64 MiB 上限・超過時エラー (ファイル内容がちょうど 64 MiB でも tar オーバーヘッド分でエラーになり得る。macOS 側にこの上限は無い)。404 はボディの daemon メッセージで区別し、コンテナ内パス不存在は `ClientError::ContainerPathNotFound`、コンテナ不存在は `ClientError::ContainerNotFound` になる。`with_copy_to` は Linux では create 後・start 前に `PUT /containers/{id}/archive?path=/` へ自前 ustar を投入し、ターゲットパスに `..` / 終端 `.` / `//` を含めると明示エラー、親ディレクトリ自動作成・ディレクトリ一括投入対応、配下 regular file の `mode` / `uid` / `gid` は反映、中間 directory の mode は `0o755`、コピー後 mtime は epoch。起動前投入は Linux のみの公開契約で、macOS は start_process 後の containerCopyIn（レースあり。親作成は `createParents`）
 - `ExitWaitStrategy` は macOS / Linux とも exit_code_hint + container_state ポーリングで対応
-- `ImageExt::with_ssh` / `with_masked_paths` / `with_readonly_paths` のみ Linux では start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
+- `ImageExt::with_ssh` / `with_masked_paths` / `with_readonly_paths` / `with_kernel` のみ Linux では start 時に明示エラー (黙って無視しない)。`with_init` は HostConfig.Init に配線済み。`with_health_check` は Config.Healthcheck に配線済みで `WaitFor::Healthcheck` も成立する
 
 README の Linux 注意書きと合わせて読むこと。残ギャップはネットワークの自動作成・自動削除などである。
 
@@ -74,10 +74,10 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 | 未実装 (実装可能) | 0 |
 | 未実装 (XPC 制約) | 4 |
 | なし | 64 |
-| shiguredo 拡張 (本家に無い追加 API) | 23 |
+| shiguredo 拡張 (本家に無い追加 API) | 25 |
 | 内部型/内部関数 (対象外) | 5 |
 
-内訳合計: 394 API 程度 (判定対象。対象外 5 は含まない。feature ゲート表の「備考」列も集計外)。件数は参考値で、対応表の行数を機械集計したもの。API の追加・削除で随時変わる。
+内訳合計: 396 API 程度 (判定対象。対象外 5 は含まない。feature ゲート表の「備考」列も集計外)。件数は参考値で、対応表の行数を機械集計したもの。API の追加・削除で随時変わる。
 
 判定内訳の傾向 (Apple Container):
 
@@ -86,7 +86,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
 - **未実装 (XPC 制約)** (4): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機)・`with_health_check` (start 時明示エラー)・`HealthWaitStrategy::wait_until_ready` (10.2 参照)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` は `ContainerAsync` が `#[cfg(target_os = "linux")]` でクローズ、sync `Container` はシグネチャ自体を削除したため「なし」に分類
 - **なし** (64): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
-- **shiguredo 拡張** (23): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths` (4 行)、`ContainerAsync::container_state` / `rm_blocking` (2 行)、`Container::container_state` / `rm_blocking` (2 行)、`ClientError::XpcConnect` / `Xpc` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` (8 行)、`ContainerRequest` の `init` / `ssh` accessor (1 行)、`ContainerRequest` の `masked_paths` / `readonly_paths` accessor (1 行)、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` (4 行)、`HttpWaitStrategy::with_request_timeout` (1 行)
+- **shiguredo 拡張** (25): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths` / `with_kernel` (5 行)、`ContainerAsync::container_state` / `rm_blocking` (2 行)、`Container::container_state` / `rm_blocking` (2 行)、`ClientError::XpcConnect` / `Xpc` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` (8 行)、`ContainerRequest` の `init` / `ssh` accessor (1 行)、`ContainerRequest` の `masked_paths` / `readonly_paths` accessor (1 行)、`ContainerRequest` の `kernel` accessor (1 行)、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` (4 行)、`HttpWaitStrategy::with_request_timeout` (1 行)
   - 件数は対応表の「shiguredo 拡張」判定の行数。`ContainerRequest` の accessor は対応表ではいずれも 1 行にまとめている
 
 ## サマリ (Docker Engine API)
@@ -95,7 +95,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 
 - **対応に近いもの**: トレイト / リクエスト型の定義面、`pull_image`、ライフサイクル (`start` / `stop` / `rm` / Drop / `ports` / `is_running` / `container_state` / `exec` の exit code + stdout / stderr + Env)、ログ関連 (`stdout` / `stderr` / `stdout_to_vec` / `stderr_to_vec` / `WaitFor::Log` / `message_on_*` / `with_log_consumer`、8 MiB リングで先頭 drop)、copy (`copy_file_from` / `with_copy_to`。Linux は親ディレクトリ自動作成・ディレクトリ投入対応)、ヘルスチェック (`Healthcheck` / `with_health_check` / `WaitFor::Healthcheck`)、一部の create JSON 反映 (`with_cmd` / `with_mapped_port` / `with_init` 等)
 - **未配線・未実装が残るもの**: ネットワークの自動作成・自動削除など
-- **未実装 (start 時 fail-fast)**: `with_ssh` / `with_masked_paths` / `with_readonly_paths`、Linux 設定構築に載らない ImageExt
+- **未実装 (start 時 fail-fast)**: `with_ssh` / `with_masked_paths` / `with_readonly_paths` / `with_kernel`、Linux 設定構築に載らない ImageExt
 
 Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差を同時に見せるためのものである。
 
@@ -158,6 +158,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_ssh(self)` | なし | shiguredo 拡張 | 未実装 | XPC `ssh` に反映 / Docker: start 時に明示エラー (設定構築に未配線) |
 | `with_masked_paths(self, paths)` | なし | shiguredo 拡張 | 未実装 | macOS: XPC `ContainerCfg.maskedPaths` に反映 (Apple container 1.2.0 以上)。空リストは既定マスクの無効化、明示リストは既定を上書き / Docker: start 時に明示エラー (設定構築に未配線) |
 | `with_readonly_paths(self, paths)` | なし | shiguredo 拡張 | 未実装 | macOS: XPC `ContainerCfg.readonlyPaths` に反映 (Apple container 1.2.0 以上)。個別パスの読み取り専用化であり `with_readonly_rootfs` とは別物 / Docker: start 時に明示エラー (設定構築に未配線) |
+| `with_kernel(self, kernel_path)` | なし | shiguredo 拡張 | 未実装 | macOS: `containerCreate` の `kernel` (containerization の `Kernel` JSON) の `path` に file URL として反映。`with_kernel` 未指定時だけ `getDefaultKernel` を呼ぶ。パスは絶対パスかつ UTF-8 の実ファイル必須 (違反時は pull 前に `ClientError::Configuration`) / Docker: start 時に明示エラー (ホストとカーネルを共有するためコンテナ単位で指定できない) |
 
 ## 3. `AsyncRunner` トレイト (`runners::AsyncRunner`)
 
@@ -284,6 +285,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `impl<I: Image> From<I> for ContainerRequest<I>` | あり | 対応 | 対応 |  |
 | `init/ssh` accessor | なし | shiguredo 拡張 | 部分対応 | `init()` は Docker HostConfig.Init に配線済み。`ssh()` は Linux の Docker 設定構築で未反映 |
 | `masked_paths/readonly_paths` accessor | なし | shiguredo 拡張 | 部分対応 | macOS で `ContainerCfg` に反映。Linux では `Some` を返すと start 時に明示エラー |
+| `kernel` accessor | なし | shiguredo 拡張 | 部分対応 | macOS で `containerCreate` の `Kernel` JSON に反映。Linux では `Some` を返すと start 時に明示エラー |
 | `PortMapping::new (crate内)` | あり | 対応 | 対応 |  |
 | `PortMapping::host_port` | あり | 対応 | 対応 |  |
 | `PortMapping::container_port` | あり | 対応 | 対応 |  |
@@ -814,6 +816,7 @@ Apple container の XPC には対応 route が無いが、本家 API 互換の�
 - `ImageExt::with_ssh` — Apple: XPC `ssh` に反映。Docker: start 時に明示エラー (設定構築に未配線)
 - `ImageExt::with_masked_paths` — Apple: XPC `ContainerCfg.maskedPaths` に反映 (Apple container 1.2.0 以上)。Docker: start 時に明示エラー (設定構築に未配線)
 - `ImageExt::with_readonly_paths` — Apple: XPC `ContainerCfg.readonlyPaths` に反映 (Apple container 1.2.0 以上)。Docker: start 時に明示エラー (設定構築に未配線)
+- `ImageExt::with_kernel` — Apple: `containerCreate` の `kernel` (containerization の `Kernel` JSON) の `path` に file URL として反映。Docker: start 時に明示エラー (ホストとカーネルを共有するためコンテナ単位で指定できない)
 - `ContainerAsync::container_state` — Apple: XPC `containerState` を返す。Docker: 配線済み
 - `ContainerAsync::rm_blocking` — Apple: `remove_blocking` を直接呼び出し (deadlock しない)。Docker: 対応
 - `Container::container_state` — Apple: 対応 (ContainerAsync に委譲)。Docker: 配線済み
@@ -822,6 +825,7 @@ Apple container の XPC には対応 route が無いが、本家 API 互換の�
 - `ClientError::ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` — Apple: 対応。Docker: Linux の DockerClient でも使用
 - `ContainerRequest` の `init` / `ssh` accessor — Apple: 対応。Docker: `init()` は HostConfig.Init に配線済み、`ssh()` は未反映
 - `ContainerRequest` の `masked_paths` / `readonly_paths` accessor — Apple: 対応。Docker: `Some` を返すと start 時に明示エラー
+- `ContainerRequest` の `kernel` accessor — Apple: 対応。Docker: `Some` を返すと start 時に明示エラー
 - `CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` — Apple: macOS でコピー後 chown により反映 (非ゼロの場合のみ)。Docker: tar ヘッダ + `copyUIDGID=true` で反映
 - `HttpWaitStrategy::with_request_timeout` — Apple / Docker: HTTP リクエスト 1 回のタイムアウトを設定する (既定 10 秒)。10.3 参照
 
