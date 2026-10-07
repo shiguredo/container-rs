@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout sources
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # canary.py の doctest を実行する (バージョン変換ロジックの回帰検出)
       - run: python3 -m doctest canary.py
       # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout sources
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install 1.93.0 --profile minimal
       - run: cargo +1.93.0 check --all-features
 
@@ -55,7 +55,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout sources
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
       - run: rustup show
       # feature ゲート漏れ検出のため features なしでもチェックする
@@ -78,7 +78,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout sources
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install rustup
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
