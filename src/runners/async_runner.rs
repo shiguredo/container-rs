@@ -97,6 +97,12 @@ where
                 crate::core::containers::request::reject_duplicate_mapped_ports(ports)?;
             }
 
+            // カスタムカーネル指定は pull / resolve より前に検証する (順序の根拠は
+            // `validate_kernel_path` の doc を参照)。
+            if let Some(path) = container_req.kernel() {
+                validate_kernel_path(path)?;
+            }
+
             let descriptor = container_req.descriptor();
 
             // platform を正規化する。許可外文字列は resolve / pull / create に渡さない。
@@ -118,9 +124,14 @@ where
             )
             .await?;
 
-            // デフォルトカーネルを取得する。
-            // amd64 (Rosetta) ゲストでも arm64 カーネルを使う (CLI と同方針)。
-            let kernel = client.get_default_kernel().await?;
+            // カーネルを決める。
+            let kernel = match container_req.kernel() {
+                // `with_kernel` 指定時は既定カーネルを取りに行かず、`Kernel` JSON を
+                // 自前で組み立てる (既定カーネル未インストールの環境でも起動できる。CLI と同挙動)。
+                Some(path) => crate::core::client::xpc_client::kernel_json(path),
+                // 未指定時は既定カーネル。amd64 (Rosetta) ゲストでも arm64 を使う (CLI と同方針)。
+                None => client.get_default_kernel().await?,
+            };
 
             // volume マウントを解決する。
             // Apple container は volume マウントを block デバイスとして扱い、
@@ -657,7 +668,46 @@ fn linux_unsupported_request_reason<I: Image>(req: &ContainerRequest<I>) -> Opti
     if req.readonly_paths().is_some() {
         return Some("with_readonly_paths() is not implemented on Linux");
     }
+    if req.kernel().is_some() {
+        return Some("with_kernel() is not implemented on Linux");
+    }
     None
+}
+
+/// macOS: `with_kernel` に渡されたカーネルパスを検証する。
+///
+/// apiserver は別プロセス (gui/501 の launchd エージェント) で cwd も異なるため、
+/// 相対パスは呼び出し側の意図どおりに解決できない。CLI (`container run -k`) は
+/// cwd 基準で絶対化するが、本クレートは解釈せず明示エラーにする (fail-fast)。
+/// ディレクトリはカーネル実体として読めないため、CLI の存在確認より厳しく弾く。
+/// 検証は start 時の 1 回だけで、カーネルを開くのは apiserver (読取権も apiserver 側で必要)。
+#[cfg(target_os = "macos")]
+fn validate_kernel_path(path: &std::path::Path) -> Result<()> {
+    if !path.is_absolute() {
+        return Err(ClientError::Configuration(format!(
+            "kernel path must be absolute: {}",
+            path.display()
+        ))
+        .into());
+    }
+    // カーネルパスは XPC 経由で Swift の `URL` (= String 由来) に渡る。非 UTF-8 パスは
+    // `copy_in` と同じ理由 (黙って置換すると別パスとして送信される) で拒否する。
+    // 設定値のエラーなので `copy_in` の `ClientError::Other` ではなく `Configuration` を返す。
+    if path.to_str().is_none() {
+        return Err(ClientError::Configuration(format!(
+            "kernel path is not valid UTF-8: {}",
+            path.display()
+        ))
+        .into());
+    }
+    if !path.is_file() {
+        return Err(ClientError::Configuration(format!(
+            "kernel path is not a file: {}",
+            path.display()
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 /// macOS (XPC) 用の `with_host` フォールバック。
@@ -1167,6 +1217,29 @@ mod tests {
         );
         // ガード破棄で後始末する。
     }
+
+    #[test]
+    fn validate_kernel_path_accepts_existing_file_and_symlink() {
+        // 正常系 (実ファイルとその symlink) が通り、拒否経路の検証だけが CI に残らないこと。
+        // カーネルディレクトリは symlink で運用される (既定カーネルも symlink)。
+        let dir = std::env::temp_dir().join(format!(
+            "shiguredo-container-kernel-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        std::fs::create_dir_all(&dir).expect("一時ディレクトリの作成に失敗した");
+        let file = dir.join("vmlinux");
+        std::fs::write(&file, b"kernel").expect("一時ファイルの作成に失敗した");
+        let link = dir.join("vmlinux-link");
+        std::os::unix::fs::symlink(&file, &link).expect("symlink の作成に失敗した");
+
+        validate_kernel_path(&file).expect("実ファイルは受理されること");
+        validate_kernel_path(&link).expect("symlink は実ファイルとして受理されること");
+
+        std::fs::remove_file(&link).expect("symlink の削除に失敗した");
+        std::fs::remove_file(&file).expect("一時ファイルの削除に失敗した");
+        std::fs::remove_dir(&dir).expect("一時ディレクトリの削除に失敗した");
+    }
 }
 
 /// Linux: `build_container_config` のポート合成 / env 畳み込みと
@@ -1247,6 +1320,19 @@ mod linux_tests {
         assert_eq!(
             linux_unsupported_request_reason(&req),
             Some("with_readonly_paths() is not implemented on Linux")
+        );
+    }
+
+    #[test]
+    fn kernel_is_unsupported_on_linux() {
+        // with_kernel は macOS のみ対応のため、Linux では start 時に明示エラーになること。
+        // Docker Engine API はホストとカーネルを共有するためコンテナ単位で指定できない。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_kernel("/tmp/vmlinux");
+        assert_eq!(
+            linux_unsupported_request_reason(&req),
+            Some("with_kernel() is not implemented on Linux")
         );
     }
 

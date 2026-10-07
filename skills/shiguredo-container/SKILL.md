@@ -10,7 +10,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 ## 特徴
 
 - **macOS がメイン対象**: Apple container の XPC API を自前実装で直接叩く。Docker Desktop 不要
-- **Linux 対応**: Docker Engine API (`/var/run/docker.sock`) を利用。ライフサイクル (start / exec / stop / rm / Drop)、ログ関連 (stdout / stderr / ログ待機 / LogConsumer)、ホストポート公開、ファイルコピー (`copy_file_from` / `with_copy_to`)、ヘルスチェック (`with_health_check` / `WaitFor::healthcheck`)、exec (stdout / stderr / env)、bridge IP 取得、pause / unpause、ExitWaitStrategy が動く。`with_ssh` とネットワークの自動作成・自動削除などは未対応
+- **Linux 対応**: Docker Engine API (`/var/run/docker.sock`) を利用。ライフサイクル (start / exec / stop / rm / Drop)、ログ関連 (stdout / stderr / ログ待機 / LogConsumer)、ホストポート公開、ファイルコピー (`copy_file_from` / `with_copy_to`)、ヘルスチェック (`with_health_check` / `WaitFor::healthcheck`)、exec (stdout / stderr / env)、bridge IP 取得、pause / unpause、ExitWaitStrategy が動く。`with_ssh` / `with_masked_paths` / `with_readonly_paths` / `with_kernel` とネットワークの自動作成・自動削除などは未対応
 - **testcontainers-rs 互換 API**: 学習コスト削減のため公開 API を testcontainers-rs 0.27 に寄せている (完全互換は目指さない)
 - **依存最小**: `base64ct` / `libc` / `nojson` / `shiguredo_http11` / `tokio` / `tracing`。bollard / reqwest / bytes 等は使わない
 - **黙って無視しない**: 未対応の設定はリクエストに保存だけして無視するのではなく、start / create 時に明示エラーを返す
@@ -79,6 +79,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `with_init` | **shiguredo 拡張** (XPC `useInit`) | 対応 (HostConfig.Init) |
 | `with_ssh` | **shiguredo 拡張** (XPC `ssh`) | start 時に明示エラー |
 | `with_masked_paths`, `with_readonly_paths` | **shiguredo 拡張** (XPC `ContainerCfg` の `maskedPaths` / `readonlyPaths` に反映。Apple container 1.2.0 以上) | start 時に明示エラー |
+| `with_kernel` | **shiguredo 拡張** (`containerCreate` の `kernel` (containerization の `Kernel` JSON) の `path` に file URL として反映。未指定時だけ `getDefaultKernel` を呼ぶ。パスは絶対パスかつ UTF-8 の実ファイル必須で、違反時は pull 前に `ClientError::Configuration`) | start 時に明示エラー (ホストとカーネルを共有するため指定不可) |
 | `with_health_check` | 未実装 (XPC 制約)。start 時に明示エラー | 対応 (Config.Healthcheck)。`WaitFor::healthcheck` と併用可 |
 
 本家にあって存在しないもの: `with_ulimit` / `with_cgroupns_mode` / `with_userns_mode` / `with_security_opt` / `with_host_config_modifier` / `with_reuse` / `with_exposed_host_port(s)` / `with_device_requests` (XPC に設定口が無い、または方針で未対応)。
@@ -273,6 +274,7 @@ let container = GenericImage::new("nginx", "latest")
 |:--|:--|
 | `TESTCONTAINERS_COMMAND` | `keep` で Drop 時の削除を抑止 (既定は `remove`) |
 | `RUN_HOST_NETWORK_TESTS` | 本リポジトリの統合テスト用。`1` でホスト→コンテナ接続依存のテストを有効化 |
+| `CONTAINER_TEST_KERNEL_PATH` | 本リポジトリの統合テスト用。カスタムカーネルの絶対パスを指定すると `with_kernel` のテストを実行する (未設定ならスキップ。netem 入りのカーネルを指定すること) |
 
 ## エラー型
 
@@ -290,11 +292,11 @@ let container = GenericImage::new("nginx", "latest")
 - **macOS の Local Network Privacy (LNP)**: `HttpWaitStrategy` や published port への接続は macOS 15+ の LNP にブロックされ得る。LNP は TCC / MDM で事前付与できない。CI ではコンテナ IP 直結テストを基本とし、published port 依存テストは許可済み環境でのみ実行する
 - **macOS の published port の大容量転送**: Apple container のポートフォワーダー (`container-runtime-linux`) は、サーバー → クライアント方向の大容量レスポンスを遅い消費者に対して途中で切断し得る (切断は EOF (FIN) として観測され、不完全なレスポンスが正常な EOF として受信される)。大容量レスポンスを扱う場合は、published port ではなくコンテナ IP 直結 (`ContainerAsync::get_bridge_ip_address` で取得した IP へ直接接続) を使うこと。直結も LNP 未許可の環境では接続がブロックされ得る。消費者側の読み間隔を詰めても安全なサイズ域は環境依存であり保証できない
 - **blocking の再入 deadlock**: `LogConsumer` コールバック内や既存の tokio ランタイムコンテキストから `SyncRunner::start` 等の同期 API を呼ぶと共有 Runtime への再入で deadlock する。ライブラリは再入を検出して即エラーにする。共有 Runtime 内から `spawn_blocking` したスレッドでも安全側に倒して再入エラーになる。同期ログリーダー (`Container::stdout` / `stderr`) はコールバック内で取得すると読み取り時に `io::Error` を返すが、コールバック外で取得済みのリーダーをコールバック内で読むケースは検出しない。共有 Runtime ワーカースレッド上で最後の同期 `Container` を drop するとハングし得る既知の限界もある
-- **Linux の残ギャップ**: `with_ssh` / `with_masked_paths` / `with_readonly_paths` とネットワークの自動作成・自動削除が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
+- **Linux の残ギャップ**: `with_ssh` / `with_masked_paths` / `with_readonly_paths` / `with_kernel` とネットワークの自動作成・自動削除が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
 - **イメージビルド未対応**: `GenericBuildableImage` / `BuildableImage` 等の build 系 API は無い
 - **reuse 未対応**: `reusable-containers` 相当の feature・型は無い
 - **本家との型不整合**: `CopyFromContainerError::UnsupportedEntry` は `&'static str` (本家 `tokio_tar::EntryType`)、`WaitLogError::EndOfStream` は `Vec<u8>` (本家 `Vec<Bytes>`)、`WaitContainerError::Unhealthy` は `Unhealthy(String)` (本家はユニットバリアント)。いずれも依存最小方針による意図的差分
 
 ## 参考資料
 
-- 本家 testcontainers-rs との API 対応表 (参考値: 判定対象 394 API 程度の一覧): `docs/TESTCONTAINERS.md`
+- 本家 testcontainers-rs との API 対応表 (参考値: 判定対象 396 API 程度の一覧): `docs/TESTCONTAINERS.md`

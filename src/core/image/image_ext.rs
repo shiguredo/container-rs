@@ -195,6 +195,39 @@ pub trait ImageExt<I: Image> {
         self,
         paths: impl IntoIterator<Item = impl Into<String>>,
     ) -> ContainerRequest<I>;
+
+    /// コンテナが使うカスタムカーネルを指定する (shiguredo 拡張)。
+    ///
+    /// macOS (Apple container) では XPC `containerCreate` に載せる `Kernel` JSON の
+    /// `path` に反映される。未指定時はランタイム既定カーネルを使う。指定時は既定カーネルを
+    /// 取得しないため、既定カーネル未インストールの環境でも起動できる
+    /// (`container run -k, --kernel` と同じ挙動)。
+    ///
+    /// - カーネルはホストのアーキテクチャに一致させること (amd64 / Rosetta ゲストでも
+    ///   カーネルはホスト側の arm64 になる)
+    /// - パスは絶対パスかつ UTF-8 の実ファイルであること。満たさない場合、macOS の
+    ///   `AsyncRunner::start` は pull / resolve より前に
+    ///   [`ClientError::Configuration`](crate::core::error::ClientError::Configuration) を返す。
+    ///   検証は start 時の 1 回で、カーネル実体を開くのは apiserver のため、
+    ///   apiserver から読めるパスであること (ファイルの read 権限) も必要になる
+    /// - 複数回呼び出しは上書きされる
+    /// - Linux (Docker Engine API) はホストとカーネルを共有するため対応せず、start 時に
+    ///   明示エラーを返す
+    ///
+    /// # 使用例
+    ///
+    /// ```no_run
+    /// use shiguredo_container::{AsyncRunner, GenericImage, ImageExt};
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let container = GenericImage::new("alpine", "latest")
+    ///     .with_kernel("/path/to/vmlinux")
+    ///     .start()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn with_kernel(self, kernel_path: impl AsRef<std::path::Path>) -> ContainerRequest<I>;
 }
 
 impl<RI: Into<ContainerRequest<I>>, I: Image> ImageExt<I> for RI {
@@ -450,6 +483,14 @@ impl<RI: Into<ContainerRequest<I>>, I: Image> ImageExt<I> for RI {
         let container_req = self.into();
         ContainerRequest {
             readonly_paths: Some(paths.into_iter().map(Into::into).collect()),
+            ..container_req
+        }
+    }
+
+    fn with_kernel(self, kernel_path: impl AsRef<std::path::Path>) -> ContainerRequest<I> {
+        let container_req = self.into();
+        ContainerRequest {
+            kernel: Some(kernel_path.as_ref().to_path_buf()),
             ..container_req
         }
     }
