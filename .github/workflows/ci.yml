@@ -26,10 +26,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout sources
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # canary.py の doctest を実行する (バージョン変換ロジックの回帰検出)
       - run: python3 -m doctest canary.py
-      - run: rustup update stable
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -41,7 +42,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout sources
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install 1.93.0 --profile minimal
       - run: cargo +1.93.0 check --all-features
 
@@ -54,8 +55,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout sources
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - run: rustup update stable
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
       # feature ゲート漏れ検出のため features なしでもチェックする
       - run: cargo check
       # テストが並列で一斉に pull すると Docker Hub の匿名 pull 上限 (429) に達するため、
@@ -76,7 +78,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout sources
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install rustup
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -84,7 +86,8 @@ jobs:
       # /opt/homebrew/bin も PATH に含める (ランナーの既定 PATH には無い)
       - name: Update PATH
         run: echo "PATH=$HOME/.cargo/bin:/opt/homebrew/bin:$PATH" >> $GITHUB_ENV
-      - run: rustup update stable
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
       # Apple container CLI を最新に更新する (macOS ランタイム要件は 1.2.0 以上)
       - name: Update Apple container to latest
         run: brew upgrade container

@@ -1,13 +1,11 @@
 [package]
 name = "shiguredo_container"
-version = "2026.1.0"
+version = "2026.1.1"
 edition = "2024"
-rust-version = "1.93.0"
+rust-version = "1.93"
 description = "Runtime-agnostic container library for Rust on macOS and Linux"
 repository = "https://github.com/shiguredo/container-rs"
 license = "Apache-2.0"
-keywords = ["container", "docker", "integration-test", "macos", "testing"]
-categories = ["development-tools::testing"]
 include = ["/LICENSE", "/README.md", "/build.rs", "/src/**"]
 
 [package.metadata.docs.rs]
@@ -34,7 +32,7 @@ shiguredo_http11 = "2026.6"
 tracing = "0.1"
 
 # 非同期ランタイム
-# MSRV 1.93.0 の TOML パーサがインラインテーブルの改行を未サポートのため、テーブル形式で記述する。
+# MSRV 1.93 の TOML パーサがインラインテーブルの改行を未サポートのため、テーブル形式で記述する。
 [dependencies.tokio]
 version = "1.53"
 features = [
@@ -48,13 +46,9 @@ features = [
   "time"
 ]
 
-[dev-dependencies]
-# docker_tar の PBT (プロパティベーステスト) に使用
-noprop = "0.2"
-
 [build-dependencies]
 # xpc_bridge.c をコンパイルするため
-cc = "1.2"
+cc = "1.6"
 
 [features]
 # 同期 API (Container / SyncRunner など) を有効化する

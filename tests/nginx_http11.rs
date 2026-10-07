@@ -7,6 +7,7 @@
 //! published port 経由のため、macOS では Local Network Privacy の許可が必要。
 //! ローカルでは `RUN_HOST_NETWORK_TESTS=1` を付けて実行する。
 
+#[cfg(all(target_os = "macos", feature = "http_wait_plain"))]
 mod helpers;
 
 #[cfg(all(target_os = "macos", feature = "http_wait_plain"))]
@@ -154,7 +155,10 @@ mod with_http_wait {
         })
         .await
         .map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::TimedOut, "slow consumer GET timed out")
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "遅い消費者 GET がタイムアウトした",
+            )
         })?
     }
 

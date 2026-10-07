@@ -518,41 +518,43 @@ impl<I: Image> ContainerAsync<I> {
     pub async fn start(&self) -> Result<()> {
         // 停止済みの場合は再起動する。
         #[cfg(target_os = "macos")]
-        if let Client::MacOs(c) = &self.client
-            && !c.container_state(&self.id).await?.running
         {
-            // Apple container の公式 CLI `container start` と同じ経路。
-            c.bootstrap_container(&self.id).await?;
-            c.start_process(&self.id).await?;
-            self.reset_wait_state_and_respawn();
-            // 再 bootstrap 後は旧ログ FD が死ぬため、差し替えて consumer も再武装する。
-            // 差し替えに失敗した場合は、ログ系 API が機能しない実行中コンテナを残さず
-            // SIGKILL で巻き戻してから元のエラーを返す。巻き戻しは Linux の refresh 失敗時と
-            // 同じ方針で、コンテナ再起動を内部に持たない単一責務の refresh_log_streams の
-            // 呼び出し側 (start) で完結させる。
-            if let Err(e) = self.refresh_log_streams(c).await {
-                // stop_with_timeout は stop_log_delivery を経由して現役の LogConsumer タスクも
-                // 停止するため、client.stop 直接呼びより望ましい。
-                if let Err(stop_err) = self.stop_with_timeout(Some(0)).await {
-                    tracing::warn!(
-                        "failed to stop container after log refresh failure: {stop_err}"
-                    );
-                    // 巻き戻し失敗時は実行中コンテナ + 死んだログ FD が残る。次回 start は
-                    // running のため再起動分岐をスキップしてログは回復しない。先に stop() を
-                    // 呼んでから start() すると回復する。
+            let Client::MacOs(c) = &self.client;
+            if !c.container_state(&self.id).await?.running {
+                // Apple container の公式 CLI `container start` と同じ経路。
+                c.bootstrap_container(&self.id).await?;
+                c.start_process(&self.id).await?;
+                self.reset_wait_state_and_respawn();
+                // 再 bootstrap 後は旧ログ FD が死ぬため、差し替えて consumer も再武装する。
+                // 差し替えに失敗した場合は、ログ系 API が機能しない実行中コンテナを残さず
+                // SIGKILL で巻き戻してから元のエラーを返す。巻き戻しは Linux の refresh 失敗時と
+                // 同じ方針で、コンテナ再起動を内部に持たない単一責務の refresh_log_streams の
+                // 呼び出し側 (start) で完結させる。
+                if let Err(e) = self.refresh_log_streams(c).await {
+                    // stop_with_timeout は stop_log_delivery を経由して現役の LogConsumer タスクも
+                    // 停止するため、client.stop 直接呼びより望ましい。
+                    if let Err(stop_err) = self.stop_with_timeout(Some(0)).await {
+                        tracing::warn!(
+                            "failed to stop container after log refresh failure: {stop_err}"
+                        );
+                        // 巻き戻し失敗時は実行中コンテナ + 死んだログ FD が残る。次回 start は
+                        // running のため再起動分岐をスキップしてログは回復しない。先に stop() を
+                        // 呼んでから start() すると回復する。
+                    }
+                    return Err(e);
                 }
-                return Err(e);
             }
         }
         #[cfg(target_os = "linux")]
-        if let Client::Linux(c) = &self.client
-            && !c.container_state(&self.id).await?.running
         {
-            // 旧ログストリーム停止 → コンテナ再起動 → 新ログストリーム起動を一括で行う。
-            self.refresh_log_streams(c).await?;
-            // 再起動成功後に wait スレッドを再武装する。refresh_log_streams より前に
-            // 再武装すると、停止中のコンテナに対して waiter が旧 exit code を即取得してしまう。
-            self.reset_wait_state_and_respawn();
+            let Client::Linux(c) = &self.client;
+            if !c.container_state(&self.id).await?.running {
+                // 旧ログストリーム停止 → コンテナ再起動 → 新ログストリーム起動を一括で行う。
+                self.refresh_log_streams(c).await?;
+                // 再起動成功後に wait スレッドを再武装する。refresh_log_streams より前に
+                // 再武装すると、停止中のコンテナに対して waiter が旧 exit code を即取得してしまう。
+                self.reset_wait_state_and_respawn();
+            }
         }
 
         // exec_after_start を実行する (本家の公開 start() と同じ構造)。

@@ -18,7 +18,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 ## バージョン情報
 
 - crate 名: `shiguredo_container`
-- バージョン: 2026.1.0-canary.8
+- バージョン: 2026.1.0
 - Rust Edition: 2024
 - 最小 Rust バージョン: 1.93
 - ライセンス: Apache-2.0
@@ -278,7 +278,7 @@ let container = GenericImage::new("nginx", "latest")
 
 `Error` (crate root): `Client(ClientError)`, `WaitContainer(WaitContainerError)`, `PortNotExposed { id, port }`, `Exec(ExecError)`, `Io(std::io::Error)`, `Other(Box<dyn Error>)`。`pub type Result<T>` あり。
 
-- `ClientError`: shiguredo 拡張として `XpcConnect` / `Xpc(String)` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` を持つ (bollard 系エラーは無い)
+- `ClientError`: shiguredo 拡張として `XpcConnect` / `Xpc(String)` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Configuration(String)` / `Json` / `Other` を持つ (bollard 系エラーは無い)
 - `WaitContainerError`: `WaitLog`, `HttpWait(HttpWaitError)` (feature), `HealthCheckNotConfigured`, `Unhealthy`, `StartupTimeout`, `UnexpectedExitCode { expected, actual }`
 - `ExecError`: `ExitCodeMismatch { expected, actual }`
 - `WaitLogError`: `EndOfStream(Vec<u8>)` (本家は `Vec<Bytes>`。意図的差分), `Io`
@@ -297,4 +297,4 @@ let container = GenericImage::new("nginx", "latest")
 
 ## 参考資料
 
-- 本家 testcontainers-rs との API 対応表 (参考値: 判定対象 393 API の一覧): `docs/TESTCONTAINERS.md`
+- 本家 testcontainers-rs との API 対応表 (参考値: 判定対象 394 API 程度の一覧): `docs/TESTCONTAINERS.md`

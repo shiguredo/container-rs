@@ -47,7 +47,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 
 ```toml
 [dependencies]
-shiguredo_container = { version = "2026", features = ["blocking", "http_wait_plain"] }
+shiguredo_container = { version = "2026.1", features = ["blocking", "http_wait_plain"] }
 tokio = { version = "1.53", features = ["full"] }
 ```
 
