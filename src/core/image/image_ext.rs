@@ -36,6 +36,44 @@ pub trait ImageExt<I: Image> {
     fn with_hostname(self, hostname: impl Into<String>) -> ContainerRequest<I>;
     /// 接続するネットワークを設定する。
     fn with_network(self, network: impl Into<String>) -> ContainerRequest<I>;
+    /// コンテナにネットワークエイリアスを 1 件追加する (shiguredo 拡張)。
+    ///
+    /// Apple container 1.6.0 以上では `containerCreate` の
+    /// `networks[0].options.aliases` に反映され、同じネットワーク上の別名として
+    /// ホスト側 DNS サーバー (`127.0.0.1:2053`) から解決できる。Docker Engine API では
+    /// `NetworkingConfig.EndpointsConfig.<network>.Aliases` に反映され、同じ
+    /// user-defined network 上の別コンテナから解決できる。
+    ///
+    /// 複数回呼び出すと追加される (上書きしない)。
+    ///
+    /// # プラットフォーム差
+    ///
+    /// - **macOS**: Apple container は CLI と違い既定 DNS ドメインを補完しないため、
+    ///   完全修飾名 (`api.example.test`) または先頭 `.` のサブツリー名
+    ///   (`.example.test`) を指定する。サブツリー名の base は同じコンテナの hostname
+    ///   または完全修飾のエイリアスが所有している必要がある。先頭の `.` を除いて `.` を
+    ///   含まない名前は start 時に明示エラーになる。1 アタッチメントあたり最大 32 個。
+    ///   Apple container 1.6.0 以上が必要で、1.2.0〜1.5.0 では未知キーとして無視される。
+    ///   エイリアスはホスト側のコンテナ DNS サーバー (`127.0.0.1:2053`) で解決される。
+    ///   コンテナ内のリゾルバはネットワークのゲートウェイを使うため、同じネットワーク上の
+    ///   別コンテナからは解決されない。ホストのリゾルバから解決するには、そのドメインを
+    ///   `container system dns create <domain>` (要 sudo) で登録しておく必要がある
+    ///   (登録しなくても `127.0.0.1:2053` への直接クエリでは解決できる)。
+    /// - **Linux**: `with_network` で user-defined network を指定する必要がある。
+    ///   デフォルト bridge / `host` / `none` ネットワークではエイリアスが解決されない
+    ///   ため、未指定またはこれらを指定した場合は start 時に明示エラーになる。
+    ///   1 ラベルの名前も Docker が受け付けるため許可する。
+    ///
+    /// 空文字列のエイリアスと重複は start 時に明示エラーになる。
+    fn with_network_alias(self, alias: impl Into<String>) -> ContainerRequest<I>;
+    /// コンテナにネットワークエイリアスを複数追加する (shiguredo 拡張)。
+    ///
+    /// 1 件ずつ追加する場合は [`ImageExt::with_network_alias`] を使う。
+    /// 制約とプラットフォーム差は [`ImageExt::with_network_alias`] と同じ。
+    fn with_network_aliases(
+        self,
+        aliases: impl IntoIterator<Item = impl Into<String>>,
+    ) -> ContainerRequest<I>;
     /// ラベルを 1 件追加する。
     fn with_label(self, key: impl Into<String>, value: impl Into<String>) -> ContainerRequest<I>;
     /// ラベルを複数追加する。
@@ -277,6 +315,23 @@ impl<RI: Into<ContainerRequest<I>>, I: Image> ImageExt<I> for RI {
             network: Some(network.into()),
             ..container_req
         }
+    }
+
+    fn with_network_alias(self, alias: impl Into<String>) -> ContainerRequest<I> {
+        let mut container_req = self.into();
+        container_req.network_aliases.push(alias.into());
+        container_req
+    }
+
+    fn with_network_aliases(
+        self,
+        aliases: impl IntoIterator<Item = impl Into<String>>,
+    ) -> ContainerRequest<I> {
+        let mut container_req = self.into();
+        container_req
+            .network_aliases
+            .extend(aliases.into_iter().map(Into::into));
+        container_req
     }
 
     fn with_label(self, key: impl Into<String>, value: impl Into<String>) -> ContainerRequest<I> {

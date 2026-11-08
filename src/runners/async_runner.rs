@@ -97,6 +97,12 @@ where
                 crate::core::containers::request::reject_duplicate_mapped_ports(ports)?;
             }
 
+            // ネットワークエイリアスは Apple container の AliasPolicy (完全修飾名・
+            // 32 個以下) と空文字列・重複の共通規則を pull 前に検証する。
+            crate::core::client::container_cfg::validate_macos_network_aliases(
+                container_req.network_aliases(),
+            )?;
+
             // カスタムカーネル指定は pull / resolve より前に検証する (順序の根拠は
             // `validate_kernel_path` の doc を参照)。
             if let Some(path) = container_req.kernel() {
@@ -274,6 +280,13 @@ where
             if let Some(ports) = container_req.ports() {
                 crate::core::containers::request::reject_duplicate_mapped_ports(ports)?;
             }
+
+            // ネットワークエイリアスは空文字列・重複と、user-defined network の
+            // 指定を pull 前に検証する (Docker のデフォルト bridge では解決されない)。
+            crate::core::containers::request::validate_linux_network_aliases(
+                container_req.network().as_deref(),
+                container_req.network_aliases(),
+            )?;
 
             let descriptor = container_req.descriptor();
 
@@ -558,6 +571,7 @@ fn build_container_config<I: Image>(
         hostname: req.hostname().map(|h| h.to_string()),
         open_stdin: req.open_stdin(),
         network: req.network().clone(),
+        network_aliases: req.network_aliases().to_vec(),
         platform: req.platform().as_deref().map(|p| p.to_string()),
         extra_hosts: req
             .hosts()

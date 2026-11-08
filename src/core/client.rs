@@ -84,6 +84,7 @@ pub(crate) struct ContainerConfig {
     pub hostname: Option<String>,
     pub open_stdin: Option<bool>,
     pub network: Option<String>,
+    pub network_aliases: Vec<String>,
     pub platform: Option<String>,
     pub extra_hosts: Vec<String>,
 }

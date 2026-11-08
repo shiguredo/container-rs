@@ -411,6 +411,94 @@ mod interaction {
         container.rm().await.expect("rm に失敗した");
     }
 
+    /// Linux で user-defined network 上のネットワークエイリアスが解決されること。
+    ///
+    /// Docker のエイリアスは user-defined network でのみ有効なため、テスト用
+    /// ネットワークを CLI で作成する。同じネットワークの別コンテナから
+    /// `getent hosts` で解決できることを確認する。
+    #[tokio::test]
+    async fn network_alias_resolves_on_user_defined_network() {
+        // 並列実行で衝突しないよう、pid とナノ秒を含む一意なネットワーク名にする。
+        let net = format!(
+            "shiguredo-rs-alias-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("UNIX_EPOCH 以降の時刻であること")
+                .as_nanos()
+        );
+        let output = std::process::Command::new("docker")
+            .args(["network", "create", &net])
+            .output()
+            .expect("docker network create の実行に失敗した");
+        assert!(
+            output.status.success(),
+            "テスト用ネットワークの作成に失敗した: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let server = GenericImage::new("alpine", "latest")
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .with_network(&net)
+            .with_network_aliases(["api.example.test", "db.example.test"])
+            .start()
+            .await
+            .expect("エイリアス付き server コンテナの起動に失敗した");
+        let server_ip = server
+            .get_bridge_ip_address()
+            .await
+            .expect("server のブリッジ IP アドレス取得に失敗した");
+
+        let client = GenericImage::new("alpine", "latest")
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .with_network(&net)
+            .start()
+            .await
+            .expect("client コンテナの起動に失敗した");
+
+        // 2 つのエイリアスがどちらも server の IP に解決されること。
+        let mut result = client
+            .exec(ExecCommand::new([
+                "sh",
+                "-c",
+                "getent hosts api.example.test && getent hosts db.example.test",
+            ]))
+            .await
+            .expect("getent hosts の exec に失敗した");
+        assert_eq!(
+            result
+                .exit_code()
+                .await
+                .expect("exit code の取得に失敗した"),
+            Some(0),
+            "getent hosts が成功すること"
+        );
+        let stdout = result
+            .stdout_to_vec()
+            .await
+            .expect("stdout の取得に失敗した");
+        let stdout = String::from_utf8_lossy(&stdout);
+        assert!(
+            stdout.matches(&server_ip.to_string()).count() >= 2,
+            "2 つのエイリアスが server の IP {server_ip} に解決されること: {stdout}"
+        );
+
+        client.rm().await.expect("client の削除に失敗した");
+        server.rm().await.expect("server の削除に失敗した");
+
+        // コンテナ削除が非同期に完了するため少し待ってからネットワークを削除する。
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let output = std::process::Command::new("docker")
+            .args(["network", "rm", &net])
+            .output()
+            .expect("docker network rm の実行に失敗した");
+        assert!(
+            output.status.success(),
+            "テスト用ネットワークの削除に失敗した: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     /// Linux で exec の with_env_vars が環境変数を exec プロセスに渡すこと。
     ///
     /// コンテナ作成時の env (`with_env_var`) と exec 時の env (`with_env_vars`) が

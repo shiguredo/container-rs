@@ -62,6 +62,25 @@ fn custom_kernel_path() -> Option<std::path::PathBuf> {
     }
 }
 
+/// container DNS サーバー (127.0.0.1:2053) に A クエリを送り、A レコードを返す。
+///
+/// network alias の解決確認に使う。`dig` は macOS 標準の BIND ユーティリティで、
+/// `+short` は A レコードのアドレスだけを 1 行ずつ返す。名前が存在しない場合は
+/// 空文字列になる。DNS サーバー自体に到達できない場合は `None` を返す。
+#[cfg(target_os = "macos")]
+fn resolve_container_dns_a(name: &str) -> Option<std::net::IpAddr> {
+    let output = std::process::Command::new("dig")
+        .args(["@127.0.0.1", "-p", "2053", name, "A", "+short"])
+        .output()
+        .expect("dig の実行に失敗した");
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.trim().parse().ok())
+}
+
 #[cfg(target_os = "macos")]
 mod test_container_macos {
     use std::borrow::Cow;
@@ -2047,6 +2066,89 @@ mod test_container_xpc {
         let _ = std::process::Command::new("container")
             .args(["network", "delete", net_name])
             .output();
+    }
+
+    /// ネットワークエイリアスが container DNS サーバーで解決されること。
+    ///
+    /// Apple container 1.6.0 の `AttachmentOptions.aliases` を XPC 経由で送り、
+    /// ホスト側 DNS サーバー (127.0.0.1:2053) で完全修飾名とサブツリー名が
+    /// コンテナ IP に解決されることを確認する。サブツリー名の base は
+    /// hostname が所有するため、`with_hostname` と組み合わせて検証する。
+    #[tokio::test]
+    async fn xpc_alpine_with_network_aliases_resolves_from_host_dns() {
+        if super::helpers::skip_if_ci() {
+            return;
+        }
+
+        // 並列実行で衝突しないよう、pid とナノ秒を含む一意な DNS 名にする。
+        let unique = format!(
+            "api-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("UNIX_EPOCH 以降の時刻であること")
+                .as_nanos()
+        );
+        let hostname = format!("{unique}.test");
+        let exact_alias = format!("{unique}-alias.test");
+        let subtree_base = format!(".{unique}.test");
+        let subtree_query = format!("node.{unique}.test");
+
+        let container = GenericImage::new("alpine", "latest")
+            .with_cmd(["tail", "-f", "/dev/null"])
+            .with_hostname(&hostname)
+            .with_network_alias(&exact_alias)
+            .with_network_alias(&subtree_base)
+            .start()
+            .await
+            .expect("ネットワークエイリアス付き alpine コンテナの起動に失敗した");
+
+        let bridge_ip = container
+            .get_bridge_ip_address()
+            .await
+            .expect("ブリッジ IP アドレスの取得に失敗した");
+
+        // hostname 自体が解決できることを先に確認する (比較の基準)。
+        assert_eq!(
+            super::resolve_container_dns_a(&hostname),
+            Some(bridge_ip),
+            "hostname {hostname} がコンテナ IP に解決されること"
+        );
+
+        // 完全修飾のエイリアスが解決できること。
+        assert_eq!(
+            super::resolve_container_dns_a(&exact_alias),
+            Some(bridge_ip),
+            "完全修飾エイリアス {exact_alias} がコンテナ IP に解決されること"
+        );
+
+        // サブツリーエイリアス (.{unique}.test) が配下の名前を解決できること。
+        assert_eq!(
+            super::resolve_container_dns_a(&subtree_query),
+            Some(bridge_ip),
+            "サブツリーエイリアス配下の {subtree_query} がコンテナ IP に解決されること"
+        );
+
+        container
+            .stop_with_timeout(Some(0))
+            .await
+            .expect("コンテナの停止に失敗した");
+        container.rm().await.expect("コンテナの削除に失敗した");
+
+        // コンテナ削除後はエイリアスが解放されること。DNS の解放は非同期なので
+        // 少し待ちながら確認する。
+        let mut released = false;
+        for _ in 0..10 {
+            if super::resolve_container_dns_a(&exact_alias).is_none() {
+                released = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        assert!(
+            released,
+            "コンテナ削除後にエイリアス {exact_alias} が解決されなくなること"
+        );
     }
 
     #[tokio::test]

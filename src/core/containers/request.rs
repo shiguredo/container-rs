@@ -3,7 +3,7 @@
 
 use std::{
     borrow::Cow,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::{Debug, Formatter},
     net::IpAddr,
     path::{Path, PathBuf},
@@ -13,8 +13,9 @@ use std::{
 use crate::{
     Error, Image,
     core::{
-        ContainerState, copy::CopyToContainer, healthcheck::Healthcheck, image::exec::ExecCommand,
-        logs::consumer::LogConsumer, mounts::Mount, ports::ContainerPort, wait::WaitFor,
+        ContainerState, copy::CopyToContainer, error::ClientError, healthcheck::Healthcheck,
+        image::exec::ExecCommand, logs::consumer::LogConsumer, mounts::Mount, ports::ContainerPort,
+        wait::WaitFor,
     },
 };
 
@@ -34,6 +35,7 @@ pub struct ContainerRequest<I: Image> {
     pub(crate) container_name: Option<String>,
     pub(crate) hostname: Option<String>,
     pub(crate) network: Option<String>,
+    pub(crate) network_aliases: Vec<String>,
     pub(crate) labels: BTreeMap<String, String>,
     pub(crate) env_vars: BTreeMap<String, String>,
     pub(crate) hosts: BTreeMap<String, ExtraHost>,
@@ -96,6 +98,11 @@ impl<I: Image> ContainerRequest<I> {
     /// ネットワーク名を返す。
     pub fn network(&self) -> &Option<String> {
         &self.network
+    }
+
+    /// ネットワークエイリアスを返す (shiguredo 拡張)。
+    pub fn network_aliases(&self) -> &[String] {
+        &self.network_aliases
     }
 
     /// ラベル一覧を返す。
@@ -303,6 +310,7 @@ impl<I: Image> From<I> for ContainerRequest<I> {
             container_name: None,
             hostname: None,
             network: None,
+            network_aliases: Vec::new(),
             labels: BTreeMap::default(),
             env_vars: BTreeMap::default(),
             hosts: BTreeMap::default(),
@@ -350,6 +358,59 @@ impl PortMapping {
     }
 }
 
+/// ネットワークエイリアスの共通検証。
+///
+/// 空文字列と重複を拒否する。DNS 名としての妥当性と個数上限はランタイムごとに
+/// 異なるため、macOS は `container_cfg::validate_macos_network_aliases` で追加検証する。
+/// Docker は 1 ラベルの名前も受け付けるため、ここでは名前の形を制限しない。
+pub(crate) fn validate_network_aliases(aliases: &[String]) -> crate::core::error::Result<()> {
+    let mut seen = BTreeSet::new();
+    for alias in aliases {
+        if alias.is_empty() {
+            return Err(
+                ClientError::Configuration("network alias must not be empty".into()).into(),
+            );
+        }
+        // DNS 名は大文字小文字を区別せず、末尾のドットは完全修飾名の印でしかない。
+        // Apple container も同じ正規化で重複を判定するため、ここでも揃える。
+        let key = alias
+            .strip_suffix('.')
+            .unwrap_or(alias)
+            .to_ascii_lowercase();
+        if !seen.insert(key) {
+            return Err(
+                ClientError::Configuration(format!("duplicate network alias: {alias:?}")).into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Linux (Docker Engine API) のネットワークエイリアスを検証する。
+///
+/// Docker はエイリアスを user-defined network でのみ解決する。ネットワーク未指定
+/// (デフォルト bridge) や組み込みの `bridge` / `host` / `none` を指定した場合は
+/// エイリアスが解決されないため、pull 前に明示エラーにする。
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn validate_linux_network_aliases(
+    network: Option<&str>,
+    aliases: &[String],
+) -> crate::core::error::Result<()> {
+    validate_network_aliases(aliases)?;
+    // Docker の組み込みネットワーク (未指定時の bridge、host、none) ではエイリアスの
+    // 解決が行われない。指定されたネットワーク名がこれらと一致する場合も拒否する。
+    if !aliases.is_empty() && matches!(network, None | Some("bridge") | Some("host") | Some("none"))
+    {
+        return Err(ClientError::Configuration(
+            "with_network_alias() requires a user-defined network on Linux: Docker does not \
+             resolve network aliases on the default bridge, host, or none network"
+                .into(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// 同一コンテナポート (proto 込み) への重複マッピングを検出してエラーにする。
 ///
 /// `with_mapped_port(8080, 80.tcp()).with_mapped_port(8081, 80.tcp())` のように
@@ -392,6 +453,7 @@ impl<I: Image + Debug> Debug for ContainerRequest<I> {
             .field("container_name", &self.container_name)
             .field("hostname", &self.hostname)
             .field("network", &self.network)
+            .field("network_aliases", &self.network_aliases)
             .field("labels", &self.labels)
             .field("env_vars", &self.env_vars)
             .field("hosts", &self.hosts)
@@ -539,5 +601,88 @@ mod tests {
     fn reject_duplicate_mapped_ports_accepts_empty() {
         // 空リストはエラーにならないこと。
         reject_duplicate_mapped_ports(&[]).expect("空リストはエラーにならないこと");
+    }
+
+    #[test]
+    fn network_aliases_are_appended_and_exposed_by_accessor() {
+        // with_network_alias と with_network_aliases が追加され、accessor で
+        // 指定順に取得できること。未指定時は空であること。
+        let req = ContainerRequest::from(GenericImage::new("alpine", "latest"));
+        assert!(req.network_aliases().is_empty(), "未指定時は空であること");
+
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_network("test-net")
+            .with_network_alias("api.example.test")
+            .with_network_aliases(["db.example.test", "cache.example.test"]);
+        assert_eq!(
+            req.network_aliases().to_vec(),
+            vec![
+                "api.example.test".to_string(),
+                "db.example.test".to_string(),
+                "cache.example.test".to_string(),
+            ],
+            "指定順に追加されること"
+        );
+        assert_eq!(req.network().as_deref(), Some("test-net"));
+    }
+
+    #[test]
+    fn validate_network_aliases_rejects_empty_and_duplicate() {
+        // 空文字列と重複は両バックエンド共通で拒否すること。
+        let err = validate_network_aliases(&["".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "空文字列はエラーになること: {err}"
+        );
+
+        let err = validate_network_aliases(&[
+            "api.example.test".to_string(),
+            "api.example.test".to_string(),
+        ])
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate network alias"),
+            "重複はエラーになること: {err}"
+        );
+
+        // DNS 名は大文字小文字と末尾ドットを区別しないため、正規化後に同じ名前は
+        // 重複として拒否すること。
+        let err = validate_network_aliases(&[
+            "API.example.test".to_string(),
+            "api.example.test.".to_string(),
+        ])
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate network alias"),
+            "大文字小文字・末尾ドット違いの重複もエラーになること: {err}"
+        );
+
+        validate_network_aliases(&[
+            "api.example.test".to_string(),
+            "db.example.test".to_string(),
+        ])
+        .expect("重複しない名前はエラーにならないこと");
+    }
+
+    #[test]
+    fn validate_linux_network_aliases_requires_user_defined_network() {
+        // Docker は user-defined network でのみエイリアスを解決するため、
+        // 未指定・組み込みネットワークのエイリアスはエラーにすること。
+        let aliases = vec!["api.example.test".to_string()];
+        let err = validate_linux_network_aliases(None, &aliases).unwrap_err();
+        assert!(
+            err.to_string().contains("requires a user-defined network"),
+            "ネットワーク未指定はエラーになること: {err}"
+        );
+
+        let err = validate_linux_network_aliases(Some("bridge"), &aliases).unwrap_err();
+        assert!(
+            err.to_string().contains("requires a user-defined network"),
+            "組み込みの bridge ネットワークはエラーになること: {err}"
+        );
+
+        validate_linux_network_aliases(Some("test-net"), &aliases)
+            .expect("user-defined network ではエラーにならないこと");
+        validate_linux_network_aliases(None, &[]).expect("エイリアスが空ならネットワーク不要");
     }
 }
