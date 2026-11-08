@@ -1,7 +1,7 @@
 # Apple container 1.6.0 / 1.6.1 / 1.7.1 のリリースに追従する
 
 - Created: 2026-11-08
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-08
 - Branch: feature/update-follow-apple-container-1.7.1
 - Polished: {YYYY-MM-DD}
 
@@ -66,3 +66,23 @@ Apple container 1.6.0 (2026-10-20)、1.6.1 (2026-10-23)、1.7.1 (2026-11-06) が
 - 調査結果がドキュメントの実態と整合し、追記が必要な修正が特定されていること (未検出の場合はその旨)。
 - 公開ポートの大容量転送の既知の制約が 1.7.1 でも成立することが確認されていること。
 - ネットワークエイリアスなど、追従すべき新しい機能が issue として切り出されていること。
+
+## 解決方法
+
+1.5.0..1.6.0 (30 commits / 147 files)、1.6.0..1.6.1 (5 commits / 57 files)、1.6.1..1.7.1 (23 commits / 131 files)、containerization 0.47.0..0.54.0 (25 commits / 36 files) の差分を精査した。
+
+- 本クレートが利用する XPC ルート (containerWait / containerStop / containerCopyIn / containerCopyOut / containerDelete / containerLogs / containerCreateProcess / containerStartProcess / containerCreate / containerBootstrap / containerList / volumeCreate / volumeInspect / imagePull / imageList / getDefaultKernel / contentGet) の引数・戻り値スキーマに変更は無い。
+- CLI の破壊的変更 (K8s → cluster 改名、cluster の lifecycle 制限、build の plugin 化) は本クレートの経路と無関係である。
+- 互換性のためのコード修正は不要。README.md / docs/TESTCONTAINERS.md / skills/shiguredo-container/SKILL.md の最小要件 (Apple container 1.2.0 以上) は 1.7.1 でも正しいため変更しない。
+- 1.6.0 のネットワークエイリアスは新しい機能であり、互換性のための修正ではないが、本クレートから利用できるようにする価値があるため 0127 で対応する。
+
+実測は macOS 26.6.2 / Apple container 1.7.1 (build: release) で行った。
+
+- `RUN_CONTAINER_TESTS=1 cargo test --all-features`: 370 テスト成功、0 失敗 (lib 249、macOS 統合テスト 95、その他を含む)。
+- `RUN_CONTAINER_TESTS=1 RUN_HOST_NETWORK_TESTS=1 cargo test --test nginx_http11 --features http_wait_plain`: 2 テスト成功。published port の大容量レスポンス切断は 10 MiB 中 9,668,344 バイトで EOF となり、1.7.1 でも再現した。README.md / docs/TESTCONTAINERS.md の警告は維持する。
+- `cargo clippy --all-targets --all-features -- -D warnings` と `cargo fmt --all -- --check` は成功した。
+
+実測時の注意点:
+
+- 手元の alpine / nginx のローカルイメージが古く、amd64 テストの強制 pull で image 参照の descriptor が更新されたため、並列実行中の他のテストが descriptor mismatch や digest not found で失敗した。`container image rm` と再 pull で解消し、上記の全テスト成功を得た。CI はテスト前にイメージを pull するため同じ問題は起きない。
+- 最初の実行時に apiserver が `PluginLoader.registerWithLaunchd` 内の `NSFileHandle` 例外で 1 回クラッシュした (Connection interrupted)。イメージ更新後の再実行 2 回では再現せず、本クレート側の修正対象ではない。
