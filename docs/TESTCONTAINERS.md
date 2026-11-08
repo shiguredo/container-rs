@@ -34,6 +34,7 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - `configuration.mounts: [Filesystem]`
 - `configuration.publishedPorts: [PublishPort]` — `hostAddress`, `hostPort`, `containerPort`, `proto` (`tcp` | `udp`)
 - `configuration.publishedSockets, labels, sysctls, networks, dns, rosetta, initProcess, platform, resources, runtimeHandler, virtualization, ssh, readOnly, useInit, capAdd, capDrop, shmSize, maskedPaths, readonlyPaths, stopSignal, creationDate`
+- `configuration.networks[].options` — `hostname`, `mtu`, `aliases?` (Apple container 1.6.0 以上)
 - `status: RuntimeStatus` — `unknown` | `stopped` | `running` | `stopping`
 - `networks: [Attachment]` — `network, hostname, ipv4Address (CIDRv4), ipv4Gateway, ipv6Address? (CIDRv6), macAddress?, mtu?, variant?`
 - `startedDate: Date?`
@@ -47,6 +48,14 @@ XPC route 一覧 (`Sources/Services/ContainerAPIService/Client/XPC+.swift`, `XPC
 - macOS ランタイムは Apple container **1.2.0 以上**を前提とする (1.2.0 で追加された `maskedPaths` / `readonlyPaths` や ID 検証の強化に対応するため)
 - コンテナ ID (`with_container_name` の値、未指定時は自動生成 `c-{pid}-{nanos}-{count}`) は Apple container 1.2.0 の `nameValid` と同じ制約を持つ: 先頭は英数字・実質 2 文字以上・63 文字以下・文字種は英数字 / `_` / `.` / `-`
 - 制約を満たさない名前は macOS の `AsyncRunner::start` が pull / resolve より前に明示エラーを返す (create 直前ではなく fail-fast する)
+
+### ネットワークエイリアス (Apple container 1.6.0 以上)
+
+- `with_network_alias` / `with_network_aliases` は `containerCreate` の `networks[0].options.aliases` に反映される。`with_network` の有無にかかわらず使える (既定ネットワークでも可)。
+- 完全修飾名 (`api.example.test`) または先頭 `.` のサブツリー名 (`.example.test`) のみ指定できる。先頭の `.` を除いて `.` を含まない名前は start 時に明示エラーになる。1 アタッチメントあたり最大 32 個。サブツリー名の base は同じコンテナの hostname か完全修飾エイリアスが所有していること。
+- エイリアスはホスト側のコンテナ DNS サーバー (`127.0.0.1:2053`) で解決される。コンテナ内のリゾルバはネットワークのゲートウェイを使うため、同じネットワーク上の別コンテナからは解決されない。
+- ホストのリゾルバ (`getent` / アプリ) から解決するには、そのドメインを macOS のリゾルバに登録する (`container system dns create <domain>`、要 sudo)。登録しなくても `127.0.0.1:2053` への直接クエリでは解決できる。
+- Apple container 1.2.0〜1.5.0 は `aliases` を未知キーとして無視するため、エイリアスは解決されない。
 
 ## Docker Engine API (Linux) の現状
 
@@ -74,10 +83,10 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 | 未実装 (実装可能) | 0 |
 | 未実装 (XPC 制約) | 4 |
 | なし | 64 |
-| shiguredo 拡張 (本家に無い追加 API) | 25 |
+| shiguredo 拡張 (本家に無い追加 API) | 28 |
 | 内部型/内部関数 (対象外) | 5 |
 
-内訳合計: 396 API 程度 (判定対象。対象外 5 は含まない。feature ゲート表の「備考」列も集計外)。件数は参考値で、対応表の行数を機械集計したもの。API の追加・削除で随時変わる。
+内訳合計: 399 API 程度 (判定対象。対象外 5 は含まない。feature ゲート表の「備考」列も集計外)。件数は参考値で、対応表の行数を機械集計したもの。API の追加・削除で随時変わる。
 
 判定内訳の傾向 (Apple Container):
 
@@ -86,7 +95,7 @@ README の Linux 注意書きと合わせて読むこと。残ギャップはネ
 - **未実装 (実装可能)** (0): 現状、判定「未実装 (実装可能)」の行は無い
 - **未実装 (XPC 制約)** (4): `WaitFor::Healthcheck` / `healthcheck()` (ヘルス待機)・`with_health_check` (start 時明示エラー)・`HealthWaitStrategy::wait_until_ready` (10.2 参照)。Apple container 側の仕様として存在しないため実装不能。`pause` / `unpause` は `ContainerAsync` が `#[cfg(target_os = "linux")]` でクローズ、sync `Container` はシグネチャ自体を削除したため「なし」に分類
 - **なし** (64): 大半は build 系、feature 系、bollard 由来の詳細エラー型など
-- **shiguredo 拡張** (25): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths` / `with_kernel` (5 行)、`ContainerAsync::container_state` / `rm_blocking` (2 行)、`Container::container_state` / `rm_blocking` (2 行)、`ClientError::XpcConnect` / `Xpc` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` (8 行)、`ContainerRequest` の `init` / `ssh` accessor (1 行)、`ContainerRequest` の `masked_paths` / `readonly_paths` accessor (1 行)、`ContainerRequest` の `kernel` accessor (1 行)、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` (4 行)、`HttpWaitStrategy::with_request_timeout` (1 行)
+- **shiguredo 拡張** (28): `ImageExt::with_init` / `with_ssh` / `with_masked_paths` / `with_readonly_paths` / `with_kernel` (5 行)、`ImageExt::with_network_alias` / `with_network_aliases` (2 行)、`ContainerAsync::container_state` / `rm_blocking` (2 行)、`Container::container_state` / `rm_blocking` (2 行)、`ClientError::XpcConnect` / `Xpc` / `XpcTimeout` / `ImageNotFound` / `ContainerNotFound` / `ContainerPathNotFound` / `Json` / `Other` (8 行)、`ContainerRequest` の `init` / `ssh` accessor (1 行)、`ContainerRequest` の `masked_paths` / `readonly_paths` accessor (1 行)、`ContainerRequest` の `kernel` accessor (1 行)、`ContainerRequest` の `network_aliases` accessor (1 行)、`CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` (4 行)、`HttpWaitStrategy::with_request_timeout` (1 行)
   - 件数は対応表の「shiguredo 拡張」判定の行数。`ContainerRequest` の accessor は対応表ではいずれも 1 行にまとめている
 
 ## サマリ (Docker Engine API)
@@ -125,6 +134,8 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `with_container_name(self, name)` | あり | 対応 | 対応 | 設定値がコンテナ ID になる。macOS は Apple container 1.2.0 の `nameValid` 相当の制約で検証し、違反は start 時に明示エラー (制約の詳細は上記「Apple container 1.2.0 前提とコンテナ ID の制約」参照) |
 | `with_platform(self, platform)` | あり | 対応 | 対応 | macOS: XPC `rosetta`・`ociPlatform`・`platform.architecture` に反映 / Docker: pull / create の `platform` クエリパラメータに反映 |
 | `with_network(self, network)` | あり | 部分対応 | 対応 | XPC `containerCreate` の `networks[0].network` に反映 / Docker: NetworkingConfig.EndpointsConfig に反映。ネットワークの自動作成は行わない |
+| `with_network_alias(self, alias)` | なし | shiguredo 拡張 | 対応 | macOS: XPC `containerCreate` の `networks[0].options.aliases` に反映 (Apple container 1.6.0 以上。完全修飾名または先頭 `.` のサブツリー名のみ、最大 32 個。サブツリー名の base は hostname か完全修飾エイリアスが所有すること)。1.2.0〜1.5.0 では未知キーとして無視される / Docker: `NetworkingConfig.EndpointsConfig.<network>.Aliases` に反映。user-defined network のみ有効で、未指定・`bridge` / `host` / `none` は start 時に明示エラー |
+| `with_network_aliases(self, aliases)` | なし | shiguredo 拡張 | 対応 | 同上。複数件をまとめて追加する |
 | `with_label(self, k, v)` | あり | 対応 | 対応 |  |
 | `with_labels(self, labels)` | あり | 対応 | 対応 |  |
 | `with_env_var(self, k, v)` | あり | 対応 | 対応 |  |
@@ -286,6 +297,7 @@ Linux 列の残ギャップは、本表で本家 / Apple / 自前 Docker の差�
 | `init/ssh` accessor | なし | shiguredo 拡張 | 部分対応 | `init()` は Docker HostConfig.Init に配線済み。`ssh()` は Linux の Docker 設定構築で未反映 |
 | `masked_paths/readonly_paths` accessor | なし | shiguredo 拡張 | 部分対応 | macOS で `ContainerCfg` に反映。Linux では `Some` を返すと start 時に明示エラー |
 | `kernel` accessor | なし | shiguredo 拡張 | 部分対応 | macOS で `containerCreate` の `Kernel` JSON に反映。Linux では `Some` を返すと start 時に明示エラー |
+| `network_aliases` accessor | なし | shiguredo 拡張 | 対応 | `with_network_alias` / `with_network_aliases` で追加した値を返す。macOS / Linux とも対応 |
 | `PortMapping::new (crate内)` | あり | 対応 | 対応 |  |
 | `PortMapping::host_port` | あり | 対応 | 対応 |  |
 | `PortMapping::container_port` | あり | 対応 | 対応 |  |
@@ -817,6 +829,7 @@ Apple container の XPC には対応 route が無いが、本家 API 互換の�
 - `ImageExt::with_masked_paths` — Apple: XPC `ContainerCfg.maskedPaths` に反映 (Apple container 1.2.0 以上)。Docker: start 時に明示エラー (設定構築に未配線)
 - `ImageExt::with_readonly_paths` — Apple: XPC `ContainerCfg.readonlyPaths` に反映 (Apple container 1.2.0 以上)。Docker: start 時に明示エラー (設定構築に未配線)
 - `ImageExt::with_kernel` — Apple: `containerCreate` の `kernel` (containerization の `Kernel` JSON) の `path` に file URL として反映。Docker: start 時に明示エラー (ホストとカーネルを共有するためコンテナ単位で指定できない)
+- `ImageExt::with_network_alias` / `with_network_aliases` — Apple: `containerCreate` の `networks[0].options.aliases` に反映 (Apple container 1.6.0 以上、完全修飾名のみ・最大 32 個)。Docker: `NetworkingConfig.EndpointsConfig.<network>.Aliases` に反映 (user-defined network のみ)
 - `ContainerAsync::container_state` — Apple: XPC `containerState` を返す。Docker: 配線済み
 - `ContainerAsync::rm_blocking` — Apple: `remove_blocking` を直接呼び出し (deadlock しない)。Docker: 対応
 - `Container::container_state` — Apple: 対応 (ContainerAsync に委譲)。Docker: 配線済み
@@ -826,6 +839,7 @@ Apple container の XPC には対応 route が無いが、本家 API 互換の�
 - `ContainerRequest` の `init` / `ssh` accessor — Apple: 対応。Docker: `init()` は HostConfig.Init に配線済み、`ssh()` は未反映
 - `ContainerRequest` の `masked_paths` / `readonly_paths` accessor — Apple: 対応。Docker: `Some` を返すと start 時に明示エラー
 - `ContainerRequest` の `kernel` accessor — Apple: 対応。Docker: `Some` を返すと start 時に明示エラー
+- `ContainerRequest` の `network_aliases` accessor — Apple / Docker: 設定値を返す
 - `CopyTargetOptions` の `with_uid` / `with_gid` / `uid()` / `gid()` — Apple: macOS でコピー後 chown により反映 (非ゼロの場合のみ)。Docker: tar ヘッダ + `copyUIDGID=true` で反映
 - `HttpWaitStrategy::with_request_timeout` — Apple / Docker: HTTP リクエスト 1 回のタイムアウトを設定する (既定 10 秒)。10.3 参照
 

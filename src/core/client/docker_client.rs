@@ -1015,6 +1015,7 @@ struct CreateContainerBody {
     hostname: Option<String>,
     open_stdin: Option<bool>,
     network: Option<String>,
+    network_aliases: Vec<String>,
 }
 
 impl CreateContainerBody {
@@ -1105,6 +1106,7 @@ impl CreateContainerBody {
             hostname: config.hostname,
             open_stdin: config.open_stdin,
             network: config.network,
+            network_aliases: config.network_aliases,
         })
     }
 
@@ -1165,8 +1167,13 @@ impl CreateContainerBody {
         if let Some(network) = &self.network {
             json.push_str(",\"NetworkingConfig\":{\"EndpointsConfig\":{");
             json.push_str(&escape_json(network));
-            json.push_str(":{}");
-            json.push_str("}}");
+            json.push_str(":{");
+            if !self.network_aliases.is_empty() {
+                json.push_str("\"Aliases\":");
+                json.push_str(&json_array(&self.network_aliases));
+            }
+            // network の値、EndpointsConfig、NetworkingConfig の 3 つを閉じる。
+            json.push_str("}}}");
         }
         json.push_str(",\"HostConfig\":");
         json.push_str(&self.host_config.to_json_string()?);
@@ -1790,6 +1797,7 @@ mod tests {
             hostname: None,
             open_stdin: None,
             network: None,
+            network_aliases: Vec::new(),
             platform: None,
             extra_hosts: vec![],
         }
@@ -2366,6 +2374,47 @@ mod tests {
             pull_error_message("img:latest", status, b"\xff\xfe"),
             expected,
             "非 UTF-8 ボディは現行文言に落ちること"
+        );
+    }
+
+    #[test]
+    fn create_body_includes_network_aliases() {
+        // network とエイリアスを指定したとき、EndpointsConfig の対象ネットワークに
+        // Aliases が載ること。
+        let mut config = config_with_mounts(vec![]);
+        config.network = Some("my-net".to_string());
+        config.network_aliases = vec![
+            "api.example.test".to_string(),
+            "db.example.test".to_string(),
+        ];
+        let body = CreateContainerBody::from_config(config).expect("設定の変換に成功すること");
+        let json = body.to_json_string().expect("JSON の生成に成功すること");
+        // 閉じ括弧の数を目視で数えずに済むよう、生成した JSON 自体がパースできることを
+        // 先に確認する (NetworkingConfig の閉じ忘れを回帰させない)。
+        nojson::RawJson::parse(&json).expect("生成した JSON がパースできること");
+        assert!(
+            json.contains(
+                "\"NetworkingConfig\":{\"EndpointsConfig\":{\"my-net\":{\"Aliases\":[\"api.example.test\",\"db.example.test\"]}}}"
+            ),
+            "Aliases が EndpointsConfig に含まれること: {json}"
+        );
+    }
+
+    #[test]
+    fn create_body_omits_aliases_when_unspecified() {
+        // エイリアス未指定時は EndpointsConfig が空オブジェクトのままであること。
+        let mut config = config_with_mounts(vec![]);
+        config.network = Some("my-net".to_string());
+        let body = CreateContainerBody::from_config(config).expect("設定の変換に成功すること");
+        let json = body.to_json_string().expect("JSON の生成に成功すること");
+        nojson::RawJson::parse(&json).expect("生成した JSON がパースできること");
+        assert!(
+            json.contains("\"NetworkingConfig\":{\"EndpointsConfig\":{\"my-net\":{}}}"),
+            "エイリアス未指定時の JSON が従来どおりであること: {json}"
+        );
+        assert!(
+            !json.contains("Aliases"),
+            "エイリアス未指定時に Aliases キーが出ないこと: {json}"
         );
     }
 }

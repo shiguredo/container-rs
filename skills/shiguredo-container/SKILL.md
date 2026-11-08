@@ -67,6 +67,7 @@ Apple の [container](https://github.com/apple/container) 対応をメインと�
 | `with_env_var` | 対応 (`Image::env_vars` と同名の場合は `with_env_var` 側で上書き) | 対応 |
 | `with_platform` | 対応 (`"linux/amd64"` で rosetta / pull / architecture に反映。一致する manifest が無ければ異なる architecture へフォールバックせずエラー) | 対応 (pull / create の platform クエリパラメータに反映) |
 | `with_network` | 部分対応 (事前に `container network create` が必要。自動作成しない) | 対応 (事前に `docker network create` が必要。自動作成しない) |
+| `with_network_alias`, `with_network_aliases` | **shiguredo 拡張** (XPC `networks[0].options.aliases` に反映。Apple container 1.6.0 以上。完全修飾名または先頭 `.` のサブツリー名のみ、最大 32 個。サブツリー名の base は hostname か完全修飾エイリアスが所有すること) | 対応 (`NetworkingConfig.EndpointsConfig.<network>.Aliases` に反映。user-defined network のみ。未指定・`bridge` / `host` / `none` は start 時に明示エラー) |
 | `with_mount` | 対応 (Bind / Volume / Tmpfs) | 対応 (Bind は Binds、Volume / Tmpfs は Mounts に反映) |
 | `with_copy_to` | 対応 (XPC `containerCopyIn`。start 後 copy。起動前契約なし。親作成は `createParents`。ディレクトリ再帰投入可。`uid` / `gid` はコピー後 chown で反映 (非ゼロの場合のみ、ディレクトリ一括投入時は `chown -R`)) | 対応 (create → copy → start。`PUT /containers/{id}/archive?path=/`。親ディレクトリ自動作成・ディレクトリ一括投入。`mode` / `uid` / `gid` は regular file に反映。ターゲットパスに `..` / 終端 `.` / `//` は明示エラー。1 ファイルと 1 ソース分の tar は各 64 MiB 上限) |
 | `with_mapped_port` | 対応 (`host_port = 0` は空きポートを事前割当。bind 解放後から start までの競合には自動再試行なし) | 対応 (`host_port = 0` は Docker Engine のランダム割当に委譲) |
@@ -293,10 +294,11 @@ let container = GenericImage::new("nginx", "latest")
 - **macOS の published port の大容量転送**: Apple container のポートフォワーダー (`container-runtime-linux`) は、サーバー → クライアント方向の大容量レスポンスを遅い消費者に対して途中で切断し得る (切断は EOF (FIN) として観測され、不完全なレスポンスが正常な EOF として受信される)。大容量レスポンスを扱う場合は、published port ではなくコンテナ IP 直結 (`ContainerAsync::get_bridge_ip_address` で取得した IP へ直接接続) を使うこと。直結も LNP 未許可の環境では接続がブロックされ得る。消費者側の読み間隔を詰めても安全なサイズ域は環境依存であり保証できない
 - **blocking の再入 deadlock**: `LogConsumer` コールバック内や既存の tokio ランタイムコンテキストから `SyncRunner::start` 等の同期 API を呼ぶと共有 Runtime への再入で deadlock する。ライブラリは再入を検出して即エラーにする。共有 Runtime 内から `spawn_blocking` したスレッドでも安全側に倒して再入エラーになる。同期ログリーダー (`Container::stdout` / `stderr`) はコールバック内で取得すると読み取り時に `io::Error` を返すが、コールバック外で取得済みのリーダーをコールバック内で読むケースは検出しない。共有 Runtime ワーカースレッド上で最後の同期 `Container` を drop するとハングし得る既知の限界もある
 - **Linux の残ギャップ**: `with_ssh` / `with_masked_paths` / `with_readonly_paths` / `with_kernel` とネットワークの自動作成・自動削除が未対応。詳細は `docs/TESTCONTAINERS.md` 参照
+- **macOS のネットワークエイリアス**: Apple container 1.6.0 以上が必要で、1.2.0〜1.5.0 では `aliases` が未知キーとして無視され、エイリアスが解決されない。XPC 経由では既定 DNS ドメインが補完されないため、完全修飾名 (または先頭 `.` のサブツリー名) を指定する。エイリアスはホスト側のコンテナ DNS サーバー (`127.0.0.1:2053`) で解決され、コンテナ間では解決されない。ホストのリゾルバから引くには `container system dns create <domain>` (要 sudo) でドメインを登録する。Linux は user-defined network が必要で、未指定・`bridge` / `host` / `none` は start 時に明示エラーになる
 - **イメージビルド未対応**: `GenericBuildableImage` / `BuildableImage` 等の build 系 API は無い
 - **reuse 未対応**: `reusable-containers` 相当の feature・型は無い
 - **本家との型不整合**: `CopyFromContainerError::UnsupportedEntry` は `&'static str` (本家 `tokio_tar::EntryType`)、`WaitLogError::EndOfStream` は `Vec<u8>` (本家 `Vec<Bytes>`)、`WaitContainerError::Unhealthy` は `Unhealthy(String)` (本家はユニットバリアント)。いずれも依存最小方針による意図的差分
 
 ## 参考資料
 
-- 本家 testcontainers-rs との API 対応表 (参考値: 判定対象 396 API 程度の一覧): `docs/TESTCONTAINERS.md`
+- 本家 testcontainers-rs との API 対応表 (参考値: 判定対象 399 API 程度の一覧): `docs/TESTCONTAINERS.md`

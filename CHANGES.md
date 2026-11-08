@@ -15,6 +15,8 @@
   - @voluntas
 - [ADD] macOS で `with_kernel` によりコンテナ単位でカスタムカーネルを指定できるようにする
   - @voluntas
+- [ADD] `with_network_alias` / `with_network_aliases` でコンテナのネットワークエイリアスを指定できるようにする
+  - @voluntas
 
 ### misc
 

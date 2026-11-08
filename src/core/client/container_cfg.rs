@@ -9,7 +9,9 @@ use nojson::DisplayJson;
 use crate::{
     ContainerRequest, Image,
     core::{
-        client::xpc_client::VolumeResolution, error::Result, mounts::AccessMode,
+        client::xpc_client::VolumeResolution,
+        error::{ClientError, Result},
+        mounts::AccessMode,
         ports::ContainerPort,
     },
 };
@@ -94,6 +96,39 @@ pub(crate) fn reject_sctp_ports<I: Image>(req: &ContainerRequest<I>) -> Result<(
     Ok(())
 }
 
+/// macOS (Apple container) のネットワークエイリアスを検証する。
+///
+/// Apple container の `AliasPolicy` は完全修飾名 (2 ラベル以上) と 1 アタッチメント
+/// あたり最大 32 個を要求する。CLI と違い本クレートは既定 DNS ドメインを補完しない
+/// ため、先頭の `.` を除いて `.` を含まない名前は pull 前に明示エラーにする。
+/// 空文字列と重複は共通検証 (`validate_network_aliases`) で落とす。
+pub(crate) fn validate_macos_network_aliases(aliases: &[String]) -> Result<()> {
+    // 空文字列と重複は両バックエンド共通の規則なので、先に共通検証へ委譲する。
+    crate::core::containers::request::validate_network_aliases(aliases)?;
+
+    // Apple container の上限。Docker には同等の上限が無いため macOS だけで適用する。
+    if aliases.len() > 32 {
+        return Err(ClientError::Configuration(format!(
+            "too many network aliases: Apple container allows at most 32 per network attachment (got {})",
+            aliases.len()
+        ))
+        .into());
+    }
+
+    for alias in aliases {
+        // 先頭の `.` はサブツリーエイリアスの印で、名前本体はその次から始まる。
+        let name = alias.strip_prefix('.').unwrap_or(alias);
+        if !name.contains('.') {
+            return Err(ClientError::Configuration(format!(
+                "network alias {alias:?} must be fully qualified on Apple container \
+                 (for example \"api.example.test\" or \".example.test\")"
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// Swift の Date 参照日 (2001-01-01T00:00:00Z) の Unix epoch 秒。
 const SWIFT_REFERENCE_DATE_UNIX_SECS: f64 = 978_307_200.0;
 
@@ -152,6 +187,11 @@ pub(crate) fn build_config<I: Image>(
 
     // Apple container は SCTP 未対応。XPC に渡す前に明示エラーで落とす。
     reject_sctp_ports(req)?;
+
+    // ネットワークエイリアスは Apple container の AliasPolicy に合わせて検証する。
+    // start 側でも pull 前に検証するが、build_config を直接呼ぶ経路 (テスト等) でも
+    // 検出できるようここでも確認する。
+    validate_macos_network_aliases(req.network_aliases())?;
 
     // 同一コンテナポートへの重複マッピングは黙って潰れないよう明示エラーにする。
     // pull 前検証 (AsyncRunner) にも防御があるが、build_config を直接呼ぶ経路
@@ -264,6 +304,7 @@ pub(crate) fn build_config<I: Image>(
         shm_size: req.shm_size(),
         user: parse_user(req.user())?,
         network,
+        network_aliases: req.network_aliases().to_vec(),
         architecture: architecture.to_string(),
         rosetta,
         ssh: req.ssh(),
@@ -356,6 +397,7 @@ pub(crate) struct ContainerCfg {
     shm_size: Option<u64>,
     user: ProcessUser,
     network: String,
+    network_aliases: Vec<String>,
     architecture: String,
     rosetta: bool,
     ssh: bool,
@@ -389,6 +431,7 @@ impl DisplayJson for ContainerCfg {
                 vec![NetworkCfg {
                     network: self.network.clone(),
                     hostname: self.hostname.clone(),
+                    aliases: self.network_aliases.clone(),
                 }],
             )?;
             f.member(
@@ -711,6 +754,7 @@ impl DisplayJson for ResourcesCfg {
 struct NetworkCfg {
     network: String,
     hostname: String,
+    aliases: Vec<String>,
 }
 impl DisplayJson for NetworkCfg {
     fn fmt(&self, f: &mut nojson::JsonFormatter) -> std::fmt::Result {
@@ -721,6 +765,7 @@ impl DisplayJson for NetworkCfg {
                 &NetOpts {
                     hostname: self.hostname.clone(),
                     mtu: 1280,
+                    aliases: self.aliases.clone(),
                 },
             )
         })
@@ -730,12 +775,18 @@ impl DisplayJson for NetworkCfg {
 struct NetOpts {
     hostname: String,
     mtu: u32,
+    /// 空のときは `aliases` キー自体を出さない (Apple のエンコーダと同じ表現)。
+    aliases: Vec<String>,
 }
 impl DisplayJson for NetOpts {
     fn fmt(&self, f: &mut nojson::JsonFormatter) -> std::fmt::Result {
         f.object(|f| {
             f.member("hostname", &self.hostname)?;
-            f.member("mtu", self.mtu)
+            f.member("mtu", self.mtu)?;
+            if !self.aliases.is_empty() {
+                f.member("aliases", &self.aliases)?;
+            }
+            Ok(())
         })
     }
 }
@@ -1966,6 +2017,109 @@ mod tests {
                 "IMAGE_ONLY=from_image_only".to_string(),
                 "REQ_ONLY=from_request_only".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn network_aliases_are_reflected_in_container_cfg_json() {
+        // 複数の with_network_alias / with_network_aliases が
+        // networks[0].options.aliases に順序どおり並ぶこと。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_network("my-net")
+            .with_network_alias("api.example.test")
+            .with_network_aliases(["db.example.test", "cache.example.test"]);
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        )
+        .expect("build_config が成功すること");
+
+        let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
+        assert!(
+            json.contains(
+                "\"aliases\":[\"api.example.test\",\"db.example.test\",\"cache.example.test\"]"
+            ),
+            "JSON にエイリアスが順序どおり含まれること: {json}"
+        );
+    }
+
+    #[test]
+    fn network_aliases_are_omitted_when_unspecified_in_container_cfg_json() {
+        // エイリアス未指定時は aliases キー自体を出さないこと (既存の送信内容を変えない)。
+        let req: ContainerRequest<GenericImage> =
+            GenericImage::new("alpine", "latest").with_cmd(["sleep", "1"]);
+        let cfg = build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        )
+        .expect("build_config が成功すること");
+
+        let json = String::from_utf8(j(&cfg)).expect("設定が有効な UTF-8 JSON であること");
+        assert!(
+            !json.contains("\"aliases\""),
+            "エイリアス未指定時に aliases キーが出ないこと: {json}"
+        );
+    }
+
+    #[test]
+    fn build_config_rejects_single_label_network_alias() {
+        // start 側の検証を経由しない build_config 直接呼び出しでも、
+        // Apple container が受け付けない 1 ラベルのエイリアスを検出すること。
+        let req: ContainerRequest<GenericImage> = GenericImage::new("alpine", "latest")
+            .with_cmd(["sleep", "1"])
+            .with_network_alias("api");
+        let err = match build_config(
+            &req,
+            "test-id",
+            "{}",
+            &crate::core::client::image_config::ImageConfig::default(),
+            &HashMap::new(),
+        ) {
+            Ok(_) => panic!("1 ラベルのエイリアスはエラーになること"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("must be fully qualified"),
+            "build_config が fully qualified エラーを返すこと: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_macos_network_aliases_rejects_single_label_and_too_many() {
+        // Apple container は完全修飾名 (2 ラベル以上) と 32 個以下しか受け付けない。
+        let err = validate_macos_network_aliases(&["api".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("must be fully qualified"),
+            "1 ラベルの名前は fully qualified エラーになること: {err}"
+        );
+        // 先頭の `.` を除いたサブツリー名も 2 ラベル以上が必要。
+        let err = validate_macos_network_aliases(&[".api".to_string()]).unwrap_err();
+        assert!(
+            err.to_string().contains("must be fully qualified"),
+            "1 ラベルのサブツリー名も fully qualified エラーになること: {err}"
+        );
+
+        let too_many: Vec<String> = (0..33).map(|i| format!("api{i}.example.test")).collect();
+        let err = validate_macos_network_aliases(&too_many).unwrap_err();
+        assert!(
+            err.to_string().contains("at most 32"),
+            "33 個は上限エラーになること: {err}"
+        );
+
+        // 完全修飾名とサブツリー名は許可される。
+        assert!(
+            validate_macos_network_aliases(&[
+                "api.example.test".to_string(),
+                ".example.test".to_string()
+            ])
+            .is_ok()
         );
     }
 }
