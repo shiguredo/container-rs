@@ -1,7 +1,7 @@
 # 機能追加: ネットワークエイリアスに対応する
 
 - Created: 2026-11-08
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-08
 - Branch: feature/add-network-aliases
 - Polished: {YYYY-MM-DD}
 
@@ -47,7 +47,7 @@ start 時に、pull / resolve より前に次を検証し、違反は `ClientErr
 ### Linux (Docker Engine API)
 
 - `ContainerConfig` と `CreateContainerBody` に `network_aliases: Vec<String>` を追加し、`NetworkingConfig.EndpointsConfig.<network>.Aliases` に載せる。エイリアスが空のときの JSON は従来と同一にする。
-- `with_network` を指定せずにエイリアスを指定した場合は start 時に明示エラーにする (デフォルト bridge では解決できないため)。
+- 未指定 (デフォルト bridge) または組み込みの `bridge` / `host` / `none` を指定してエイリアスを指定した場合は start 時に明示エラーにする (これらでは解決できないため)。
 - 1 ラベルのエイリアスは Docker が受け付けるため、Linux では許可する。macOS との差はドキュメントに明記する。
 - ネットワークの自動作成は行わない (既存の `with_network` と同じ)。
 
@@ -64,7 +64,7 @@ start 時に、pull / resolve より前に次を検証し、違反は `ClientErr
 - [ ] macOS でエイリアス付きコンテナが起動し、ホスト側 DNS サーバーでエイリアスがコンテナ IP に解決されること (統合テスト)
 - [ ] Linux で user-defined network 上の別コンテナからエイリアスが解決されること (統合テスト)
 - [ ] 空文字列・重複・macOS の非完全修飾名・32 個超過が start 前に明示エラーになること (単体テスト)
-- [ ] Linux で `with_network` 未指定のエイリアスが start 時に明示エラーになること (単体テスト)
+- [ ] Linux で未指定・`bridge` / `host` / `none` のエイリアスが start 時に明示エラーになること (単体テスト)
 - [ ] エイリアス未指定時の macOS / Linux の config JSON が従来と同一であること (単体テスト)
 - [ ] `docs/TESTCONTAINERS.md` (ImageExt 対応表・accessor 一覧・shiguredo 拡張の件数と一覧) が更新されていること
 - [ ] `skills/shiguredo-container/SKILL.md` の ImageExt 表と既知の制限事項が更新されていること
@@ -73,4 +73,16 @@ start 時に、pull / resolve より前に次を検証し、違反は `ClientErr
 
 ## 解決方法
 
-(実装後に追記する)
+`ImageExt` に `with_network_alias` / `with_network_aliases` を追加し、`ContainerRequest` に `network_aliases: Vec<String>` と `network_aliases() -> &[String]` accessor を追加した。複数回呼び出すと追加され、`with_network_aliases` は複数件をまとめて追加する。
+
+- macOS: `src/core/client/container_cfg.rs` の `NetOpts` に `aliases` を追加し、空でないときだけ `networks[0].options.aliases` に出す。`validate_macos_network_aliases` で空文字列・重複・完全修飾名 (先頭 `.` を除いて `.` を含む)・32 個以下を検証し、`AsyncRunner::start` の pull 前と `build_config` の両方で呼ぶ。
+- Linux: `ContainerConfig` / `CreateContainerBody` に `network_aliases` を追加し、`NetworkingConfig.EndpointsConfig.<network>.Aliases` に出す。`validate_linux_network_aliases` で空文字列・重複と、未指定・`bridge` / `host` / `none` を拒否する。`AsyncRunner::start` の pull 前と `build_container_config` で値を渡す。
+- 単体テスト: accessor と追加順、空文字列・重複、macOS の完全修飾名・32 個超過・`build_config` 経由の拒否、Linux の user-defined network 必須、macOS / Docker の config JSON (aliases の有無)。
+- 統合テスト: macOS はエイリアス付きコンテナを起動し、ホスト側 container DNS サーバー (`127.0.0.1:2053`) の A レコードがコンテナ IP に一致すること、サブツリーエイリアスが配下の名前を解決すること、削除後にエイリアスが解放されることを確認した。Linux は `docker network create` で作った user-defined network 上で、別コンテナから `getent hosts` により 2 つのエイリアスが server の IP に解決されることを確認する。
+- ドキュメント: `docs/TESTCONTAINERS.md` (ImageExt 対応表・accessor 一覧・サマリの shiguredo 拡張 25 → 28 と内訳合計 396 → 399・「意図的に保持する shiguredo 拡張」)、`skills/shiguredo-container/SKILL.md` (ImageExt 表・既知の制限事項・参考資料の件数)、`CHANGES.md` の `[ADD]` を更新した。
+
+検証:
+
+- `RUN_CONTAINER_TESTS=1 cargo test --all-features`: macOS 統合テスト 96 件を含めすべて成功した。単体テストは追加分を含めて 256 件成功した。
+- `cargo clippy --all-targets --all-features -- -D warnings` と `cargo clippy --target x86_64-unknown-linux-gnu --all-targets --all-features -- -D warnings`、`cargo fmt --all -- --check` が成功した。
+- Linux の統合テストは macOS 上では実行できないため、Linux ターゲットの `cargo check` / clippy と、Docker Engine API へ同じ JSON (`NetworkingConfig` の `Aliases`) を直接送る手動検証で確認した。手動検証では user-defined network 上の 2 つのエイリアスが別コンテナから解決できた。
